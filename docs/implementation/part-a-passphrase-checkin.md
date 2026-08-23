@@ -31,11 +31,10 @@ joined. Released 15–25 minutes in, it proves presence at a moment the fellow c
 not have predicted. The passphrase is what makes that provable — a timestamp alone
 is satisfied by an idle open tab.
 
-**The teacher never touches Google Forms.** They fill in a session in a small web
-app; the app creates the form programmatically, configures it correctly, and hands
-back a link to paste into Zoom chat. Manual form-building is the failure mode this
-design exists to remove — a form built by hand with the wrong email setting
-silently destroys every identity guarantee downstream.
+**Nobody at CU should have to build a form by hand.** A staff member fills in
+session details in a small web console; the system provisions the Google Form,
+publishes it, and later pulls the responses. CU has no data manager — every manual
+step is a step that stops happening in November.
 
 ---
 
@@ -58,171 +57,200 @@ silently destroys every identity guarantee downstream.
    rows.
 6. **Identity never blocks ingest.** An unrecognized email still produces a
    record; the address goes to a review queue.
-7. **A form is never usable until its settings are verified.** See Deliverable 1c —
-   this is the single most dangerous failure mode in the system.
+7. **Verify, don't assume.** Any external state this system depends on — that a
+   form is published, that email collection is Verified — must be read back and
+   checked, never trusted because a call returned 200. See the three traps below.
 8. **Everything is cohort-keyed** for later year-over-year comparison.
-9. **Timestamps are UTC** past the API boundary.
+9. **Timestamps are UTC** past the parser boundary.
 
 ---
 
-## Deliverable 1 — Admin web app and programmatic form creation
+## ⚠️ Three verified Google API traps
 
-### 1a. The web app
+These are researched and current as of August 2026. Each one fails **silently** —
+the code appears to work and no responses arrive, or arrive unattributable. Build
+against them from the start; do not discover them later.
 
-A small server-rendered app. **FastAPI + Jinja2 templates.** No npm, no build
-step, no SPA framework — CU has no data manager, and a build toolchain is
-inherited maintenance for someone who did not write this.
+### Trap 1 — API-created forms are unpublished by default
 
-**Screens:**
+Google changed this in 2026. Forms created via the API were auto-published through
+**June 30, 2026**; after that date they are created in an **unpublished state and
+accept no responses**. The form exists, the link resolves, and every submission is
+refused.
 
-1. **Sessions list** — every session with its date, passphrase, form status
-   (`draft` / `ready` / `failed`), responder link with a copy button, and a live
-   response count.
-2. **New session form** — the only thing a teacher fills in:
+**You must explicitly call `forms.setPublishSettings()`** with
+`publishState: { isPublished: true, isAcceptingResponses: true }` after creating
+each form, then **read the state back and assert it** before telling anyone the
+form is ready. Required scope: `https://www.googleapis.com/auth/forms.body`.
 
-   | Field | Notes |
-   |---|---|
-   | Title | e.g. "Week 3 — Local Government" |
-   | Cohort | dropdown |
-   | Date and start time | local |
-   | Timezone | IANA, defaulted from the browser, editable |
-   | Duration (minutes) | |
-   | Grace (minutes) | default 15 |
-   | Passphrase | with the guidance below shown inline |
-   | Announce time | optional |
+### Trap 2 — `emailCollectionType: VERIFIED` is unreliable via the API
 
-   On submit: persist the session, then create the Google Form (1c), then show
-   the responder URL.
+Setting email collection through `forms.batchUpdate` → `updateSettings` has been
+reported returning `400 INVALID_ARGUMENT` on
+`requests[0].update_settings.settings.email_collection_type`, with no working enum
+value found and no documented resolution. Verified email collection is the entire
+premise of this design, so it cannot depend on a call that may reject.
 
-3. **Session detail** — responder URL, edit URL, response count, a "re-verify
-   settings" button, and a "recreate form" action for the failure case.
+**Use a template-and-copy architecture instead:**
 
-**Inline passphrase guidance** (show it in the UI, not buried in docs):
+1. The app creates one **template form** via the API, once.
+2. The app then shows a human a link and asks them to open it and set
+   **Settings → Responses → Collect email addresses → Verified** by hand. This is
+   a one-time, ~30-second step — the single thing the API cannot reliably do.
+3. The app **reads `form.settings` back and refuses to proceed** until it confirms
+   Verified. Do not accept the human's word for it; check.
+4. Every per-session form is then a **Drive `files.copy()` of that template**.
+   Copying a Google Form preserves its settings, including email collection.
+5. Use `forms.batchUpdate` only for what works reliably — title, description, and
+   the passphrase question text.
 
-- One word, ~5–10 letters
-- Avoid homophones (`their`/`there`, `flour`/`flower`)
-- Avoid words in the slides or readings — guessable from materials
-- Never reuse across sessions — **the app must reject a passphrase already used by
-  another session in the same cohort**
-- **Say it aloud AND display it on screen.** Audio-only excludes deaf and
-  hard-of-hearing fellows and anyone with an audio failure. This widens the leak
-  surface, which is exactly why the passphrase is one signal among several and
-  never proof on its own.
+Re-verify the template's settings before each provisioning run. If someone edits
+the template and breaks it, fail loudly rather than quietly producing forms that
+collect nothing.
 
-### 1b. Google OAuth
+### Trap 3 — The REST API cannot link a response spreadsheet
 
-The Forms API needs two scopes:
+`Form.setDestination()` exists in Apps Script but has no REST equivalent. An
+API-provisioned form has **no linked Sheet**, so there is no CSV to export.
 
-- `https://www.googleapis.com/auth/forms.body` — create and update forms
-- `https://www.googleapis.com/auth/forms.responses.readonly` — read responses
+**Read responses via `forms.responses.list` instead.** This is strictly better:
+it returns `respondentEmail` and RFC3339 UTC timestamps directly, which
+**eliminates the Google Sheets timezone trap entirely** — Sheets writes form
+timestamps in the spreadsheet's locale with no offset marker, and parsing those as
+UTC silently shifts every check-in by hours.
 
-**Forms must be owned by a real CU user account, never by a bare service
-account.** A service-account-owned form has no human owner in the Drive UI: after
-this contract ends, nobody at CU could open, edit, or recover it. That is an
-offboarding failure, not a technical detail.
+Supports incremental polling via `filter=timestamp > N`. Store a per-form
+watermark and poll forward.
 
-Two acceptable paths — implement the first, document the second:
+Keep a CSV import path as a documented fallback for manually created forms — and
+there, `--sheet-timezone` remains mandatory with no default.
 
-1. **OAuth authorization-code flow.** A CU staffer signs in once and grants the
-   scopes; store the refresh token. Forms are owned by that person's account.
-2. **Domain-wide delegation** with a service account impersonating a CU user, if
-   CU's Workspace admin prefers it. Same ownership outcome, more admin setup.
+### Trap 4 — Service accounts cannot own Workspace assets
 
-Store the refresh token in Postgres, **encrypted at rest** with a key from the
-environment. Never log it. Never commit it. Provide a `cufa auth google` CLI
-command that runs the flow and stores the token, so the app can be re-authorized
-without touching the database by hand.
+A service account cannot own a Google Form. Options are domain-wide delegation
+(requires Workspace admin console access) or ordinary user OAuth.
 
-**Be honest in the docs about what cannot be automated:** creating the Google
-Cloud project, enabling the Forms API, and configuring the OAuth consent screen
-are one-time console steps a human must do. Write them out precisely, in order,
-with the exact scope strings. Everything after that is automated.
+**Use user OAuth.** A CU staff member signs in once and grants:
 
-### 1c. Creating the form — the two-step trap
+- `https://www.googleapis.com/auth/forms.body` — create, update, publish
+- `https://www.googleapis.com/auth/drive.file` — copy the template
 
-⚠️ **`emailCollectionType` is ignored during `forms.create`.** It can only be set
-through an `UpdateSettingsRequest` inside `forms.batchUpdate`. This means form
-creation is unavoidably two calls, and there is a window between them where the
-form exists and is **not collecting verified emails**.
+`drive.file` is sufficient because the app creates the template itself, so the
+template is app-created and stays in scope. Do not request broader Drive scope.
 
-If the second call fails and nobody notices, the form silently collects
-submissions with no identifiable respondent. Every check-in from that session
-becomes unattributable, and you will not find out until you try to join the data.
-
-**Required sequence:**
-
-1. `forms.create` with the title
-2. `forms.batchUpdate` with:
-   - `UpdateSettingsRequest` setting `emailCollectionType: "VERIFIED"`
-     (enum values: `EMAIL_COLLECTION_TYPE_UNSPECIFIED`, `DO_NOT_COLLECT`,
-     `VERIFIED`, `RESPONDER_INPUT`)
-   - `CreateItemRequest` adding one required short-answer question,
-     `"Today's passphrase"`
-   - The transparency notice as the form description
-3. **`forms.get` and assert `emailCollectionType == "VERIFIED"`** before marking
-   the session `ready`. If it is anything else, mark the session `failed`, surface
-   it loudly in the UI, and **do not hand out the responder link.**
-
-Add only that one question. No session dropdown — the session is derived from the
-timestamp, and a dropdown is user input that can contradict reality.
-
-**Form description** must carry a plain-language notice: what is collected, who
-sees it, what it is used for. Research on adolescent survey participation is
-consistent that transparency drives honest responding. Include a literal
-`TODO(retention)` marker where the retention period belongs — CU has not defined
-one, and **inventing a number would silently make it policy.**
-
-**Idempotency:** store `google_form_id` on the session. If it is already set,
-never create a second form — reconcile the existing one instead. A duplicate form
-for one session splits that session's responses across two sources.
-
-Capture both URLs: `responderUri` (what fellows open) and the edit URL (what staff
-open). They are different, and handing out the wrong one is a live incident.
-
-### 1d. Manual fallback
-
-Keep a short `docs/setup/manual-form.md` describing the click path for building
-the form by hand, for use if the API path is unavailable. It must state clearly
-that **Settings → Responses → Collect email addresses must be set to *Verified*,
-not *Responder input*** — responder input lets anyone type any address and
-destroys the only reason this form exists — and that **"Limit to 1 response" must
-stay off**, since it is per-form and would block every session after the first.
+Store the refresh token **encrypted at rest** in Postgres, never in a file or in
+the repo. Forms are then owned by that staff member's account, which is what CU
+wants — the work product stays in CU's Drive, not in a contractor's.
 
 ---
 
-## Deliverable 2 — Sessions
+## Deliverable 1 — The session console (web app)
 
-Sessions are created in the web app (1a) and stored in Postgres. Also provide
-`cufa load-sessions --csv <path>` for bulk import and for tests, with the same
-fields as the UI.
+A small internal web app. Audience: two or three CU staff, non-technical.
 
-Attendance window: `[scheduled_at_utc - grace, scheduled_at_utc + duration + grace]`
+### Stack
 
-The app must **warn on overlapping windows within a cohort** at creation time.
-Overlaps make session assignment ambiguous later, and it is far cheaper to catch
-here than in the data.
+**FastAPI + Jinja2 server-rendered HTML + HTMX.** Rationale: same language as the
+pipeline, one deploy, one dependency set, no build step. CU inherits this without
+a data manager, and a Python-only codebase is the shortest handoff. (Next.js on
+Supabase is the reasonable alternative if the team already runs JS; do not build
+both.)
+
+Auth for the console itself: Google sign-in, restricted to an allowlist of CU
+email addresses in config. Do not build a password system.
+
+### Screens
+
+**1. Connect Google** — one-time OAuth flow. Shows connection status, the
+connected account, granted scopes, and a disconnect button.
+
+**2. Template setup** — one-time. Creates the template form, shows the human the
+link and the one manual step (set email collection to Verified), then a
+**"Verify template"** button that reads `form.settings` back. Green only when the
+API confirms `VERIFIED`. Blocks everything downstream until it does.
+
+**3. Sessions** — list, create, edit. Fields:
+
+| Field | Required | Notes |
+|---|---|---|
+| `title` | yes | |
+| `scheduled_at` | yes | local date+time picker |
+| `timezone` | yes | IANA, defaults to the browser's |
+| `duration_minutes` | yes | |
+| `grace_minutes` | no, default 15 | widens the window both sides |
+| `passphrase` | no | absent is legal |
+| `announced_at` | no | filled by the "Announce now" button |
+| `cohort_id` | yes | |
+
+**Passphrase field guidance shown inline** (not buried in a doc):
+one word, ~5–10 letters; avoid homophones (`their`/`there`, `flour`/`flower`);
+avoid words appearing in the slides or readings, which are guessable from
+materials; never reuse across sessions. Offer a **"suggest a passphrase"** button
+drawing from a curated wordlist that excludes homophones and near-homophones.
+
+**Warn on reuse** — if a passphrase matches any previous session in the cohort,
+show a warning before saving.
+
+**4. Session detail** — the live view a teacher uses mid-lesson:
+- **"Provision form"** button → copies the template, sets title and question,
+  publishes, verifies publish state, stores the form ID and URL
+- The form URL, with a big copy button and a QR code
+- **"Announce now"** → stamps `announced_at_utc`, which is what latency is
+  measured from
+- Live response count, polled
+- **"Pull responses"** → runs ingest for this session on demand
+
+**5. Review** — the `needs_review` queue with one-click attended / not-attended,
+which writes a human decision (Deliverable 7). Also a tab listing AI decisions
+with their reasoning so a human can spot-check the model rather than trust it.
+
+### Accessibility and the passphrase
+
+The console must remind the teacher to **say the passphrase aloud AND display it
+on screen**. Audio-only excludes deaf and hard-of-hearing fellows and anyone with
+an audio failure. This widens the leak surface, which is exactly why the
+passphrase is one signal among several and never proof on its own. Put that
+sentence in the UI, not only in the docs.
+
+### Provisioning must be safe to retry
+
+Provisioning is idempotent per session: if a form already exists for that session,
+show it rather than creating a second one. Every provisioning attempt is logged
+with its outcome. A `--dry-run` mode logs the calls it would make without touching
+Google.
+
+### The form itself
+
+- **Exactly one question:** "Today's passphrase", short answer, required
+- No session dropdown — session is derived from the timestamp, and a dropdown is
+  user input that can contradict reality
+- **Header notice**, plain language, no jargon: what is collected, who sees it,
+  what it is used for. Research on adolescent survey participation is consistent
+  that transparency drives honest responding.
+- Leave a literal `TODO(retention)` marker where the retention period belongs. CU
+  has not defined one. **Do not invent a number** — an assumed retention period
+  silently becomes policy.
 
 ---
 
-## Deliverable 3 — Supabase (Postgres)
+## Deliverable 2 — Supabase (Postgres)
 
-Use the **Supabase CLI** for a fully local, offline Postgres stack. No Supabase
-Cloud account needed — `login` and `link` are only required for deployment.
+Use the **Supabase CLI** for a fully local, offline stack. No cloud account
+needed — `login` and `link` are only required for deployment.
 
 **Set this up yourself.** Run `supabase init`, author the migrations, write the
-seed file, and verify `supabase start` + `supabase db reset` produce a working
-database. Do not leave manual setup steps for the user.
+seed, and verify `supabase start` + `supabase db reset` produce a working
+database. Leave no manual setup steps.
 
 - Migrations in `supabase/migrations/` (`supabase migration new <name>`)
-- Seed data in `supabase/seed.sql`, applied by `supabase db reset`
+- Seed in `supabase/seed.sql`, applied by `supabase db reset`
 - Local Postgres: `postgresql://postgres:postgres@localhost:54322/postgres`
 - Studio (visual table browser): `http://localhost:54323`
 - Docker must be running before `supabase start` — say so, and fail with a clear
   message if the stack is unreachable
 
 Access Postgres with **psycopg 3** and plain SQL. Not `supabase-py` — this is
-batch ingest plus a small server-rendered app, and direct SQL is easier to test
-and hand off.
+batch ingest plus a small server, and direct SQL is easier to test and hand off.
 
 ### Schema
 
@@ -234,29 +262,38 @@ constraints.
 **`fellow`** — `fellow_id` PK (CU-issued, stable), `cohort_id` FK, `full_name`,
 `primary_email`, `status`. The roster.
 
-**`session`** — fields from Deliverable 2, plus `scheduled_at_utc`,
-`announced_at_utc`, `google_form_id`, `responder_uri`, `edit_uri`,
-`form_status` (`draft` \| `ready` \| `failed`), `settings_verified_at`.
+**`session`** — every field from Deliverable 1, plus `scheduled_at_utc` and
+`announced_at_utc` alongside the local values and timezone.
 
-**`google_credential`** — encrypted refresh token, granted scopes, the account
-email that owns the forms, created/updated timestamps.
+**`google_credential`** — connected account email, **encrypted** refresh token,
+granted scopes, connected_at, last_refreshed_at. Encryption key from env, never
+committed.
 
-**`checkin`** — one row per form response. **Immutable.**
+**`form_template`** — template form ID, `verified_email_confirmed_at`, a snapshot
+of the settings as last read back, `last_verified_at`.
+
+**`session_form`** — `session_id` FK, `form_id`, `form_url`, `provisioned_at`,
+`published_at`, `publish_verified_at`, `response_watermark` (RFC3339, for
+incremental polling), `last_polled_at`.
+
+**`checkin`** — one row per response. **Immutable.**
 
 | Column | Notes |
 |---|---|
 | `checkin_id` | uuid PK |
 | `source_event_id` | text UNIQUE — idempotency key |
-| `google_response_id` | text, from the API |
+| `source` | `forms_api` \| `csv` |
 | `submitted_email` | normalized |
 | `submitted_at_utc` | timestamptz |
+| `submitted_at_raw` | text, verbatim |
+| `source_timezone` | text, NULL on the API path |
 | `session_id` | FK, nullable |
 | `session_match` | `matched` \| `none` \| `ambiguous` |
 | `passphrase_raw` | text, exactly as typed |
-| `passphrase_match` | see Deliverable 5 |
+| `passphrase_match` | see Deliverable 4 |
 | `edit_distance` | int, nullable |
 | `latency_seconds` | int, nullable |
-| `raw_response` | jsonb — the full API payload |
+| `extra_fields` | jsonb |
 | `load_id` | FK |
 | `ingested_at` | timestamptz |
 
@@ -270,7 +307,7 @@ backfill.
 |---|---|
 | `decision_id` | uuid PK |
 | `checkin_id` | FK |
-| `attended` | boolean, nullable |
+| `attended` | boolean, **nullable** |
 | `status` | `attended` \| `not_attended` \| `needs_review` |
 | `confidence` | numeric 0–1 |
 | `decided_by` | `rule` \| `ai` \| `human` |
@@ -283,106 +320,83 @@ backfill.
 | `superseded_at` | timestamptz, NULL = current |
 | `created_at` | timestamptz |
 
-Add a **partial unique index** on `checkin_id WHERE superseded_at IS NULL` so
-exactly one decision is current per check-in. Superseding sets `superseded_at` on
-the old row and inserts a new one — never an in-place edit.
+**Partial unique index** on `checkin_id WHERE superseded_at IS NULL` — exactly one
+current decision per check-in. Superseding is an UPDATE of `superseded_at` plus an
+INSERT, never an in-place edit.
 
 **`ai_adjudication_cache`** — key `(expected_normalized, submitted_normalized,
-prompt_version, model)`; value: verdict, confidence, reasoning, created_at.
+prompt_version, model)`; value verdict, confidence, reasoning, created_at.
 
 **`identity_unresolved`** — email, first/last seen, occurrence count, optional
-best guess + score.
+best guess and score.
 
-**`load_run`** — source, origin, start/finish, rows read/written/skipped, status,
-error. For API pulls, record the response-filter window used.
+**`load_run`** — source, origin, SHA-256 of input bytes (CSV path), start/finish,
+rows read/written/skipped, status, error.
+
+**`provisioning_log`** — session, action, request summary, outcome, error, at.
 
 ### Row Level Security
 
 Enable RLS on `fellow`, `checkin`, `attendance_decision`, and
-`google_credential`. The pipeline connects as the service role and bypasses it.
-Leave a documented `TODO(access)` policy stub — CU has said data should be visible
-to every full-time team member but has not defined granular permissions, and a
-derived attendance judgment should not automatically be as open as a raw
-timestamp. Do not invent the policy.
+`google_credential`. The pipeline connects as the service role. Leave a documented
+`TODO(access)` policy stub — CU has said the data should be visible to every
+full-time team member but has not defined granular permissions, and a derived
+attendance judgment should not automatically be as open as a raw timestamp. **Do
+not invent the policy.**
 
 ---
 
-## Deliverable 4 — Ingest from the Forms API
+## Deliverable 3 — Response ingestion
+
+**Primary path — Forms API:**
 
 ```
-cufa ingest part-a --cohort <id> [--session <id>] [--since <RFC3339>]
+cufa pull --session <id>          # one session
+cufa pull --cohort <id>           # every provisioned session, incremental
 ```
 
-Read responses with `forms.responses.list` for each session's `google_form_id`.
+Call `forms.responses.list` with `filter=timestamp > <watermark>`, paginate via
+`nextPageToken`, advance the watermark only after a successful full page loop.
+Timestamps are already RFC3339 UTC — no conversion, no timezone flag.
 
-**This path removes the timezone problem entirely.** `lastSubmittedTime` is
-returned as **Z-normalized RFC 3339 UTC**, not a locale-formatted string. There is
-no conversion step and no timezone flag. Parse it directly.
+**Fallback path — CSV**, for manually created forms:
 
-`respondentEmail` is populated because the form is set to `VERIFIED` — which is
-exactly why Deliverable 1c must verify that setting before the form is used.
+```
+cufa ingest part-a --csv <path> --cohort <id> --sheet-timezone <IANA>
+```
 
-**Incremental pulls:** `forms.responses.list` supports a timestamp filter
-(`timestamp > "2026-09-15T00:00:00Z"`). Store the high-water mark per form on
-`load_run` and pull only what is new. Handle pagination via `nextPageToken`.
+Here `--sheet-timezone` is **mandatory with no default** — not UTC, not the
+machine's local zone. Missing → fail with an error naming the flag. Convert at the
+parser boundary using `zoneinfo`; handle DST correctly; store the raw string and
+the zone used so conversion is auditable. Match headers case-insensitively,
+tolerate reordering, preserve unrecognized columns into `extra_fields`.
 
-**Quotas** are generous — 450 requests/min/project for `forms.responses.list`
-(classed as an expensive read), 375/min for writes, with no daily cap. Polling
-every few minutes is trivially within budget. On `429`, back off exponentially.
+**Idempotency.** `source_event_id` = SHA-256 of `(form_id_or_file, normalized_email,
+submitted_at_utc_iso)`. **Not the row number** and **not the Forms `responseId`
+alone** — the hash must be stable across both ingestion paths so a CSV re-import
+of API-ingested data does not duplicate. With the UNIQUE constraint and
+`ON CONFLICT DO NOTHING`, a second run writes zero rows.
 
-**Push notifications exist but are out of scope.** `forms.watches` can deliver
-`RESPONSES` events to a Cloud Pub/Sub topic, but watches expire after a week and
-must be renewed, notifications carry no payload (you still call the API to fetch
-data), and it requires Pub/Sub infrastructure CU does not have. Document it as the
-future path; poll for now.
+**Session assignment.** Match `submitted_at_utc` against session windows
+(`[scheduled_at_utc - grace, scheduled_at_utc + duration + grace]`):
+- exactly one → `matched`
+- none → `none`, `session_id` NULL, **row still written**
+- multiple → `ambiguous`, `session_id` NULL, warn naming the overlapping sessions
 
-**CSV fallback:** keep `cufa ingest part-a --csv <path> --sheet-timezone <IANA>`
-for a hand-built form whose responses land in a Sheet, and for offline tests.
-That path **does** carry the timezone trap — Google Sheets writes form timestamps
-in the spreadsheet's locale with no offset marker, and parsing them as UTC shifts
-every check-in by hours and misassigns sessions across window boundaries. On the
-CSV path, require `--sheet-timezone` explicitly and **never default it to UTC or
-to the machine's local timezone.**
+On the API path the form already implies a session, so a timestamp that lands
+outside that session's own window is a **config error worth flagging**, not a
+reason to reassign. Record both what the form implies and what the timestamp says.
 
-### Idempotency
-
-`source_event_id` = SHA-256 of `(google_form_id, google_response_id)` on the API
-path, or `(source_file, normalized_email, submitted_at_utc_iso)` on the CSV path.
-With the UNIQUE constraint and `ON CONFLICT DO NOTHING`, a second run over
-identical input writes zero rows.
-
-Note that Google may update an existing response (`lastSubmittedTime` changes
-while `responseId` stays the same). Treat that as the same check-in — do not
-create a second row — but record the observed `lastSubmittedTime` in
-`raw_response` so the change is visible.
-
-### Session assignment
-
-- exactly one window → `matched`
-- no window → `none`, `session_id` NULL, **row still written**
-- multiple windows → `ambiguous`, `session_id` NULL, log a warning naming the
-  overlapping sessions
-
-When ingesting per-form, the form's own session is the obvious candidate — still
-run the window check and record a mismatch rather than trusting the form linkage
-blindly. A response arriving days after a session is a real signal.
-
-### Identity
-
-Normalize emails: strip whitespace, lowercase. **Do not strip Gmail dots or
-`+suffix`** — that is a lossy guess, and collapsing one fellow's address into
-another's is worse than leaving it unmatched. Match against
-`fellow.primary_email` within the cohort; on a miss, upsert
-`identity_unresolved`. Never auto-link on a fuzzy name guess.
+**Identity.** Normalize emails: strip, lowercase. **Do not strip Gmail dots or
+`+suffix`** — a lossy guess, and collapsing one fellow's address into another's is
+worse than leaving it unmatched. Match `fellow.primary_email` within the cohort;
+on a miss, upsert `identity_unresolved`. Never auto-link on a fuzzy name guess.
 
 ---
 
-## Deliverable 5 — Deterministic adjudication (tier 1)
+## Deliverable 4 — Deterministic adjudication (tier 1)
 
-Normalize both strings: trim, collapse internal whitespace, lowercase, strip
-punctuation.
-
-**Match outcomes** — all recorded, none fatal:
+Normalize both strings: trim, collapse whitespace, lowercase, strip punctuation.
 
 | Outcome | Condition |
 |---|---|
@@ -392,9 +406,9 @@ punctuation.
 | `not_set` | session has no passphrase configured |
 | `no_session` | matched no session window |
 
-**Rules produce a decision directly:**
+**Rules produce decisions:**
 
-| Condition | Status | `rule_name` | Confidence |
+| Condition | `status` | `rule_name` | Confidence |
 |---|---|---|---|
 | `exact` + in window | attended | `exact_match` | 1.0 |
 | `fuzzy` + in window | attended | `fuzzy_match` | 0.9 |
@@ -402,7 +416,7 @@ punctuation.
 | `no_session` | not_attended | `outside_all_windows` | 0.6 |
 | `mismatch` + in window | **escalate to tier 2** | — | — |
 
-Fuzzy is on by default because the passphrase is heard aloud and typed on a phone.
+Fuzzy is on by default: the passphrase is heard aloud and typed on a phone.
 Rejecting `justise` for `justice` penalizes someone who *was there and heard it* —
 backwards from the intent.
 
@@ -410,24 +424,24 @@ Implement Levenshtein directly; ~20 lines, not worth a dependency.
 
 ---
 
-## Deliverable 6 — AI adjudication (tier 2, Gemini)
+## Deliverable 5 — AI adjudication (tier 2, Gemini)
 
 Only `mismatch`-in-window cases reach this tier. Levenshtein cannot handle
 `"the word was justice"`, `"justice i think?"`, `"jushtis"`, or `"sorry I missed
-it"` — a human reads those instantly and edit distance scores them wrong.
+it"` — all of which a human reads instantly and edit distance scores wrongly.
 
 **SDK:** `google-genai` (`from google import genai`; `client = genai.Client()`).
 The older `google-generativeai` was deprecated in August 2025 — do not use it.
 
-**Model:** `gemini-2.5-flash` by default, configurable. Free tier: 10 RPM / 250
-requests per day for Flash; 15 RPM / 1,000 RPD for Flash-Lite. Gemini 2.5 Pro left
-the free tier in April 2026. Key from `GEMINI_API_KEY`; `.env` gitignored, with a
-committed `.env.example`.
+**Model:** `gemini-2.5-flash` by default, configurable. Free tier at time of
+writing: 10 RPM / 250 requests per day for Flash; 15 RPM / 1,000 RPD for
+Flash-Lite. Gemini 2.5 Pro left the free tier in April 2026. Key from
+`GEMINI_API_KEY`; `.env` gitignored, `.env.example` committed.
 
 **Send only two strings — the expected passphrase and the submitted answer.** No
-names, no emails, no attendance history. Narrower context is both better privacy
-and better accuracy: the model's only job is judging whether the answer indicates
-the person heard the word.
+names, no emails, no attendance history, no cohort data. Narrower context is both
+better privacy and better accuracy: the model's only job is judging whether the
+answer indicates the person heard the word.
 
 Structured JSON output with a response schema:
 
@@ -435,43 +449,42 @@ Structured JSON output with a response schema:
 { "heard_the_passphrase": true, "confidence": 0.0, "reasoning": "one sentence" }
 ```
 
-**Requirements:**
+Requirements:
 
 - `temperature=0` for reproducibility
-- Version the prompt string (`PROMPT_VERSION = "v1"`) and store it on every
-  decision
+- Version the prompt (`PROMPT_VERSION = "v1"`) and store it on every decision
 - **Check `ai_adjudication_cache` before every call**; write through after
-- Exponential backoff on 429; cap total calls per run via config
-- **Degrade, never crash.** No key, no network, or quota exhausted → write the
-  decision as `status='needs_review'`, `decided_by='rule'`,
-  `rule_name='ai_unavailable'`. The pipeline must complete fully without Gemini.
-- `--no-ai` skips tier 2 and routes everything to `needs_review`
+- Exponential backoff on 429; cap calls per run via config
+- **Degrade, never crash.** No key, no network, or quota exhausted → write
+  `status='needs_review'`, `decided_by='rule'`, `rule_name='ai_unavailable'`. The
+  pipeline must complete fully without Gemini.
+- `--no-ai` skips tier 2 entirely
 
 **`needs_review` is not `not_attended`.** Absent evidence is not evidence of
 absence. Never collapse unknown into false.
 
 ---
 
-## Deliverable 7 — Human override (tier 3)
+## Deliverable 6 — Human override (tier 3)
 
 ```
-cufa decide --checkin <id> --attended true|false --by <email> --note "<text>"
+cufa decide --checkin <id> --status attended|not_attended --by <email> --note "<text>"
 ```
 
-Also expose this in the web app on the session detail screen — a reviewer should
-not need the CLI to correct one row.
+Also exposed as one-click buttons in the console's review screen.
 
 Supersedes the current decision: sets `superseded_at` on the old row, inserts a
-new one with `decided_by='human'`, `confidence=1.0`, and the human's email.
+new one with `decided_by='human'`, `confidence=1.0`, the human's email, and the
+note.
 
 **A human decision is never superseded by a later rule or AI pass.** Re-running
-adjudication skips any check-in whose current decision has `decided_by='human'`.
-A `--force` flag overrides this and must print a loud warning naming what it is
-about to overwrite.
+adjudication skips any check-in whose current decision is `decided_by='human'`.
+Add `--force` to override, printing a loud warning naming exactly what it will
+overwrite.
 
 ```
-cufa review --status needs_review     # the queue, oldest first
-cufa review --status ai               # everything the model decided, for spot-checking
+cufa review --status needs_review    # the queue, oldest first
+cufa review --status ai              # AI decisions with reasoning, for spot-checks
 ```
 
 The second matters: the AI tier must be auditable by a human sampling its
@@ -479,92 +492,90 @@ judgments, not a black box.
 
 ---
 
-## Deliverable 8 — Latency
+## Deliverable 7 — Latency
 
-`latency_seconds` = seconds between the passphrase being announced and submission.
+`latency_seconds` = seconds between announcement and submission.
 
-- Use `session.announced_at_utc` if set
+- Use `session.announced_at_utc` if set — the console's "Announce now" button
 - Otherwise derive `T0` = earliest submission matched to that session
 - **Store it; do not interpret it.** No thresholds, no flags, no "suspicious"
   marker. It is an input to analysis that does not exist yet.
-- Under derived `T0` the first submitter always has latency 0 — document that as
+- Under derived `T0` the first submitter always has latency 0 — document as
   expected, not a bug
 - NULL when no session matched
 
 ---
 
-## Deliverable 9 — CLI
+## Deliverable 8 — CLI
 
 ```
-cufa db up                      # supabase start + db reset, idempotent
-cufa db down
-cufa auth google                # OAuth flow, stores encrypted refresh token
-cufa serve                      # the admin web app
+cufa db up | down
+cufa serve                          # the console
+cufa google connect | status
+cufa template create | verify
 cufa load-roster    --csv <path> --cohort <id>
-cufa load-sessions  --csv <path>
-cufa create-form    --session <id>          # same path the web app uses
-cufa verify-form    --session <id>          # re-assert emailCollectionType
-cufa ingest part-a  --cohort <id> [--session <id>] [--since <RFC3339>]
-cufa ingest part-a  --csv <path> --sheet-timezone <IANA>
+cufa load-sessions  --csv <path>            # bulk import; console is the primary UI
+cufa provision      --session <id> [--dry-run]
+cufa pull           --session <id> | --cohort <id>
+cufa ingest part-a  --csv <path> --cohort <id> --sheet-timezone <IANA>
 cufa adjudicate     --cohort <id> [--no-ai] [--force]
-cufa decide         --checkin <id> --attended <bool> --by <email> --note "<text>"
+cufa decide         --checkin <id> --status <s> --by <email> --note "<text>"
 cufa review         [--status needs_review|ai|unresolved-identity]
 cufa report         --cohort <id> [--json]
 ```
 
-`ingest` prints rows read / written / skipped-duplicate, session match breakdown,
-passphrase outcome breakdown, unresolved identity count.
-
-`adjudicate` prints decisions by tier, AI calls vs. cache hits, `needs_review`
-count.
+Everything the console does must also be doable from the CLI — the console is a
+convenience layer, not the only entry point. That keeps the system scriptable and
+testable, and keeps it usable if the web app ever breaks.
 
 ---
 
-## Deliverable 10 — How to test it (build this)
+## Deliverable 9 — How to test it (build this)
 
-The person running this must see it work end to end **with no Google credentials
-and no Gemini key.**
+Must work end to end with **no Google account and no Gemini key**.
 
 **`make setup`** — installs deps, `supabase init`, checks Docker, clear message if
-not running.
+it is not running.
 
-**`make demo`** — the one-command path:
-1. `supabase start` + `supabase db reset`
+**`make demo`** — one command:
+1. `supabase start` + `db reset`
 2. generate synthetic fixtures
 3. load roster and sessions
-4. ingest check-ins **from a fake Forms API**
+4. ingest check-ins **via the fake Google client**
 5. adjudicate with `--no-ai`
 6. print the report
 
-Must succeed on a clean machine with no `GEMINI_API_KEY` and no Google OAuth.
+Must succeed on a clean machine with no `GEMINI_API_KEY` and no OAuth connection.
 
-**Fake Google Forms API.** Build a `FormsClient` protocol with two
-implementations: the real `google-api-python-client` one, and a fake that serves
-canned responses from JSON fixtures. The fake must reproduce real API behavior,
-including the two-step settings trap — a mode where `forms.create` succeeds and
-`batchUpdate` fails, so the `failed` path is actually exercised. Select via
-`--fake-google` or an env var.
+**`FakeGoogleClient`** — implements the same interface as the real Forms/Drive
+client: `create_template`, `read_settings`, `copy_form`, `batch_update`,
+`set_publish_settings`, `list_responses`. It must be able to simulate **each trap**
+so the handling is actually tested:
+- a form returned unpublished
+- `emailCollectionType` rejected with 400
+- a template whose settings read back as `RESPONDER_INPUT` instead of `VERIFIED`
+- a paginated response list
+- a 429 followed by success
 
-**`scripts/generate_fixtures.py`** — deterministic (fixed seed), producing:
+**`scripts/generate_fixtures.py`** — deterministic (fixed seed):
 - 20 synthetic fellows, obviously fake names, `@example.invalid` addresses
-- 6 sessions across 6 weeks, one with no passphrase set, one overlapping pair
-- responses covering **every** case: exact, case/whitespace/punctuation variants,
-  edit-distance-1 typos, conversational answers (`"the word was justice"`), plain
-  wrong answers, blank answers, submissions outside every window, an unknown
-  email, a duplicate `responseId`, an updated response (same `responseId`, later
-  `lastSubmittedTime`), and an unexpected extra field
+- 6 sessions over 6 weeks, with passphrases, one with none set
+- responses covering **every** edge case: exact, case and whitespace variants,
+  punctuation, edit-distance-1 typos, conversational answers
+  (`"the word was justice"`), plain wrong answers, blank answers, submissions
+  outside every window, an overlapping-window pair, an unknown email, an exact
+  duplicate, a DST-boundary submission, an unexpected extra column
 
 **`make demo-ai`** — same, with tier 2 live. Skips with a clear message if
 `GEMINI_API_KEY` is unset.
 
-**`make demo-web`** — starts the admin app against the fake Google client, seeded
-so the sessions list is populated. This is how the UI gets exercised without a
-Cloud project.
+**`make demo-console`** — starts the web app against demo data with the fake
+Google client, so every screen including provisioning and review can be clicked
+through without touching Google.
 
-**Inspecting results:** document that Supabase Studio at `http://localhost:54323`
-browses every table. Include copy-pasteable SQL: current decisions per fellow,
-everything needing review, AI decisions with reasoning, cache hit rate, sessions
-whose form settings are unverified.
+**Inspecting results:** document Supabase Studio at `http://localhost:54323`, plus
+copy-pasteable SQL for: current decisions per fellow, everything needing review,
+AI decisions with reasoning, cache hit rate, provisioning log.
 
 **`make test`** — pytest, **no network**.
 
@@ -572,114 +583,122 @@ whose form settings are unverified.
 
 ---
 
-## Deliverable 11 — Tests
+## Deliverable 10 — Tests
 
 Real assertions. Never commit real fellow data.
 
-**Form creation**
-1. Happy path — form created, settings set, `forms.get` confirms `VERIFIED`,
-   session marked `ready`
-2. **`batchUpdate` fails after `forms.create` succeeds** → session marked
-   `failed`, responder link withheld, error surfaced
-3. **Settings verification returns `RESPONDER_INPUT`** → treated as failure, not
-   success
-4. Idempotency — creating a form for a session that already has `google_form_id`
-   does not create a second form
-5. Duplicate passphrase within a cohort is rejected
-6. Overlapping session windows produce a warning at creation
+**Ingest and identity**
+1. Idempotency — same input twice, identical row count, all skipped on the second
+2. Cross-path idempotency — the same response ingested by API then CSV does not
+   duplicate
+3. Row reordering yields identical `source_event_id`s
+4. CSV timezone — `2026-09-15 13:05:00` in `America/New_York` → `2026-09-15T17:05:00Z`
+5. DST boundary — one row each side, both correct
+6. Missing `--sheet-timezone` errors clearly rather than defaulting
+7. Session assignment — matched / none / ambiguous, all three still write a row
+8. Unknown email → `identity_unresolved`, check-in still written
+9. Gmail dots preserved — `a.b@gmail.com` does not match `ab@gmail.com`
+10. Extra column preserved in `extra_fields`, parser does not crash
 
-**Ingest**
-7. Idempotency — same responses twice; identical row count, all skipped
-8. Updated response (same `responseId`, later `lastSubmittedTime`) does not create
-   a second row
-9. API timestamps parse as UTC with no conversion flag
-10. CSV path: missing `--sheet-timezone` errors clearly rather than defaulting
-11. CSV path: `2026-09-15 13:05:00` in `America/New_York` → `2026-09-15T17:05:00Z`
-12. CSV path: DST boundary, one row each side, both correct
-13. Session assignment — matched / none / ambiguous, all three still write a row
-14. Unknown email → `identity_unresolved`, check-in still written
-15. Gmail dots preserved — `a.b@gmail.com` does not match `ab@gmail.com`
-16. Pagination — a multi-page response list is fully consumed
+**Google traps**
+11. **Unpublished form is detected** — publish state read back as false raises,
+    and provisioning is not reported as successful
+12. **Publish is actually called** after every form creation
+13. **Template verification fails closed** — settings reading `RESPONDER_INPUT`
+    blocks provisioning entirely
+14. **`emailCollectionType` 400 is handled** — the failure does not leave a
+    half-provisioned form recorded as ready
+15. Pagination — a multi-page response list is fully consumed
+16. Watermark only advances after a complete successful pull; a mid-pull failure
+    leaves it unmoved
+17. Provisioning is idempotent — a second `provision` for the same session creates
+    no second form
 
 **Adjudication**
-17. All five passphrase outcomes
-18. Normalization — `"  Justice "`, `"JUSTICE"`, `"justice."` all → `exact`
-19. Decision versioning — override supersedes; exactly one current decision per
+18. Passphrase outcomes — all five
+19. Normalization — `"  Justice "`, `"JUSTICE"`, `"justice."` all → `exact`
+20. Latency — derived `T0`, explicit `announced_at`, NULL on no-session
+21. Decision versioning — overriding supersedes; exactly one current decision per
     check-in; the partial unique index actually enforces it
-20. Human wins — re-running `adjudicate` does not overwrite a human decision;
+22. Human wins — re-running `adjudicate` does not overwrite a human decision;
     `--force` does, and warns
-21. AI cache — a repeated string pair makes exactly one API call (fake
-    adjudicator, call counter)
-22. AI unavailable — no key → pipeline completes, cases land in `needs_review`
-23. **`needs_review` never becomes `not_attended`**
+23. AI cache — a repeated string pair makes exactly one API call
+24. AI unavailable — no key → pipeline completes, cases land in `needs_review`
+25. **`needs_review` never becomes `not_attended`**
 
-**Latency**
-24. Derived `T0`, explicit `announced_at`, NULL on no-session
+**Security**
+26. Refresh tokens are encrypted at rest — a raw DB read does not expose one
+27. No email, token, or API key appears in logs at INFO or above
 
-Tests must not hit the network. Inject fakes for both the Forms client and the
-Gemini client.
+Tests must not hit the network. Inject fakes for both the Google client and the
+Gemini adjudicator.
 
 ---
 
-## Deliverable 12 — Documentation
+## Deliverable 11 — Documentation
 
-- `docs/setup/google-cloud.md` — the one-time console steps a human must do:
-  create the project, enable the Forms API, configure the OAuth consent screen,
-  create credentials. Exact scope strings, in order. Be explicit that this part
-  cannot be automated.
-- `docs/setup/manual-form.md` — the hand-built fallback (1d)
+- `docs/setup/console.md` — running the console, connecting Google, the one-time
+  template step and why it exists
+- `docs/setup/google-cloud.md` — enabling the Forms and Drive APIs, creating the
+  OAuth client, the exact scopes and why each is needed
 - `docs/setup/local-dev.md` — Docker, Supabase CLI, Studio, make targets, SQL
   snippets
-- `docs/decisions.md` — ADRs for: form-over-Zoom-API, programmatic-over-manual
-  form creation, verify-settings-before-use, Forms-API-over-Sheets for responses,
-  user-owned-not-service-account forms, observation-separate-from-decision,
-  three-tier adjudication, Gemini-for-ambiguous-only. Each records the decision,
-  alternatives rejected, and why.
+- `docs/google-api-traps.md` — the four traps, what each breaks, how this codebase
+  handles each, with links. **Write this for the person who inherits the repo**;
+  they will hit these otherwise.
+- `docs/decisions.md` — ADRs for: form-over-Zoom-API, Verified-over-responder-
+  input, template-copy-over-API-settings, responses-API-over-linked-Sheet,
+  user-OAuth-over-service-account, timestamp-over-dropdown, never-drop-a-
+  submission, observation-separate-from-decision, three-tier adjudication.
+  Each records the decision, alternatives rejected, and why.
 - `README.md` — clone to working demo in under ten minutes
 
 ---
 
 ## Constraints
 
-- **Python 3.11+.** Dependencies: `fastapi`, `uvicorn`, `jinja2`,
-  `psycopg[binary]`, `google-api-python-client`, `google-auth-oauthlib`,
-  `google-genai`, `cryptography`, `python-dotenv`, `pytest`. Nothing else — CU has
-  no data manager, and each dependency is inherited maintenance.
+- **Python 3.11+.** Dependencies: `fastapi`, `uvicorn`, `jinja2`, `psycopg[binary]`,
+  `google-genai`, `google-auth`, `google-auth-oauthlib`, `google-api-python-client`,
+  `cryptography`, `python-dotenv`, `pytest`. Everything else stdlib. CU has no data
+  manager; each dependency is inherited maintenance.
 - **Supabase CLI** for the database. Docker required locally.
 - **No secrets committed.** `.env` gitignored, `.env.example` committed. Refresh
   tokens encrypted at rest.
 - **Never log an email at INFO or above.** Counts and `fellow_id`s at INFO; raw
-  addresses only at DEBUG. Never log a token or API key at any level.
+  addresses only at DEBUG. Never log an API key, OAuth token, or encryption key at
+  any level.
 - Type-hint public functions. Docstrings explain *why*, not *what*.
 
 ## Acceptance criteria
 
-1. `make setup && make demo` succeeds on a clean machine with **no Google
-   credentials and no `GEMINI_API_KEY`**, and prints an attendance report
-2. Re-running `make demo` produces identical output — no duplicate check-ins
+1. `make setup && make demo` succeeds on a clean machine with **no Google account
+   and no `GEMINI_API_KEY`**, and prints an attendance report
+2. Re-running `make demo` produces identical output — no duplicates
 3. Every fixture response appears in `checkin` regardless of passphrase or session
    outcome, asserted as `count(checkin) == count(fixture responses)`
-4. **A form whose `batchUpdate` fails is marked `failed` and its responder link is
-   never shown** — verified by test
-5. Exactly one current `attendance_decision` per check-in, enforced by the index
-6. A human override survives a subsequent `adjudicate` run
-7. `make demo-web` serves the admin app against the fake Google client
-8. `make demo-ai` with a key set routes only `mismatch` cases to Gemini, and a
-   second run makes zero API calls
+4. Exactly one current `attendance_decision` per check-in, enforced by the index
+5. A human override survives a subsequent `adjudicate` run
+6. `make demo-console` lets a person click through every screen, including
+   provisioning and review, with zero Google calls
+7. Provisioning against `FakeGoogleClient` **fails loudly** when the fake returns
+   an unpublished form or a non-Verified template — proving traps 1 and 2 are
+   handled rather than assumed
+8. `make demo-ai` with a key set routes only `mismatch` cases to Gemini; a second
+   run makes zero API calls
 9. `make test` passes with no network access
-10. `docs/setup/google-cloud.md` is complete enough for a non-technical staffer to
-    do the console setup unaided
+10. `docs/google-api-traps.md` exists and is accurate
 
 ## Out of scope
 
 - Part B (takeaway, confidence scale, muddiest point, application prompt, peer
   shoutout, help checkbox)
 - Slack or Zoom integration
-- Auto-posting the link to Zoom chat or Slack; reminder nudges
-- `forms.watches` / Pub/Sub push notifications — document, do not build
+- Auto-posting the form link to Zoom chat or Slack, scheduled triggers, reminder
+  nudges
 - Gamification, points, streaks, leaderboards
 - Participation scoring across components, or any at-risk flag
-- Charts or dashboards beyond the plain sessions list
-- Deploying to Supabase Cloud or hosting the web app publicly — local only
+- Dashboards beyond the review screen and the terminal report
+- Deploying to Supabase Cloud or hosting the console publicly — local only
+- Domain-wide delegation — user OAuth only
 
 Land these three fields end to end first.
