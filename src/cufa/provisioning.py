@@ -209,13 +209,12 @@ def provision_session(
     existing = get_session_form(conn, session_id)
 
     if dry_run:
-        template = None
-        try:
-            template = require_verified_template(conn, client)
-        finally:
-            pass
+        # A dry run still verifies the template, and still fails if it is not
+        # Verified. "What would happen" is "this would be blocked", and a dry
+        # run that reported a clean plan would be lying about the outcome.
+        template = require_verified_template(conn, client)
         planned = {
-            "template_form_id": template.form_id if template else None,
+            "template_form_id": template.form_id,
             "would_copy": existing is None,
             "would_publish": True,
             "would_verify_publish": True,

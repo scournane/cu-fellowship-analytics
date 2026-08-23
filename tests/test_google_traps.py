@@ -332,3 +332,18 @@ def test_dry_run_touches_nothing_on_google(db, fake, verified_template):
     )
     logged = fetch_all(db, "select outcome from provisioning_log where outcome = 'dry_run'")
     assert len(logged) == 1
+
+
+def test_dry_run_is_blocked_by_an_unverified_template_too(db, fake):
+    """A dry run reports what would happen — and what would happen is "blocked".
+
+    A dry run that printed a clean plan while the template was unverified would
+    be lying about the outcome, which is the one thing a dry run must not do.
+    """
+    create_template(db, fake)  # never taken through the manual Verified step
+    session_id = make_session(db)
+
+    with pytest.raises(TemplateNotVerified):
+        provision_session(db, fake, session_id, dry_run=True)
+
+    assert get_session_form(db, session_id) is None
