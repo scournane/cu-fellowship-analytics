@@ -105,12 +105,28 @@ def source_event_id(origin_key: str, email: str, submitted_at_utc: datetime) -> 
     return sha256_hex(origin_key, normalize_email(email), stamp.isoformat().replace("+00:00", "Z"))
 
 
-def origin_key_for_session(conn: psycopg.Connection, session_id: str | None, fallback: str) -> str:
-    """Prefer the form id, so both ingestion paths agree on the same key.
+def origin_key_for_session(
+    conn: psycopg.Connection, session_id: str | None, cohort_id: str
+) -> str:
+    """The first component of the idempotency key.
 
-    A CSV exported from a form we provisioned resolves to that form's id, which
-    is what the API path already used. Only a manually created form with no
-    ``session_form`` row falls back to the file identifier.
+    Prefer the **form id**: a CSV exported from a form this system provisioned
+    then hashes to the same key the API path already used, so re-importing
+    already-ingested responses collides instead of duplicating.
+
+    When there is no provisioned form — a manually created form, the case the
+    CSV path exists for — fall back to the **cohort**, deliberately not the file
+    name. The spec's shorthand for this component is "form_id_or_file", but
+    keying on the file name makes ``responses.csv`` and ``responses (1).csv``
+    two different sources for the same submissions, and downloading an export
+    twice is the single most likely way a duplicate import actually happens.
+
+    The trade this makes: two distinct manual forms in one cohort receiving a
+    submission from the same address in the same *second* would collide and one
+    would be dropped. That requires one person submitting two different forms
+    within one second, which does not happen — whereas a renamed re-export
+    happens routinely. The file name and its SHA-256 are still recorded on
+    ``load_run``, so provenance is not lost either way.
     """
     if session_id:
         row = fetch_one(
@@ -118,7 +134,7 @@ def origin_key_for_session(conn: psycopg.Connection, session_id: str | None, fal
         )
         if row and row["form_id"]:
             return str(row["form_id"])
-    return fallback
+    return f"cohort:{cohort_id}"
 
 
 def assign_session(

@@ -405,16 +405,26 @@ class _Canvas:
         return score
 
     def _penalty_finder_lookalikes(self) -> int:
-        patterns = (
-            [True, False, True, True, True, False, True, False, False, False, False],
-            [False, False, False, False, True, False, True, True, True, False, True],
-        )
+        """The 1:1:3:1:1 pattern with four light modules on one side of it.
+
+        A run that looks like a finder pattern misleads a scanner about where
+        the symbol is. The edge of the symbol counts as the light area, since
+        the quiet zone supplies it.
+        """
+        pattern = [True, False, True, True, True, False, True]
         score = 0
         for line in self._rows_and_columns():
-            for start in range(len(line) - 10):
-                window = line[start : start + 11]
-                if window in patterns:
+            index = _find(line, pattern, 0)
+            while index != -1:
+                after = index + 7
+                if not any(line[max(index - 4, 0) : index]) or not any(line[after : after + 4]):
                     score += 40
+                    resume = after
+                else:
+                    # Overlapping matches can only restart at the second dark
+                    # run, so skipping ahead is safe and avoids double counting.
+                    resume = index + 4
+                index = _find(line, pattern, resume)
         return score
 
     def _penalty_balance(self) -> int:
@@ -431,6 +441,15 @@ class _Canvas:
 
 def _bit(value: int, index: int) -> bool:
     return (value >> index) & 1 == 1
+
+
+def _find(line: list[bool], pattern: list[bool], start: int) -> int:
+    """Index of ``pattern`` in ``line`` at or after ``start``, or -1."""
+    span = len(pattern)
+    for index in range(start, len(line) - span + 1):
+        if line[index : index + span] == pattern:
+            return index
+    return -1
 
 
 def _mask_condition(mask: int, row: int, col: int) -> bool:

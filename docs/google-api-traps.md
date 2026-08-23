@@ -113,7 +113,7 @@ respondent's address instead of the respondent typing one. Setting it through
 `forms.batchUpdate` → `updateSettings` → `emailCollectionType` has been reported
 returning:
 
-```
+```text
 400 INVALID_ARGUMENT
 Invalid value at 'requests[0].update_settings.settings.email_collection_type'
 (type.googleapis.com/google.apps.forms.v1.FormSettings.EmailCollectionType)
@@ -264,11 +264,13 @@ and the zone applied are both stored (`checkin.submitted_at_raw`,
 
 Both paths produce the same idempotency key. `source_event_id` is
 SHA-256 of `(origin_key, normalized_email, submitted_at_utc truncated to the second)`,
-where `origin_key_for_session()` resolves a CSV back to the form's own `form_id` when
-one exists. So a CSV re-import of API-ingested data collides instead of duplicating.
-It is deliberately **not** the row number (re-export with rows reordered would
-duplicate everything) and **not** the Forms `responseId` alone (which exists only on
-one of the two paths).
+where `origin_key_for_session()` resolves a CSV row back to the form's own `form_id`
+when one exists, and falls back to `cohort:<id>` when it does not. So a CSV re-import of
+API-ingested data collides instead of duplicating, and so does a re-download of the same
+export saved as `responses (1).csv`. The key is deliberately **not** the row number
+(re-export with rows reordered would duplicate everything), **not** the Forms
+`responseId` alone (it exists on only one of the two paths), and **not** the file name
+(a renamed re-export is the likeliest way a duplicate import actually happens).
 
 ### How to verify the handling still works
 
@@ -340,7 +342,9 @@ store it). No other scope is requested.
 or that a user explicitly opened with it. This app creates the template through its own
 credentials, so the template is app-created and stays in scope — and every session form
 is a copy the app makes, so each copy is app-created too. The entire object graph this
-system touches is inside `drive.file` by construction.
+system touches is inside `drive.file` by construction. It is also what authorizes reading
+responses: `forms.responses.list` accepts `drive`, `drive.file` or
+`forms.responses.readonly`, and the narrowest of those that works is the one requested.
 
 **Why not broader Drive scope.** `drive` or `drive.readonly` would hand this tool read
 access to a CU staff member's whole Drive to do a job that never needs to see anything
@@ -437,6 +441,7 @@ the fake is reachable *only* by code that handles the traps:
 | `seed_responses(form_id, rows)` | Load `(email, rfc3339, passphrase)` triples (or dicts with extra answers), kept oldest-first the way the API returns them. |
 | `calls(action)` | Every recorded call of one kind — for assertions like "publish was called after every create". |
 | `demo_client()` | A fake already walked through create-template plus the human's Verified step, so the demo starts where a real CU install starts on day two. |
+| `save()` / `restore(path)` | Persist the fake's forms and responses to a JSON file (`CUFA_FAKE_GOOGLE_STATE`, default `fixtures/fake_google_state.json`), so `make demo` and `make demo-console` share one fake across separate `cufa` processes. |
 
 ### The shape of each test
 

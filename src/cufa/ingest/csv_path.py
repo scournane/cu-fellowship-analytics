@@ -194,7 +194,7 @@ def ingest_csv(
                     str(s["session_id"]) for s in assignment.candidates
                 ]
 
-            origin_key = origin_key_for_session(conn, result_session_id, file_path.name)
+            origin_key = origin_key_for_session(conn, result_session_id, cohort_id)
 
             written = write_checkin(
                 conn,
