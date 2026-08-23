@@ -324,7 +324,9 @@ when the teacher pressed "Announce now", otherwise the earliest submission match
 that session; NULL when no session matched.
 
 **Rejected.** A suspicion threshold; a percentile flag; excluding late submissions from
-attendance.
+attendance; clamping negative values to zero. The clamp looks like tidying and is
+actually interpretation — a submission that predates the announcement stamp (the teacher
+pressed the button late) is a real observation, and a clamped one is invisible.
 
 **Why.** A threshold would be a policy CU has not written, encoded by whoever happened
 to implement this, and applied to young people. It is an input to an analysis that does
