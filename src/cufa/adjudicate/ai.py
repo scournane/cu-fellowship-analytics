@@ -42,6 +42,10 @@ log = get_logger(__name__)
 # verdicts that were produced by different instructions.
 PROMPT_VERSION = "v1"
 
+# Passed through ``types.Schema`` at call time rather than handed to the API as
+# a raw dict: the SDK validates and normalizes it there (``"object"`` becomes
+# ``Type.OBJECT``), so a malformed schema fails locally with a readable error
+# instead of coming back as an opaque 400 mid-run.
 RESPONSE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -178,7 +182,7 @@ class GeminiAdjudicator:
             # or the cache would be lying about what a fresh call would return.
             temperature=0,
             response_mime_type="application/json",
-            response_schema=RESPONSE_SCHEMA,
+            response_schema=types.Schema(**RESPONSE_SCHEMA),
         )
 
         last_error: Exception | None = None

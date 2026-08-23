@@ -450,3 +450,30 @@ def test_checkin_observations_are_immutable(db, tmp_path):
     # The one derived column is allowed to be recomputed.
     execute(db, "update checkin set latency_seconds = 42 where checkin_id = %s", (checkin_id,))
     assert fetch_one(db, "select latency_seconds from checkin")["latency_seconds"] == 42
+
+
+def test_gemini_response_schema_is_valid_for_the_sdk():
+    """Catch a malformed schema here rather than as a 400 during a live run.
+
+    This does not call Gemini — it only asks the SDK to validate the schema and
+    the generation config, which is exactly the part that would otherwise fail
+    opaquely and only when a key is present.
+    """
+    from google.genai import types
+
+    from cufa.adjudicate.ai import PROMPT_TEMPLATE, RESPONSE_SCHEMA
+
+    schema = types.Schema(**RESPONSE_SCHEMA)
+    assert schema.type == types.Type.OBJECT
+    assert set(schema.required) == {"heard_the_passphrase", "confidence", "reasoning"}
+
+    config = types.GenerateContentConfig(
+        temperature=0, response_mime_type="application/json", response_schema=schema
+    )
+    assert config.temperature == 0, "tier 2 must be reproducible"
+
+    # The prompt carries both strings and nothing else about the person.
+    rendered = PROMPT_TEMPLATE.format(expected="justice", submitted="the word was justice")
+    assert "justice" in rendered
+    for leak in ("@", "fellow_id", "cohort", "CU-"):
+        assert leak not in rendered, f"tier 2 prompt must not carry {leak!r}"
