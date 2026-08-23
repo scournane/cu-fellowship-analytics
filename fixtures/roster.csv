@@ -1,0 +1,15 @@
+fellow_id,display_name,cohort,joined_on,status,zoom_email,slack_user_id,sheets_email
+cif26-001,Amara Osei,2026-27,2026-09-07,active,amara.osei@example.org,U2600,amara.osei@example.org
+cif26-002,Ben Ortiz,2026-27,2026-09-07,active,ben.ortiz@example.org,U2601,ben.ortiz@example.org
+cif26-003,Chidi Nwosu,2026-27,2026-09-07,active,chidi.nwosu@example.org,U2602,chidi.nwosu@example.org
+cif26-004,Dana Reyes,2026-27,2026-09-07,active,dana.reyes@example.org,U2603,dana.reyes@example.org
+cif26-005,Eli Kaufman,2026-27,2026-09-07,active,eli.kaufman@example.org,U2604,eli.kaufman@example.org
+cif26-006,Farah Haddad,2026-27,2026-09-07,active,farah.haddad@example.org,U2605,farah.haddad@example.org
+cif26-007,Grace Lin,2026-27,2026-09-07,active,grace.lin@example.org,U2606,grace.lin@example.org
+cif26-008,Hugo Marchetti,2026-27,2026-09-07,active,hugo.marchetti@example.org,U2607,hugo.marchetti@example.org
+cif26-009,Imani Brooks,2026-27,2026-09-07,active,imani.brooks@example.org,U2608,imani.brooks@example.org
+cif26-010,Jonas Petrov,2026-27,2026-09-07,active,jonas.petrov@example.org,U2609,jonas.petrov@example.org
+cif26-011,Keiko Tanaka,2026-27,2026-09-07,active,keiko.tanaka@example.org,U2610,keiko.tanaka@example.org
+cif26-012,Luis Salazar,2026-27,2026-09-14,active,luis.salazar@example.org,U2611,luis.salazar@example.org
+cif26-013,Maya Rahman,2026-27,2026-09-07,active,maya.rahman@example.org,U2612,maya.rahman@example.org
+cif26-014,Noor Abadi,2026-27,2026-09-14,active,noor.abadi@example.org,U2613,noor.abadi@example.org

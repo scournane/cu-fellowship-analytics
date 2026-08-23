@@ -1,0 +1,73 @@
+[
+ {
+  "type": "message",
+  "user": "U2606",
+  "ts": "1788780480.000000",
+  "text": "Anyone free to review?",
+  "reactions": [
+   {
+    "name": "tada",
+    "users": [
+     "U2613"
+    ],
+    "count": 1
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2606",
+  "ts": "1788788400.000000",
+  "text": "This helped a lot, thanks",
+  "reactions": [
+   {
+    "name": "raised_hands",
+    "users": [
+     "U2601"
+    ],
+    "count": 1
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2608",
+  "ts": "1788796020.000000",
+  "text": "Just pushed my update"
+ },
+ {
+  "type": "message",
+  "user": "U2603",
+  "ts": "1788799620.000000",
+  "text": "Question about the rubric",
+  "reactions": [
+   {
+    "name": "tada",
+    "users": [
+     "U2604",
+     "U2611",
+     "U2613"
+    ],
+    "count": 3
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2604",
+  "ts": "1788805020.000000",
+  "text": "Just pushed my update"
+ },
+ {
+  "type": "message",
+  "user": "U2607",
+  "ts": "1788815220.000000",
+  "text": "Great point earlier"
+ },
+ {
+  "type": "message",
+  "user": "U2606",
+  "ts": "1788815280.000000",
+  "text": "Sharing my draft here"
+ }
+]

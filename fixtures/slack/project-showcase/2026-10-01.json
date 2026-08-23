@@ -1,0 +1,47 @@
+[
+ {
+  "type": "message",
+  "user": "U2604",
+  "ts": "1790866020.000000",
+  "text": "Following up on the session"
+ },
+ {
+  "type": "message",
+  "user": "U2606",
+  "ts": "1790875080.000000",
+  "text": "This helped a lot, thanks",
+  "reactions": [
+   {
+    "name": "raised_hands",
+    "users": [
+     "U2609",
+     "U2600",
+     "U2613"
+    ],
+    "count": 3
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2604",
+  "ts": "1790886780.000000",
+  "text": "Question about the rubric",
+  "reactions": [
+   {
+    "name": "tada",
+    "users": [
+     "U2600",
+     "U2611"
+    ],
+    "count": 2
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2606",
+  "ts": "1790890080.000000",
+  "text": "Great point earlier"
+ }
+]

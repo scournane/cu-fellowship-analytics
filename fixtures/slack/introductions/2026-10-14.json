@@ -1,0 +1,30 @@
+[
+ {
+  "type": "message",
+  "user": "U2608",
+  "ts": "1791974340.000000",
+  "text": "Anyone free to review?"
+ },
+ {
+  "type": "message",
+  "user": "U2606",
+  "ts": "1791978240.000000",
+  "text": "This helped a lot, thanks"
+ },
+ {
+  "type": "message",
+  "user": "U2604",
+  "ts": "1791996780.000000",
+  "text": "Great point earlier",
+  "reactions": [
+   {
+    "name": "raised_hands",
+    "users": [
+     "U2601",
+     "U2608"
+    ],
+    "count": 2
+   }
+  ]
+ }
+]

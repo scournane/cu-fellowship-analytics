@@ -1,0 +1,35 @@
+[
+ {
+  "type": "message",
+  "user": "U2601",
+  "ts": "1789639500.000000",
+  "text": "This helped a lot, thanks",
+  "reactions": [
+   {
+    "name": "eyes",
+    "users": [
+     "U2610"
+    ],
+    "count": 1
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2612",
+  "ts": "1789650900.000000",
+  "text": "Posting my milestone"
+ },
+ {
+  "type": "message",
+  "user": "U2605",
+  "ts": "1789658400.000000",
+  "text": "Great point earlier"
+ },
+ {
+  "type": "message",
+  "user": "U2612",
+  "ts": "1789680600.000000",
+  "text": "Anyone free to review?"
+ }
+]

@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+out/*.html
+out/*.db
+*.db
+.DS_Store
+secrets/
+.env

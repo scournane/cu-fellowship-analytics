@@ -1,0 +1,69 @@
+[
+ {
+  "type": "message",
+  "user": "U2606",
+  "ts": "1789040280.000000",
+  "text": "Posting my milestone",
+  "reactions": [
+   {
+    "name": "raised_hands",
+    "users": [
+     "U2613",
+     "U2602",
+     "U2610"
+    ],
+    "count": 3
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2602",
+  "ts": "1789047060.000000",
+  "text": "Anyone free to review?",
+  "reactions": [
+   {
+    "name": "tada",
+    "users": [
+     "U2606"
+    ],
+    "count": 1
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2607",
+  "ts": "1789060800.000000",
+  "text": "Question about the rubric",
+  "reactions": [
+   {
+    "name": "tada",
+    "users": [
+     "U2613",
+     "U2604",
+     "U2611"
+    ],
+    "count": 3
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2603",
+  "ts": "1789060860.000000",
+  "text": "Following up on the session"
+ },
+ {
+  "type": "message",
+  "user": "U2606",
+  "ts": "1789062540.000000",
+  "text": "Posting my milestone"
+ },
+ {
+  "type": "message",
+  "user": "U2610",
+  "ts": "1789064040.000000",
+  "text": "Anyone free to review?"
+ }
+]

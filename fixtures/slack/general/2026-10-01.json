@@ -1,0 +1,60 @@
+[
+ {
+  "type": "message",
+  "user": "U2608",
+  "ts": "1790857920.000000",
+  "text": "Anyone free to review?"
+ },
+ {
+  "type": "message",
+  "user": "U2606",
+  "ts": "1790869140.000000",
+  "text": "Great point earlier"
+ },
+ {
+  "type": "message",
+  "user": "U2608",
+  "ts": "1790871780.000000",
+  "text": "Following up on the session"
+ },
+ {
+  "type": "message",
+  "user": "U2605",
+  "ts": "1790871900.000000",
+  "text": "Following up on the session"
+ },
+ {
+  "type": "message",
+  "user": "U2605",
+  "ts": "1790882220.000000",
+  "text": "Sharing my draft here",
+  "reactions": [
+   {
+    "name": "tada",
+    "users": [
+     "U2602",
+     "U2607",
+     "U2611"
+    ],
+    "count": 3
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2608",
+  "ts": "1790885700.000000",
+  "text": "This helped a lot, thanks",
+  "reactions": [
+   {
+    "name": "raised_hands",
+    "users": [
+     "U2606",
+     "U2610",
+     "U2605"
+    ],
+    "count": 3
+   }
+  ]
+ }
+]

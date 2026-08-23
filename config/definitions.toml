@@ -1,0 +1,160 @@
+# ---------------------------------------------------------------------------
+# Operational definitions for the Civic Innovators Fellowship analytics tool.
+#
+# This file is the single source of truth for what every term means.
+# No definition is hardcoded anywhere in src/. If it is not written here,
+# it is not policy.
+#
+# Each term carries a status:
+#   status = "confirmed" -> a named person decided it on a named date.
+#                           The pipeline may compute metrics that depend on it.
+#   status = "undefined" -> nobody has decided it yet.
+#                           The pipeline WITHHOLDS every metric that depends on
+#                           it and reports who needs to make the call.
+#
+# The point of the second case: an assumed threshold becomes the de facto
+# standard the moment it ships. Withholding keeps the decision with the person
+# who owns it.
+# ---------------------------------------------------------------------------
+
+[meta]
+program        = "Civic Innovators Fellowship"
+cohort_label   = "2026-27"
+config_version = 1
+timezone       = "America/New_York"   # program-local time; storage is always UTC
+
+# =============================== CONFIRMED =================================
+
+[terms.participation]
+status      = "confirmed"
+owner       = "Adiah Price-Tucker, Director of Programs"
+decided_on  = "2026-08-10"
+source      = "email thread 2026-08-10"
+definition  = """
+Participation is composed of three observable behaviours:
+  1. Attendance at live lessons on Zoom
+  2. Slack activity (sending messages, reacting to messages)
+  3. Submitting assignments
+Marked open for further refinement by the owner.
+"""
+
+[terms.cohort]
+status      = "confirmed"
+owner       = "Adiah Price-Tucker, Director of Programs"
+decided_on  = "2026-08-10"
+source      = "email thread 2026-08-10"
+definition  = """
+A cohort is strictly those who are accepted to the CIF and are members of the
+CIF Slack workspace. Membership in the Slack workspace is the operative test.
+"""
+
+[terms.data_access]
+status      = "confirmed"
+owner       = "Adiah Price-Tucker, Director of Programs"
+decided_on  = "2026-08-10"
+source      = "email thread 2026-08-10"
+definition  = """
+The Director of Programs owns Fellow data. The platform and the Fellow data in
+it are accessible to every full-time member of the CU team. There is no
+dedicated data manager role.
+"""
+
+[terms.downstream_use]
+status      = "confirmed"
+owner       = "Adiah Price-Tucker, Director of Programs"
+decided_on  = "2026-08-10"
+source      = "email thread 2026-08-10"
+definition  = """
+Output may be used in decisions about Fellows (e.g. first access to
+opportunities for highly participative Fellows). Output may be shared with
+Fellows in future. For now the system assumes it is NOT shared with Fellows,
+and is built so that a Fellow-facing view can be switched on later without
+rework.
+"""
+
+[terms.data_sources]
+status      = "confirmed"
+owner       = "Adiah Price-Tucker, Director of Programs"
+decided_on  = "2026-08-10"
+source      = "email thread 2026-08-10"
+definition  = "Zoom, Slack, Google Sheets, and HubSpot (if necessary)."
+
+# =============================== UNDEFINED =================================
+# Each of these blocks names the decision, the metrics it gates, and the role
+# that would have to decide. `blocks` refers to metric ids in src/cufa/metrics.py.
+
+[terms.performance]
+status         = "undefined"
+blocks         = ["performance_index", "cohort_performance_trend"]
+needed_from    = "Director of Programs"
+question       = """
+Participation is defined. Performance is named separately in the scope of work
+but has not been defined. Is performance distinct from participation, and if so
+what observable evidence constitutes it -- assignment quality, project
+milestones, peer or staff assessment?
+"""
+
+[terms.falling_behind]
+status         = "undefined"
+blocks         = ["at_risk_flag", "intervention_queue"]
+needed_from    = "Director of Programs"
+question       = """
+What threshold constitutes falling behind, over what window, and measured
+against what baseline (cohort median, a fixed bar, a Fellow's own prior weeks)?
+Deliberately not assumed: the first threshold that ships becomes the standard.
+"""
+note           = """
+Also gated on the responder role below. A flag with no assigned responder
+produces a list of labelled people and no support.
+"""
+
+[terms.fellow_support_responder]
+status         = "undefined"
+blocks         = ["intervention_queue"]
+needed_from    = "Director of Programs"
+question       = """
+Who receives an at-risk signal and acts on it?
+Confirmed 2026-08-10: the role does not currently exist, and is expected to be
+created as the team expands. Until it exists, intervention features stay off.
+"""
+
+[terms.retention]
+status         = "undefined"
+blocks         = ["retention_enforcement"]
+needed_from    = "Director of Programs (no dedicated data manager exists)"
+question       = """
+How long is per-Fellow behavioural data retained, and what happens at expiry --
+deletion, or aggregation into cohort-level counts for year-over-year comparison?
+Year-over-year comparison is in scope, so some aggregate must outlive the raw
+record.
+"""
+
+[terms.correction_process]
+status         = "undefined"
+blocks         = ["correction_log"]
+needed_from    = "Director of Programs"
+question       = """
+If a Fellow's record is wrong (missed Zoom check-in, assignment submitted
+elsewhere), who can correct it, through what route, and is the correction
+audited?
+"""
+
+# ============================ SCORING WEIGHTS ==============================
+# Weights are a presentation choice, not a definition of merit. They control
+# how the three confirmed participation components combine into one number.
+# Changing them changes the ranking, so they live here in the open.
+
+[participation.weights]
+live_lesson_attended  = 3.0
+assignment_submitted  = 3.0
+slack_message         = 1.0
+slack_reaction        = 0.25
+
+# Per-week ceilings stop a single noisy channel from dominating the score.
+[participation.caps]
+slack_message         = 10.0
+slack_reaction        = 4.0
+
+# A week is counted for a Fellow only from the week they joined the cohort.
+[participation.window]
+week_start_day = "monday"

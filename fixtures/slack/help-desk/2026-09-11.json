@@ -1,0 +1,36 @@
+[
+ {
+  "type": "message",
+  "user": "U2608",
+  "ts": "1789127640.000000",
+  "text": "Just pushed my update"
+ },
+ {
+  "type": "message",
+  "user": "U2608",
+  "ts": "1789148160.000000",
+  "text": "Following up on the session"
+ },
+ {
+  "type": "message",
+  "user": "U2607",
+  "ts": "1789151160.000000",
+  "text": "Question about the rubric"
+ },
+ {
+  "type": "message",
+  "user": "U2607",
+  "ts": "1789152480.000000",
+  "text": "Posting my milestone",
+  "reactions": [
+   {
+    "name": "eyes",
+    "users": [
+     "U2613",
+     "U2603"
+    ],
+    "count": 2
+   }
+  ]
+ }
+]

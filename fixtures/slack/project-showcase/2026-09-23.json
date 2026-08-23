@@ -1,0 +1,37 @@
+[
+ {
+  "type": "message",
+  "user": "U2600",
+  "ts": "1790155800.000000",
+  "text": "Question about the rubric"
+ },
+ {
+  "type": "message",
+  "user": "U2603",
+  "ts": "1790170560.000000",
+  "text": "Question about the rubric"
+ },
+ {
+  "type": "message",
+  "user": "U2608",
+  "ts": "1790185320.000000",
+  "text": "Question about the rubric",
+  "reactions": [
+   {
+    "name": "eyes",
+    "users": [
+     "U2600",
+     "U2603",
+     "U2602"
+    ],
+    "count": 3
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2602",
+  "ts": "1790186340.000000",
+  "text": "Sharing my draft here"
+ }
+]

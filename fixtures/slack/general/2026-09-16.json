@@ -1,0 +1,31 @@
+[
+ {
+  "type": "message",
+  "user": "U2608",
+  "ts": "1789556640.000000",
+  "text": "Just pushed my update"
+ },
+ {
+  "type": "message",
+  "user": "U2600",
+  "ts": "1789558080.000000",
+  "text": "Just pushed my update"
+ },
+ {
+  "type": "message",
+  "user": "U2605",
+  "ts": "1789584780.000000",
+  "text": "Great point earlier",
+  "reactions": [
+   {
+    "name": "raised_hands",
+    "users": [
+     "U2604",
+     "U2612",
+     "U2603"
+    ],
+    "count": 3
+   }
+  ]
+ }
+]

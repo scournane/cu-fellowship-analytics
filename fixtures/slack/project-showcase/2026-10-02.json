@@ -1,0 +1,34 @@
+[
+ {
+  "type": "message",
+  "user": "U2608",
+  "ts": "1790948580.000000",
+  "text": "Posting my milestone",
+  "reactions": [
+   {
+    "name": "raised_hands",
+    "users": [
+     "U2610",
+     "U2613"
+    ],
+    "count": 2
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2603",
+  "ts": "1790961720.000000",
+  "text": "Following up on the session",
+  "reactions": [
+   {
+    "name": "raised_hands",
+    "users": [
+     "U2613",
+     "U2604"
+    ],
+    "count": 2
+   }
+  ]
+ }
+]

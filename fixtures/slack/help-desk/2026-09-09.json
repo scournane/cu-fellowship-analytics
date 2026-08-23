@@ -1,0 +1,30 @@
+[
+ {
+  "type": "message",
+  "user": "U2608",
+  "ts": "1788955920.000000",
+  "text": "This helped a lot, thanks"
+ },
+ {
+  "type": "message",
+  "user": "U2601",
+  "ts": "1788961140.000000",
+  "text": "Question about the rubric"
+ },
+ {
+  "type": "message",
+  "user": "U2605",
+  "ts": "1788984180.000000",
+  "text": "Posting my milestone",
+  "reactions": [
+   {
+    "name": "tada",
+    "users": [
+     "U2603",
+     "U2612"
+    ],
+    "count": 2
+   }
+  ]
+ }
+]

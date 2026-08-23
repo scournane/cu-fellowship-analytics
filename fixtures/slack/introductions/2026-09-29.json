@@ -1,0 +1,56 @@
+[
+ {
+  "type": "message",
+  "user": "U2605",
+  "ts": "1790674440.000000",
+  "text": "This helped a lot, thanks",
+  "reactions": [
+   {
+    "name": "eyes",
+    "users": [
+     "U2611",
+     "U2601",
+     "U2612"
+    ],
+    "count": 3
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2607",
+  "ts": "1790683740.000000",
+  "text": "Anyone free to review?"
+ },
+ {
+  "type": "message",
+  "user": "U2608",
+  "ts": "1790714700.000000",
+  "text": "Just pushed my update",
+  "reactions": [
+   {
+    "name": "tada",
+    "users": [
+     "U2612"
+    ],
+    "count": 1
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2606",
+  "ts": "1790718960.000000",
+  "text": "Following up on the session",
+  "reactions": [
+   {
+    "name": "raised_hands",
+    "users": [
+     "U2607",
+     "U2605"
+    ],
+    "count": 2
+   }
+  ]
+ }
+]

@@ -1,0 +1,24 @@
+[
+ {
+  "type": "message",
+  "user": "U2601",
+  "ts": "1788875760.000000",
+  "text": "Question about the rubric",
+  "reactions": [
+   {
+    "name": "raised_hands",
+    "users": [
+     "U2610",
+     "U2611"
+    ],
+    "count": 2
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2608",
+  "ts": "1788882480.000000",
+  "text": "This helped a lot, thanks"
+ }
+]

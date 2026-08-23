@@ -1,0 +1,44 @@
+[
+ {
+  "type": "message",
+  "user": "U2609",
+  "ts": "1788775560.000000",
+  "text": "Posting my milestone"
+ },
+ {
+  "type": "message",
+  "user": "U2605",
+  "ts": "1788785580.000000",
+  "text": "This helped a lot, thanks",
+  "reactions": [
+   {
+    "name": "eyes",
+    "users": [
+     "U2609"
+    ],
+    "count": 1
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2608",
+  "ts": "1788785700.000000",
+  "text": "Sharing my draft here",
+  "reactions": [
+   {
+    "name": "raised_hands",
+    "users": [
+     "U2612"
+    ],
+    "count": 1
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2607",
+  "ts": "1788791820.000000",
+  "text": "Great point earlier"
+ }
+]

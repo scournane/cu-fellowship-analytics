@@ -1,0 +1,24 @@
+[
+ {
+  "type": "message",
+  "user": "U2607",
+  "ts": "1789999080.000000",
+  "text": "This helped a lot, thanks",
+  "reactions": [
+   {
+    "name": "tada",
+    "users": [
+     "U2602",
+     "U2610"
+    ],
+    "count": 2
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2604",
+  "ts": "1790009940.000000",
+  "text": "Sharing my draft here"
+ }
+]

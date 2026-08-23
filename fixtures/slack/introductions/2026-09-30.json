@@ -1,0 +1,45 @@
+[
+ {
+  "type": "message",
+  "user": "U2600",
+  "ts": "1790762100.000000",
+  "text": "Following up on the session"
+ },
+ {
+  "type": "message",
+  "user": "U2601",
+  "ts": "1790777160.000000",
+  "text": "Question about the rubric"
+ },
+ {
+  "type": "message",
+  "user": "U2603",
+  "ts": "1790790240.000000",
+  "text": "Following up on the session",
+  "reactions": [
+   {
+    "name": "eyes",
+    "users": [
+     "U2609",
+     "U2607"
+    ],
+    "count": 2
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2608",
+  "ts": "1790792820.000000",
+  "text": "Sharing my draft here",
+  "reactions": [
+   {
+    "name": "eyes",
+    "users": [
+     "U2611"
+    ],
+    "count": 1
+   }
+  ]
+ }
+]

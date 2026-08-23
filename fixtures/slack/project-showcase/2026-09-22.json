@@ -1,0 +1,30 @@
+[
+ {
+  "type": "message",
+  "user": "U2600",
+  "ts": "1790090160.000000",
+  "text": "This helped a lot, thanks"
+ },
+ {
+  "type": "message",
+  "user": "U2601",
+  "ts": "1790091120.000000",
+  "text": "This helped a lot, thanks",
+  "reactions": [
+   {
+    "name": "raised_hands",
+    "users": [
+     "U2607",
+     "U2606"
+    ],
+    "count": 2
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2600",
+  "ts": "1790104080.000000",
+  "text": "Just pushed my update"
+ }
+]

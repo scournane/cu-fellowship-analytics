@@ -1,0 +1,42 @@
+[
+ {
+  "type": "message",
+  "user": "U2602",
+  "ts": "1791288540.000000",
+  "text": "Posting my milestone"
+ },
+ {
+  "type": "message",
+  "user": "U2605",
+  "ts": "1791304200.000000",
+  "text": "Sharing my draft here",
+  "reactions": [
+   {
+    "name": "eyes",
+    "users": [
+     "U2612",
+     "U2609"
+    ],
+    "count": 2
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2606",
+  "ts": "1791306060.000000",
+  "text": "Anyone free to review?"
+ },
+ {
+  "type": "message",
+  "user": "U2605",
+  "ts": "1791320520.000000",
+  "text": "Anyone free to review?"
+ },
+ {
+  "type": "message",
+  "user": "U2606",
+  "ts": "1791323520.000000",
+  "text": "Posting my milestone"
+ }
+]

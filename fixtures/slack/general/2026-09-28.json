@@ -1,0 +1,43 @@
+[
+ {
+  "type": "message",
+  "user": "U2605",
+  "ts": "1790588520.000000",
+  "text": "Following up on the session"
+ },
+ {
+  "type": "message",
+  "user": "U2608",
+  "ts": "1790597640.000000",
+  "text": "Sharing my draft here"
+ },
+ {
+  "type": "message",
+  "user": "U2606",
+  "ts": "1790598540.000000",
+  "text": "Question about the rubric",
+  "reactions": [
+   {
+    "name": "raised_hands",
+    "users": [
+     "U2603",
+     "U2601",
+     "U2613"
+    ],
+    "count": 3
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2603",
+  "ts": "1790617140.000000",
+  "text": "Anyone free to review?"
+ },
+ {
+  "type": "message",
+  "user": "U2605",
+  "ts": "1790617680.000000",
+  "text": "Anyone free to review?"
+ }
+]

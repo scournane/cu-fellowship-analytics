@@ -1,0 +1,36 @@
+[
+ {
+  "type": "message",
+  "user": "U2608",
+  "ts": "1791455220.000000",
+  "text": "Sharing my draft here"
+ },
+ {
+  "type": "message",
+  "user": "U2605",
+  "ts": "1791489720.000000",
+  "text": "Following up on the session"
+ },
+ {
+  "type": "message",
+  "user": "U2602",
+  "ts": "1791490680.000000",
+  "text": "Question about the rubric",
+  "reactions": [
+   {
+    "name": "raised_hands",
+    "users": [
+     "U2600",
+     "U2604"
+    ],
+    "count": 2
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2604",
+  "ts": "1791496080.000000",
+  "text": "This helped a lot, thanks"
+ }
+]

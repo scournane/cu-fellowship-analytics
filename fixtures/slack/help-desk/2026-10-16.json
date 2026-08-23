@@ -1,0 +1,37 @@
+[
+ {
+  "type": "message",
+  "user": "U2605",
+  "ts": "1792158720.000000",
+  "text": "Posting my milestone"
+ },
+ {
+  "type": "message",
+  "user": "U2605",
+  "ts": "1792165980.000000",
+  "text": "Posting my milestone",
+  "reactions": [
+   {
+    "name": "eyes",
+    "users": [
+     "U2604",
+     "U2600",
+     "U2606"
+    ],
+    "count": 3
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2605",
+  "ts": "1792170240.000000",
+  "text": "Posting my milestone"
+ },
+ {
+  "type": "message",
+  "user": "U2610",
+  "ts": "1792184400.000000",
+  "text": "This helped a lot, thanks"
+ }
+]

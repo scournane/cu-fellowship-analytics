@@ -1,0 +1,72 @@
+[
+ {
+  "type": "message",
+  "user": "U2608",
+  "ts": "1790679300.000000",
+  "text": "Following up on the session"
+ },
+ {
+  "type": "message",
+  "user": "U2604",
+  "ts": "1790679540.000000",
+  "text": "Posting my milestone",
+  "reactions": [
+   {
+    "name": "eyes",
+    "users": [
+     "U2611",
+     "U2607"
+    ],
+    "count": 2
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2608",
+  "ts": "1790683980.000000",
+  "text": "Posting my milestone",
+  "reactions": [
+   {
+    "name": "raised_hands",
+    "users": [
+     "U2612"
+    ],
+    "count": 1
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2608",
+  "ts": "1790700480.000000",
+  "text": "This helped a lot, thanks",
+  "reactions": [
+   {
+    "name": "eyes",
+    "users": [
+     "U2607"
+    ],
+    "count": 1
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2600",
+  "ts": "1790703900.000000",
+  "text": "Following up on the session"
+ },
+ {
+  "type": "message",
+  "user": "U2606",
+  "ts": "1790712600.000000",
+  "text": "Following up on the session"
+ },
+ {
+  "type": "message",
+  "user": "U2605",
+  "ts": "1790716980.000000",
+  "text": "This helped a lot, thanks"
+ }
+]

@@ -1,0 +1,51 @@
+[
+ {
+  "type": "message",
+  "user": "U2608",
+  "ts": "1790250780.000000",
+  "text": "Following up on the session",
+  "reactions": [
+   {
+    "name": "raised_hands",
+    "users": [
+     "U2604",
+     "U2600"
+    ],
+    "count": 2
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2605",
+  "ts": "1790260260.000000",
+  "text": "This helped a lot, thanks"
+ },
+ {
+  "type": "message",
+  "user": "U2603",
+  "ts": "1790269200.000000",
+  "text": "Anyone free to review?"
+ },
+ {
+  "type": "message",
+  "user": "U2612",
+  "ts": "1790273880.000000",
+  "text": "Just pushed my update",
+  "reactions": [
+   {
+    "name": "eyes",
+    "users": [
+     "U2600"
+    ],
+    "count": 1
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2608",
+  "ts": "1790282880.000000",
+  "text": "Sharing my draft here"
+ }
+]

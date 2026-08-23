@@ -1,0 +1,65 @@
+[
+ {
+  "type": "message",
+  "user": "U2601",
+  "ts": "1788861240.000000",
+  "text": "Great point earlier"
+ },
+ {
+  "type": "message",
+  "user": "U2605",
+  "ts": "1788863820.000000",
+  "text": "Sharing my draft here"
+ },
+ {
+  "type": "message",
+  "user": "U2607",
+  "ts": "1788866100.000000",
+  "text": "Great point earlier"
+ },
+ {
+  "type": "message",
+  "user": "U2602",
+  "ts": "1788873480.000000",
+  "text": "This helped a lot, thanks",
+  "reactions": [
+   {
+    "name": "eyes",
+    "users": [
+     "U2601",
+     "U2609"
+    ],
+    "count": 2
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2606",
+  "ts": "1788878460.000000",
+  "text": "This helped a lot, thanks"
+ },
+ {
+  "type": "message",
+  "user": "U2608",
+  "ts": "1788896340.000000",
+  "text": "Following up on the session",
+  "reactions": [
+   {
+    "name": "tada",
+    "users": [
+     "U2611",
+     "U2610",
+     "U2601"
+    ],
+    "count": 3
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2606",
+  "ts": "1788898560.000000",
+  "text": "Just pushed my update"
+ }
+]

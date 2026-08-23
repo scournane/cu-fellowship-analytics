@@ -1,0 +1,80 @@
+[
+ {
+  "type": "message",
+  "user": "U2606",
+  "ts": "1789638360.000000",
+  "text": "Question about the rubric",
+  "reactions": [
+   {
+    "name": "tada",
+    "users": [
+     "U2613",
+     "U2602"
+    ],
+    "count": 2
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2613",
+  "ts": "1789648080.000000",
+  "text": "This helped a lot, thanks"
+ },
+ {
+  "type": "message",
+  "user": "U2604",
+  "ts": "1789648560.000000",
+  "text": "Sharing my draft here"
+ },
+ {
+  "type": "message",
+  "user": "U2600",
+  "ts": "1789650240.000000",
+  "text": "Question about the rubric",
+  "reactions": [
+   {
+    "name": "tada",
+    "users": [
+     "U2609",
+     "U2604"
+    ],
+    "count": 2
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2603",
+  "ts": "1789656960.000000",
+  "text": "Just pushed my update"
+ },
+ {
+  "type": "message",
+  "user": "U2602",
+  "ts": "1789667760.000000",
+  "text": "Following up on the session"
+ },
+ {
+  "type": "message",
+  "user": "U2602",
+  "ts": "1789672020.000000",
+  "text": "This helped a lot, thanks",
+  "reactions": [
+   {
+    "name": "tada",
+    "users": [
+     "U2609",
+     "U2612"
+    ],
+    "count": 2
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2606",
+  "ts": "1789677180.000000",
+  "text": "Posting my milestone"
+ }
+]

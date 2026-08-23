@@ -1,0 +1,85 @@
+[
+ {
+  "type": "message",
+  "user": "U2601",
+  "ts": "1789117680.000000",
+  "text": "Great point earlier",
+  "reactions": [
+   {
+    "name": "eyes",
+    "users": [
+     "U2603",
+     "U2600"
+    ],
+    "count": 2
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2603",
+  "ts": "1789122720.000000",
+  "text": "Question about the rubric"
+ },
+ {
+  "type": "message",
+  "user": "U2608",
+  "ts": "1789129380.000000",
+  "text": "Great point earlier"
+ },
+ {
+  "type": "message",
+  "user": "U2604",
+  "ts": "1789132800.000000",
+  "text": "This helped a lot, thanks"
+ },
+ {
+  "type": "message",
+  "user": "U2612",
+  "ts": "1789144800.000000",
+  "text": "This helped a lot, thanks",
+  "reactions": [
+   {
+    "name": "tada",
+    "users": [
+     "U2603",
+     "U2604",
+     "U2609"
+    ],
+    "count": 3
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2600",
+  "ts": "1789146420.000000",
+  "text": "This helped a lot, thanks",
+  "reactions": [
+   {
+    "name": "tada",
+    "users": [
+     "U2608",
+     "U2606",
+     "U2605"
+    ],
+    "count": 3
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "user": "U2606",
+  "ts": "1789153200.000000",
+  "text": "Question about the rubric",
+  "reactions": [
+   {
+    "name": "tada",
+    "users": [
+     "U2600"
+    ],
+    "count": 1
+   }
+  ]
+ }
+]

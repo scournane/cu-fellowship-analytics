@@ -1,0 +1,19 @@
+[
+ {
+  "type": "message",
+  "user": "U2607",
+  "ts": "1789473840.000000",
+  "text": "Great point earlier",
+  "reactions": [
+   {
+    "name": "eyes",
+    "users": [
+     "U2613",
+     "U2606",
+     "U2605"
+    ],
+    "count": 3
+   }
+  ]
+ }
+]
