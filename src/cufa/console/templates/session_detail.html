@@ -201,7 +201,7 @@
 // Enhancement only. Without JavaScript the count is still correct on load, the
 // link is still selectable, and Pull responses is still a button.
 (function () {
-  var sessionId = {{ session.session_id | tojson }};
+  var sessionId = {{ session.session_id | string | tojson }};
 
   var copyButton = document.getElementById("copy-btn");
   var copyStatus = document.getElementById("copy-status");

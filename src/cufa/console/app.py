@@ -37,23 +37,23 @@ from markupsafe import Markup
 from ..config import Settings, get_settings
 from ..db import connection, fetch_all, fetch_one
 from ..decisions import human_override
-from ..errors import (
-    ConfigError,
-    CufaError,
-    DatabaseUnreachable,
-    GoogleNotConnected,
-    PublishVerificationFailed,
-    TemplateNotVerified,
-)
+from ..errors import ConfigError, CufaError, DatabaseUnreachable
 from ..google.base import SCOPES
 from ..google.factory import get_client
 from ..google.oauth import authorization_url, credential_status, disconnect, store_credential
 from ..ingest.forms_api import pull_session
 from ..logging_setup import configure_logging, get_logger
 from ..passphrase import ACCESSIBILITY_REMINDER, GUIDANCE, check_reuse, suggest
-from ..provisioning import get_session_form, is_ready, provision_session
+from ..provisioning import is_ready, provision_session
 from ..report import ai_decisions, needs_review_queue, unresolved_identities
-from ..sessions import SessionInput, announce_now, create_session, get_session, list_sessions, update_session
+from ..sessions import (
+    SessionInput,
+    announce_now,
+    create_session,
+    get_session,
+    list_sessions,
+    update_session,
+)
 from ..template import MANUAL_STEP, create_template, get_template, verify_template
 from ..timeutil import TimezoneError, get_zone
 from .auth import (
@@ -134,8 +134,12 @@ def _database_down(request: Request, exc: DatabaseUnreachable) -> Response:
     return render(request, "db_down.html", status_code=503, hint=str(exc))
 
 
-def _parse_session_id(raw: str) -> str | None:
-    """Reject anything that is not a UUID before it reaches Postgres."""
+def _parse_uuid(raw: str) -> str | None:
+    """Reject anything that is not a UUID before it reaches Postgres.
+
+    Every id in a console URL is a uuid column, so a malformed one is a 404
+    rather than a psycopg DataError surfacing as a 500.
+    """
     try:
         return str(uuid.UUID(raw))
     except (ValueError, AttributeError):
@@ -221,7 +225,7 @@ def signin_google(request: Request, next: str = "/") -> Response:
         )
         flow = _signin_flow(settings, state=state)
         url, _ = flow.authorization_url(prompt="select_account", include_granted_scopes="true")
-    except (ConfigError, CufaError) as exc:
+    except CufaError as exc:
         return render(
             request,
             "signin.html",
@@ -346,7 +350,7 @@ def google_connect(request: Request, user: ConsoleUser = Depends(require_user)) 
             settings, {"purpose": "connect", "nonce": secrets.token_urlsafe(12)}
         )
         url, _ = authorization_url(settings, state=state)
-    except (ConfigError, CufaError) as exc:
+    except CufaError as exc:
         return _connect_error(request, str(exc))
     return RedirectResponse(url, status_code=303)
 
@@ -467,7 +471,7 @@ def _finish_connect(
                 scopes=list(credentials.scopes or SCOPES),
                 settings=settings,
             )
-    except (CufaError, ConfigError) as exc:
+    except CufaError as exc:
         return _connect_error(request, str(exc))
     except Exception as exc:
         log.warning("Google connection failed: %s", type(exc).__name__)
@@ -512,41 +516,50 @@ def template_screen(request: Request, user: ConsoleUser = Depends(require_user))
 
 @app.post("/template/create")
 def template_create(request: Request, user: ConsoleUser = Depends(require_user)) -> Response:
+    notice: str | None = None
+    error: str | None = None
     with connection() as conn:
         try:
-            client = get_client(conn)
-            create_template(conn, client)
-            context = _template_context(conn)
-            context["notice"] = (
+            create_template(conn, get_client(conn))
+            notice = (
                 "Template form created. Now do the one manual step below, then "
                 "press Verify template."
             )
-        except (CufaError, GoogleNotConnected) as exc:
-            context = _template_context(conn)
-            context["error"] = str(exc)
-    return render(request, "template.html", title="Template setup", **context)
+        except CufaError as exc:
+            error = str(exc)
+
+    # A second connection deliberately: the first one's work is committed, and a
+    # failure that left its transaction aborted must not take the page with it.
+    with connection() as conn:
+        context = _template_context(conn)
+    return render(
+        request, "template.html", title="Template setup", notice=notice, error=error, **context
+    )
 
 
 @app.post("/template/verify")
 def template_verify(request: Request, user: ConsoleUser = Depends(require_user)) -> Response:
     """Green only when the API itself says VERIFIED. The human's word is not evidence."""
+    notice: str | None = None
+    error: str | None = None
     with connection() as conn:
         try:
-            client = get_client(conn)
-            state = verify_template(conn, client)
-            context = _template_context(conn)
-            context["verified_state"] = state
-            context["notice"] = (
-                f"Verified: the API reports emailCollectionType="
+            state = verify_template(conn, get_client(conn))
+            notice = (
+                "Verified: the API reports emailCollectionType="
                 f"{state.email_collection_type}. Provisioning is unblocked."
             )
-        except TemplateNotVerified as exc:
-            context = _template_context(conn)
-            context["error"] = str(exc)
-        except (CufaError, GoogleNotConnected) as exc:
-            context = _template_context(conn)
-            context["error"] = str(exc)
-    return render(request, "template.html", title="Template setup", **context)
+        except CufaError as exc:
+            # verify_template clears a stale confirmation before it raises, and
+            # that clearing has to survive — hence catching inside the block that
+            # commits.
+            error = str(exc)
+
+    with connection() as conn:
+        context = _template_context(conn)
+    return render(
+        request, "template.html", title="Template setup", notice=notice, error=error, **context
+    )
 
 
 # --------------------------------------------------------------------------
@@ -735,7 +748,7 @@ def session_create(
 def session_edit_form(
     request: Request, session_id: str, user: ConsoleUser = Depends(require_user)
 ) -> Response:
-    parsed = _parse_session_id(session_id)
+    parsed = _parse_uuid(session_id)
     if parsed is None:
         return _not_found(request)
     with connection() as conn:
@@ -782,7 +795,7 @@ def session_edit(
     cohort_id: str = Form(""),
     confirm_reuse: str = Form(""),
 ) -> Response:
-    parsed = _parse_session_id(session_id)
+    parsed = _parse_uuid(session_id)
     if parsed is None:
         return _not_found(request)
 
@@ -880,7 +893,7 @@ def session_detail(
     user: ConsoleUser = Depends(require_user),
     notice: str | None = None,
 ) -> Response:
-    parsed = _parse_session_id(session_id)
+    parsed = _parse_uuid(session_id)
     if parsed is None:
         return _not_found(request)
     with connection() as conn:
@@ -899,7 +912,7 @@ def session_provision(
     user: ConsoleUser = Depends(require_user),
     dry_run: str = Form(""),
 ) -> Response:
-    parsed = _parse_session_id(session_id)
+    parsed = _parse_uuid(session_id)
     if parsed is None:
         return _not_found(request)
 
@@ -910,15 +923,19 @@ def session_provision(
             client = get_client(conn)
             result = provision_session(conn, client, parsed, dry_run=bool(dry_run))
             notice = f"Provisioning {result.outcome}: {result.summary}"
-        except (TemplateNotVerified, PublishVerificationFailed) as exc:
-            # The two traps. Full text, in red, and no form link is offered —
-            # a form that is not verified as ready must never look ready.
-            error = str(exc)
-        except (CufaError, GoogleNotConnected) as exc:
+        except CufaError as exc:
+            # TemplateNotVerified and PublishVerificationFailed arrive here.
+            # Both get their full text on the screen, in red, and neither is
+            # followed by a form link: a form that has not been verified as
+            # ready must never be shown as ready.
             error = str(exc)
         except Exception as exc:  # an unexpected Google failure is still the user's problem
             log.warning("provisioning failed session=%s error=%s", parsed, type(exc).__name__)
             error = f"Provisioning failed: {exc}"
+
+    # Fresh connection: the attempt above committed its provisioning_log rows,
+    # and if it failed mid-statement its transaction is no use for reading.
+    with connection() as conn:
         context = _detail_context(conn, parsed)
 
     if context is None:
@@ -938,7 +955,7 @@ def session_provision(
 def session_announce(
     request: Request, session_id: str, user: ConsoleUser = Depends(require_user)
 ) -> Response:
-    parsed = _parse_session_id(session_id)
+    parsed = _parse_uuid(session_id)
     if parsed is None:
         return _not_found(request)
     with connection() as conn:
@@ -955,7 +972,7 @@ def session_announce(
 def session_pull(
     request: Request, session_id: str, user: ConsoleUser = Depends(require_user)
 ) -> Response:
-    parsed = _parse_session_id(session_id)
+    parsed = _parse_uuid(session_id)
     if parsed is None:
         return _not_found(request)
 
@@ -973,11 +990,13 @@ def session_pull(
             warnings = list(result.warnings)
         except LookupError as exc:
             error = str(exc)
-        except (CufaError, GoogleNotConnected) as exc:
+        except CufaError as exc:
             error = str(exc)
         except Exception as exc:
             log.warning("pull failed session=%s error=%s", parsed, type(exc).__name__)
             error = f"Pulling responses failed: {exc}"
+
+    with connection() as conn:
         context = _detail_context(conn, parsed)
 
     if context is None:
@@ -998,7 +1017,7 @@ def session_responses_json(
     request: Request, session_id: str, user: ConsoleUser = Depends(require_user)
 ) -> Response:
     """The polled endpoint behind the live count. Database only, no Google call."""
-    parsed = _parse_session_id(session_id)
+    parsed = _parse_uuid(session_id)
     if parsed is None:
         return JSONResponse({"error": "not_found"}, status_code=404)
     with connection() as conn:
@@ -1035,7 +1054,7 @@ def session_pull_json(
     request: Request, session_id: str, user: ConsoleUser = Depends(require_user)
 ) -> Response:
     """The same pull as the button, for the optional auto-pull loop."""
-    parsed = _parse_session_id(session_id)
+    parsed = _parse_uuid(session_id)
     if parsed is None:
         return JSONResponse({"error": "not_found"}, status_code=404)
     with connection() as conn:
@@ -1121,7 +1140,7 @@ def review_decide(
     cohort: str = Form(""),
 ) -> Response:
     """Tier 3. Supersedes whatever the rules or the model decided."""
-    parsed = _parse_session_id(checkin_id)
+    parsed = _parse_uuid(checkin_id)
     if parsed is None:
         return _not_found(request)
     if status not in {"attended", "not_attended"}:
