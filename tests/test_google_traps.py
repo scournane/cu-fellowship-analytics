@@ -12,7 +12,7 @@ from datetime import datetime
 
 import pytest
 
-from conftest import TEST_COHORT, make_session
+from conftest import make_session
 
 from cufa.errors import PublishVerificationFailed, TemplateNotVerified
 from cufa.google.base import (

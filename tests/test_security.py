@@ -19,7 +19,6 @@ from cufa.google.oauth import credential_status, disconnect, store_credential
 from cufa.logging_setup import (
     RedactionFilter,
     configure_logging,
-    get_logger,
     mask_email,
     redact_emails,
     redact_secrets,

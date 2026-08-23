@@ -198,7 +198,7 @@ def render_report_text(report: CohortReport) -> str:
     add("")
 
     unresolved = report.review.get("unresolved_identities") or []
-    add(f"Review queue")
+    add("Review queue")
     add(f"  needs_review check-ins   {t.get('needs_review', 0):>5}")
     add(f"  unresolved addresses     {len(unresolved):>5}")
     add(f"  ai cache entries         {(report.review.get('ai_cache') or {}).get('entries', 0):>5}")

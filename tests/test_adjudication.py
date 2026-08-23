@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import psycopg
 import pytest
@@ -13,7 +13,6 @@ from conftest import (
     ExplodingAdjudicator,
     StubAdjudicator,
     count,
-    make_fellow,
     make_session,
     write_csv,
 )

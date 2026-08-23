@@ -21,10 +21,10 @@ from typing import Any
 
 import psycopg
 
-from ..db import execute, fetch_all, fetch_one
-from ..logging_setup import get_logger, mask_email, summarize
+from ..db import execute, fetch_one
+from ..logging_setup import get_logger, summarize
 from ..text import normalize_answer, normalize_email, levenshtein, sha256_hex
-from ..timeutil import UTC, session_window, to_utc
+from ..timeutil import session_window, to_utc
 
 log = get_logger(__name__)
 

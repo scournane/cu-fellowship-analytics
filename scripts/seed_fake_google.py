@@ -26,7 +26,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from cufa.config import get_settings
-from cufa.db import connection, fetch_all, fetch_one
+from cufa.db import connection, fetch_one
 from cufa.google.fake import FakeGoogleClient
 from cufa.logging_setup import configure_logging, get_logger
 from cufa.sessions import announce_now

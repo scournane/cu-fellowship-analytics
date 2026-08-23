@@ -22,10 +22,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
-from ..timeutil import UTC, iso_utc, parse_rfc3339
+from ..timeutil import parse_rfc3339
 from .base import (
     EMAIL_COLLECTION_DO_NOT_COLLECT,
     EMAIL_COLLECTION_RESPONDER_INPUT,

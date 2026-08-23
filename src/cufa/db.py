@@ -13,7 +13,6 @@ from collections.abc import Iterator, Sequence
 from typing import Any
 
 import psycopg
-from psycopg import sql as _sql  # noqa: F401  (re-exported for callers building DDL)
 from psycopg.rows import dict_row
 
 from .config import Settings, get_settings

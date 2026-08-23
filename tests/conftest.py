@@ -10,7 +10,7 @@ point, not a compromise.
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -30,7 +30,6 @@ from cufa.errors import DatabaseUnreachable  # noqa: E402
 from cufa.google.fake import FakeGoogleClient  # noqa: E402
 from cufa.google.factory import set_fake_client  # noqa: E402
 from cufa.sessions import SessionInput, create_session  # noqa: E402
-from cufa.timeutil import UTC  # noqa: E402
 
 TEST_COHORT = "test-cohort"
 TEST_TZ = "America/New_York"
