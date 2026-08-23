@@ -51,6 +51,12 @@ def _docker_running() -> bool:
 
 
 def cmd_db(args: argparse.Namespace) -> int:
+    """Start, stop or reset the local Supabase stack.
+
+    Checks Docker explicitly before shelling out. `supabase start` against a
+    stopped daemon fails with a message about the Docker socket, which tells a
+    non-technical operator nothing they can act on.
+    """
     supabase = _require_supabase()
     if args.db_action == "up":
         if not _docker_running():
@@ -83,6 +89,11 @@ def cmd_db(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------
 
 def cmd_google(args: argparse.Namespace) -> int:
+    """Connect, inspect or revoke the Google account that will own the forms.
+
+    `status` and `disconnect` exit non-zero when there is nothing usable
+    connected, so a shell script can gate on them.
+    """
     from .google.oauth import authorization_url, credential_status, disconnect, store_credential
 
     settings = get_settings()
@@ -308,6 +319,11 @@ def cmd_session(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------
 
 def cmd_provision(args: argparse.Namespace) -> int:
+    """Provision the form for one session, or for every session in a cohort.
+
+    Safe to re-run: a session that already has a verified-published form is
+    reported and skipped rather than given a second one.
+    """
     from .db import fetch_all
     from .google.factory import get_client
     from .provisioning import provision_session
@@ -342,6 +358,11 @@ def cmd_provision(args: argparse.Namespace) -> int:
 
 
 def cmd_pull(args: argparse.Namespace) -> int:
+    """Pull new responses through the Forms API.
+
+    Incremental — each form has a watermark, so pulling repeatedly during a
+    lesson costs one request per form rather than re-reading everything.
+    """
     from .google.factory import get_client
     from .ingest.forms_api import pull_cohort, pull_session
 
@@ -362,6 +383,11 @@ def cmd_pull(args: argparse.Namespace) -> int:
 
 
 def cmd_ingest(args: argparse.Namespace) -> int:
+    """Import a CSV exported from a manually created form.
+
+    The fallback path. `--sheet-timezone` is required here and deliberately has
+    no default; see cufa.ingest.csv_path for why guessing it is unsafe.
+    """
     from .ingest.csv_path import ingest_csv
 
     with connection() as conn:
@@ -377,6 +403,11 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------
 
 def cmd_adjudicate(args: argparse.Namespace) -> int:
+    """Run the decision tiers over a cohort.
+
+    Exits zero even when tier 2 was unavailable: that case is a completed run
+    whose undecidable rows are in needs_review, not a failure.
+    """
     from .adjudicate.engine import adjudicate_cohort
 
     with connection() as conn:
@@ -395,6 +426,11 @@ def cmd_adjudicate(args: argparse.Namespace) -> int:
 
 
 def cmd_decide(args: argparse.Namespace) -> int:
+    """Record a human decision, superseding whatever is current.
+
+    Prints what was superseded, so the person making the call sees what their
+    judgment replaced rather than only what it became.
+    """
     from .decisions import current_decision, human_override
 
     with connection() as conn:
@@ -475,6 +511,11 @@ def cmd_report(args: argparse.Namespace) -> int:
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
+    """Run the console.
+
+    Announces the fake-client mode loudly: a staff member should never be
+    unsure whether the forms they are looking at are real.
+    """
     import uvicorn
 
     settings = get_settings()
@@ -610,6 +651,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Entry point. Returns an exit code rather than raising.
+
+    Expected failures (a missing template, an unverified one, a missing
+    timezone flag) print their guidance and exit 1. Only genuinely unexpected
+    exceptions reach the user as a traceback, so a traceback always means a bug.
+    """
     args = build_parser().parse_args(argv)
     configure_logging(args.log_level or get_settings().log_level)
     try:
