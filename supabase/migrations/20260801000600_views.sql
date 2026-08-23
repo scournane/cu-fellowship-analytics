@@ -38,7 +38,13 @@ select
     f.fellow_id,
     f.full_name,
     f.cohort_id        as fellow_cohort_id,
-    coalesce(f.cohort_id, s.cohort_id) as cohort_id,
+    lr.cohort_id       as load_cohort_id,
+    -- Three fallbacks, in order of how specific they are. The load run is the
+    -- last of them and the reason it exists here: a check-in that matched no
+    -- session AND no roster entry would otherwise have no cohort at all, and
+    -- would vanish from every cohort-scoped report — which is precisely the
+    -- row a person most needs to see.
+    coalesce(f.cohort_id, s.cohort_id, lr.cohort_id) as cohort_id,
     d.decision_id,
     d.status,
     d.attended,
@@ -53,6 +59,7 @@ select
     d.created_at       as decided_at
 from checkin c
 left join "session" s on s.session_id = c.session_id
+left join load_run lr on lr.load_id = c.load_id
 -- Left join, and only within the session's cohort: an unrecognized address
 -- still comes back as a row with a NULL fellow_id rather than vanishing.
 left join fellow f

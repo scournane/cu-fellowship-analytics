@@ -46,7 +46,12 @@ create table if not exists checkin (
     -- so there is no zone to record and no conversion to audit.
     source_timezone  text,
 
-    session_id       uuid        references "session" (session_id) on delete set null,
+    -- restrict, not set null: `checkin` is immutable, so a cascading UPDATE of
+    -- this column could not run anyway — it would fail inside the trigger with
+    -- a message about immutability instead of about the session being deleted.
+    -- A session with observations attached cannot be deleted, and the error
+    -- should say so.
+    session_id       uuid        references "session" (session_id) on delete restrict,
     session_match    text        not null check (session_match in ('matched', 'none', 'ambiguous')),
 
     passphrase_raw   text        not null default '',

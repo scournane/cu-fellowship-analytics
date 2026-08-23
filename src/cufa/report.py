@@ -52,9 +52,9 @@ def cohort_report(conn: psycopg.Connection, cohort_id: str) -> CohortReport:
             count(*) filter (where passphrase_match = 'not_set')  as pass_not_set,
             count(*) filter (where passphrase_match = 'no_session') as pass_no_session
           from v_checkin_resolved
-         where cohort_id = %s or cohort_id is null and session_cohort_id = %s
+         where cohort_id = %s
         """,
-        (cohort_id, cohort_id),
+        (cohort_id,),
     ) or {}
 
     sessions = fetch_all(

@@ -365,3 +365,55 @@ def test_assign_session_window_edges_are_inclusive():
     assert assign_session([session], end).match == "matched"
     assert assign_session([session], start - timedelta(seconds=1)).match == "none"
     assert assign_session([session], end + timedelta(seconds=1)).match == "none"
+
+
+def test_unmatched_row_from_an_unknown_address_is_still_in_the_cohort_report(db, tmp_path):
+    """The row with neither a session nor a roster match must not vanish.
+
+    It has no cohort of its own — no session to inherit one from, no fellow to
+    join to — so the cohort comes from the load run. Without that fallback the
+    single most interesting row is invisible to every cohort-scoped report,
+    which is the exact failure invariant 1 exists to prevent.
+    """
+    from cufa.report import cohort_report
+
+    make_session(db, local=datetime(2026, 9, 15, 19, 0))
+    path = write_csv(
+        tmp_path / "r.csv",
+        _rows(("2026-11-30 09:00:00", "nobody@example.invalid", "justice")),
+        HEADERS,
+    )
+    ingest_csv(db, path, TEST_COHORT, TEST_TZ)
+
+    row = _all(db, "select cohort_id, session_id, fellow_id from v_checkin_resolved")[0]
+    assert row["session_id"] is None
+    assert row["fellow_id"] is None
+    assert row["cohort_id"] == TEST_COHORT
+
+    report = cohort_report(db, TEST_COHORT)
+    assert report.totals["checkins"] == 1
+    assert report.totals["session_none"] == 1
+    assert report.totals["unknown_email"] == 1
+
+
+def test_a_session_with_observations_cannot_be_deleted(db, tmp_path):
+    """Deleting a session with check-ins must fail, and say why.
+
+    Before this was `on delete restrict` the cascade fired an UPDATE that the
+    immutability trigger rejected, so the error talked about immutable rows
+    rather than about the session still being referenced.
+    """
+    import psycopg
+    from cufa.db import execute
+
+    session_id = make_session(db, local=datetime(2026, 9, 15, 19, 0))
+    path = write_csv(
+        tmp_path / "r.csv",
+        _rows(("2026-09-15 19:20:00", "a@example.invalid", "justice")),
+        HEADERS,
+    )
+    ingest_csv(db, path, TEST_COHORT, TEST_TZ)
+
+    with pytest.raises(psycopg.errors.ForeignKeyViolation) as excinfo:
+        execute(db, 'delete from "session" where session_id = %s', (session_id,))
+    assert "checkin" in str(excinfo.value)
