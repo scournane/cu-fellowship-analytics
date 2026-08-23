@@ -1,0 +1,159 @@
+"""The contract every Forms/Drive client implements — real or fake.
+
+Six methods, chosen so that each of the four documented traps is *observable*
+through the interface rather than hidden inside one implementation:
+
+  * ``read_settings`` returns both the email-collection type (trap 2) and the
+    publish state (trap 1), because both must be read back and asserted.
+  * ``copy_form`` exists because settings survive a Drive copy but cannot be set
+    reliably through ``batchUpdate`` (trap 2).
+  * ``list_responses`` exists because there is no REST way to link a response
+    spreadsheet (trap 3).
+
+The fake in ``fake.py`` implements the same six and can be told to reproduce
+each failure, so trap handling is exercised in tests rather than asserted in a
+comment.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Protocol, runtime_checkable
+
+# Trap 4: exactly these two scopes, no more. `drive.file` is enough precisely
+# because the app creates the template itself, so the template — and every copy
+# of it — stays inside the app's own scope. Asking for broader Drive access
+# would give this tool reach over a staff member's entire Drive to do a job that
+# never needs it.
+SCOPES: tuple[str, ...] = (
+    "https://www.googleapis.com/auth/forms.body",
+    "https://www.googleapis.com/auth/drive.file",
+)
+
+EMAIL_COLLECTION_VERIFIED = "VERIFIED"
+EMAIL_COLLECTION_RESPONDER_INPUT = "RESPONDER_INPUT"
+EMAIL_COLLECTION_DO_NOT_COLLECT = "DO_NOT_COLLECT"
+
+# The single question on every check-in form. Matched case-insensitively when
+# reading responses back, so an edit to the wording in the UI does not orphan
+# the answer.
+PASSPHRASE_QUESTION_TITLE = "Today's passphrase"
+
+
+class GoogleApiError(RuntimeError):
+    """An error surfaced by the Google API, carrying the HTTP status.
+
+    Status is kept because the handling genuinely differs: 400 on an
+    ``emailCollectionType`` update is trap 2 and must abort provisioning, while
+    429 is a rate limit and should be retried with backoff.
+    """
+
+    def __init__(self, message: str, *, status: int | None = None, reason: str | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+        self.reason = reason
+
+    def __str__(self) -> str:  # pragma: no cover - formatting only
+        base = super().__str__()
+        return f"[{self.status}] {base}" if self.status else base
+
+
+@dataclass(frozen=True)
+class FormRef:
+    """A form that exists, and the two URLs a human needs for it."""
+
+    form_id: str
+    responder_url: str
+    edit_url: str
+
+
+@dataclass(frozen=True)
+class FormState:
+    """Everything about a form that has to be verified rather than assumed."""
+
+    form_id: str
+    email_collection_type: str
+    is_published: bool
+    is_accepting_responses: bool
+    title: str = ""
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def collects_verified_email(self) -> bool:
+        """True only when Google itself confirms the address.
+
+        RESPONDER_INPUT means the respondent typed it, which is exactly the
+        self-reported identity this whole design exists to replace.
+        """
+        return self.email_collection_type == EMAIL_COLLECTION_VERIFIED
+
+    @property
+    def accepts_responses(self) -> bool:
+        """A form must be both published and accepting to record anything."""
+        return self.is_published and self.is_accepting_responses
+
+
+@dataclass(frozen=True)
+class FormResponse:
+    """One submitted response, as returned by ``forms.responses.list``.
+
+    ``submitted_at`` is RFC3339 UTC straight from the API — the reason this path
+    is preferred over a linked spreadsheet, which writes locale-formatted times
+    with no offset marker.
+    """
+
+    response_id: str
+    respondent_email: str
+    submitted_at: str
+    answers: dict[str, str] = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ResponsePage:
+    """One page of responses plus the token for the next, if any."""
+
+    responses: tuple[FormResponse, ...]
+    next_page_token: str | None = None
+
+
+@runtime_checkable
+class FormsClient(Protocol):
+    """The six calls this system makes against Google."""
+
+    def create_template(self, title: str, description: str = "") -> FormRef:
+        """Create the one template form all session forms are copied from."""
+        ...
+
+    def read_settings(self, form_id: str) -> FormState:
+        """Read a form's settings and publish state back from the API.
+
+        The only source of truth for traps 1 and 2. Never infer either from the
+        fact that a previous call returned 200.
+        """
+        ...
+
+    def copy_form(self, source_form_id: str, new_title: str) -> FormRef:
+        """Drive-copy the template. Copying preserves email-collection settings."""
+        ...
+
+    def batch_update(self, form_id: str, requests: list[dict[str, Any]]) -> dict[str, Any]:
+        """Apply batchUpdate requests — title, description, question text only."""
+        ...
+
+    def set_publish_settings(
+        self, form_id: str, *, is_published: bool = True, is_accepting_responses: bool = True
+    ) -> dict[str, Any]:
+        """Publish a form. Required since 2026-07-01; see trap 1."""
+        ...
+
+    def list_responses(
+        self,
+        form_id: str,
+        *,
+        response_filter: str | None = None,
+        page_token: str | None = None,
+        page_size: int | None = None,
+    ) -> ResponsePage:
+        """One page of responses, optionally filtered by ``timestamp > ...``."""
+        ...
