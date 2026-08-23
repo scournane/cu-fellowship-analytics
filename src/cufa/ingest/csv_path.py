@@ -166,10 +166,11 @@ def ingest_csv(
                     titles = ", ".join(
                         f"{s['title']} ({s['session_id']})" for s in assignment.candidates
                     )
-                    result.warnings.append(
-                        f"{raw_timestamp} ({sheet_timezone}) falls inside more than one "
-                        f"session window: {titles}. Written with session_match='ambiguous' "
-                        "and no session; fix the overlapping schedules and re-adjudicate."
+                    result.warn(
+                        f"overlapping session windows: {titles}. Rows written with "
+                        "session_match='ambiguous' and no session; fix the schedules "
+                        "and re-adjudicate.",
+                        detail=f"(first seen at {raw_timestamp} {sheet_timezone})",
                     )
 
             match, distance = compare_passphrase(
@@ -221,6 +222,7 @@ def ingest_csv(
 
         for session_id in touched_sessions:
             recompute_for_session(conn, session_id)
+        result.finalize_warnings()
         finish_load_run(conn, load_id, result)
 
     except Exception as exc:
@@ -228,6 +230,4 @@ def ingest_csv(
         raise
 
     log.info("csv ingest cohort=%s file=%s tz=%s %s", cohort_id, file_path.name, sheet_timezone, result)
-    for warning in result.warnings:
-        log.warning("%s", warning)
     return result

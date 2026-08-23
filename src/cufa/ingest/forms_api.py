@@ -148,22 +148,24 @@ def pull_session(
                 # are recorded: the form's session wins, the discrepancy is warned.
                 implied_session_id = str(session_row["session_id"])
                 if assignment.match == "matched" and assignment.session_id != implied_session_id:
-                    result.warnings.append(
-                        f"response on form {form_id} (session {implied_session_id}) "
-                        f"has a timestamp inside session {assignment.session_id}'s "
-                        "window — check the two sessions' scheduled times and grace"
+                    result.warn(
+                        f"config error: responses on form {form_id} (session "
+                        f"{implied_session_id}) carry timestamps inside session "
+                        f"{assignment.session_id}'s window — check both sessions' "
+                        "scheduled_at, duration_minutes and grace_minutes"
                     )
                 elif assignment.match == "none":
-                    result.warnings.append(
-                        f"response on form {form_id} landed outside session "
-                        f"{implied_session_id}'s own window "
-                        f"({iso}) — check scheduled_at, duration and grace_minutes"
+                    result.warn(
+                        f"config error: responses on form {form_id} land outside "
+                        f"session {implied_session_id}'s own window — check "
+                        "scheduled_at, duration_minutes and grace_minutes",
+                        detail=f"(first seen at {iso})",
                     )
                 elif assignment.match == "ambiguous":
                     titles = ", ".join(s["title"] for s in assignment.candidates)
-                    result.warnings.append(
-                        f"timestamp {iso} falls inside more than one window ({titles}); "
-                        "the form's own session is used"
+                    result.warn(
+                        f"overlapping session windows ({titles}); the form's own "
+                        "session is used, but the schedules should be fixed"
                     )
 
                 effective_session_id = implied_session_id
@@ -230,6 +232,7 @@ def pull_session(
             (newest_seen, session_id),
         )
         recompute_for_session(conn, session_id)
+        result.finalize_warnings()
         finish_load_run(conn, load_id, result)
 
     except Exception as exc:
@@ -242,8 +245,6 @@ def pull_session(
         raise
 
     log.info("pull session=%s form=%s %s", session_id, form_id, result)
-    for warning in result.warnings:
-        log.warning("%s", warning)
     return result
 
 

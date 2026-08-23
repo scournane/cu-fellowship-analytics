@@ -19,8 +19,8 @@ traps correctly.
 
 from __future__ import annotations
 
-import itertools
 import json
+from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
@@ -76,9 +76,14 @@ class FakeGoogleClient:
         rate_limit_calls: int = 0,
         # Raise on the Nth list_responses call (1-based) to test watermark safety.
         fail_on_response_page: int | None = None,
+        # When set, state is written here after every mutating call so the demo
+        # can drive the fake across separate `cufa` processes the same way it
+        # would drive the real API.
+        state_path: str | Path | None = None,
     ) -> None:
         self.forms: dict[str, _FakeForm] = {}
         self.call_log: list[tuple[str, dict[str, Any]]] = []
+        self.state_path = Path(state_path) if state_path else None
 
         self.publish_readback_fails = publish_readback_fails
         self.default_email_collection = default_email_collection
@@ -87,20 +92,24 @@ class FakeGoogleClient:
         self.rate_limit_calls = rate_limit_calls
         self.fail_on_response_page = fail_on_response_page
 
-        self._ids = itertools.count(1)
+        self._next_id = 1
         self._list_calls = 0
 
     # -- helpers used by tests and the demo ---------------------------------
 
     def _record(self, action: str, **details: Any) -> None:
         self.call_log.append((action, details))
+        if self.state_path is not None and action != "read_settings":
+            self.save()
 
     def calls(self, action: str) -> list[dict[str, Any]]:
         """Every recorded call of one kind, for assertions like 'publish was called'."""
         return [details for name, details in self.call_log if name == action]
 
     def _new_id(self) -> str:
-        return f"fake-form-{next(self._ids):04d}"
+        form_id = f"fake-form-{self._next_id:04d}"
+        self._next_id += 1
+        return form_id
 
     def _get(self, form_id: str) -> _FakeForm:
         try:
@@ -116,10 +125,12 @@ class FakeGoogleClient:
         a person would.
         """
         self._get(form_id).email_collection_type = EMAIL_COLLECTION_VERIFIED
+        self.save()
 
     def simulate_human_breaks_verified(self, form_id: str) -> None:
         """Someone edits the template and turns email collection back down."""
         self._get(form_id).email_collection_type = EMAIL_COLLECTION_RESPONDER_INPUT
+        self.save()
 
     def seed_responses(
         self,
@@ -149,6 +160,84 @@ class FakeGoogleClient:
         # The API returns responses oldest-first; keeping that order here means
         # watermark logic is exercised the same way it will be in production.
         form.responses.sort(key=lambda r: r.submitted_at)
+        self.save()
+
+    # -- persistence --------------------------------------------------------
+    #
+    # A fake that forgets everything when the process exits could not stand in
+    # for Google across a multi-command demo. State lives in one JSON file so
+    # `cufa provision`, `cufa pull` and the console — three separate processes —
+    # see the same forms, exactly as they would see the same real forms.
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "next_id": self._next_id,
+            "forms": {
+                form_id: {
+                    "form_id": form.form_id,
+                    "title": form.title,
+                    "description": form.description,
+                    "email_collection_type": form.email_collection_type,
+                    "is_published": form.is_published,
+                    "is_accepting_responses": form.is_accepting_responses,
+                    "question_title": form.question_title,
+                    "responses": [
+                        {
+                            "response_id": r.response_id,
+                            "respondent_email": r.respondent_email,
+                            "submitted_at": r.submitted_at,
+                            "answers": r.answers,
+                        }
+                        for r in form.responses
+                    ],
+                }
+                for form_id, form in self.forms.items()
+            },
+        }
+
+    def load_dict(self, payload: dict[str, Any]) -> None:
+        self.forms = {}
+        for form_id, data in (payload.get("forms") or {}).items():
+            self.forms[form_id] = _FakeForm(
+                form_id=data["form_id"],
+                title=data.get("title", ""),
+                description=data.get("description", ""),
+                email_collection_type=data.get(
+                    "email_collection_type", EMAIL_COLLECTION_DO_NOT_COLLECT
+                ),
+                is_published=bool(data.get("is_published", False)),
+                is_accepting_responses=bool(data.get("is_accepting_responses", False)),
+                question_title=data.get("question_title", PASSPHRASE_QUESTION_TITLE),
+                responses=[
+                    FormResponse(
+                        response_id=r["response_id"],
+                        respondent_email=r["respondent_email"],
+                        submitted_at=r["submitted_at"],
+                        answers=dict(r.get("answers") or {}),
+                    )
+                    for r in (data.get("responses") or [])
+                ],
+            )
+        self._next_id = int(payload.get("next_id", 1))
+
+    def save(self) -> None:
+        if self.state_path is None:
+            return
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        # Write-then-rename: a crash mid-write must not leave a truncated file
+        # that the next command reads as "no forms exist".
+        temp = self.state_path.with_suffix(self.state_path.suffix + ".tmp")
+        temp.write_text(json.dumps(self.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
+        temp.replace(self.state_path)
+
+    @classmethod
+    def restore(cls, state_path: str | Path, **kwargs: Any) -> "FakeGoogleClient":
+        """Load persisted state, or start fresh if there is none yet."""
+        path = Path(state_path)
+        client = cls(state_path=path, **kwargs)
+        if path.exists():
+            client.load_dict(json.loads(path.read_text(encoding="utf-8")))
+        return client
 
     # -- FormsClient --------------------------------------------------------
 
@@ -326,13 +415,13 @@ def _parse_timestamp_filter(expression: str) -> datetime | None:
         return None
 
 
-def demo_client(**kwargs: Any) -> FakeGoogleClient:
+def demo_client(state_path: str | Path | None = None, **kwargs: Any) -> FakeGoogleClient:
     """A fake pre-walked through the one-time setup, for `make demo`.
 
     Creates the template and performs the human's manual Verified step, so the
     demo starts where a real CU install starts on day two.
     """
-    client = FakeGoogleClient(**kwargs)
+    client = FakeGoogleClient(state_path=state_path, **kwargs)
     ref = client.create_template("CU Check-in Template", "Template — do not submit")
     client.simulate_human_sets_verified(ref.form_id)
     return client

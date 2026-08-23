@@ -158,47 +158,59 @@ def _google_account_email(credentials: Any) -> str:
 
 
 def cmd_template(args: argparse.Namespace) -> int:
+    """Create, verify or inspect the template form.
+
+    Database work finishes and commits before anything is printed. Printing
+    inside the transaction means a closed stdout (``| head``, a killed pager)
+    aborts the process between the write and the commit, silently losing it.
+    """
+    from .errors import TemplateNotVerified
     from .google.factory import get_client
     from .template import MANUAL_STEP, create_template, get_template, verify_template
-    from .errors import TemplateNotVerified
 
-    with connection() as conn:
-        client = get_client(conn)
+    if args.template_action == "create":
+        with connection() as conn:
+            record = create_template(conn, get_client(conn))
+        print(f"Template form: {record.form_id}")
+        print(f"  edit:    {record.edit_url}")
+        print(f"  respond: {record.form_url}")
+        print()
+        print("ONE MANUAL STEP IS REQUIRED:")
+        print(MANUAL_STEP)
+        print()
+        print("Then run `cufa template verify`. Provisioning stays blocked until it passes.")
+        return 0
 
-        if args.template_action == "create":
-            record = create_template(conn, client)
-            print(f"Template form: {record.form_id}")
-            print(f"  edit:    {record.edit_url}")
-            print(f"  respond: {record.form_url}")
-            print()
-            print("ONE MANUAL STEP IS REQUIRED:")
-            print(MANUAL_STEP)
-            print()
-            print("Then run `cufa template verify`. Provisioning stays blocked until it passes.")
-            return 0
-
-        if args.template_action == "verify":
-            record = get_template(conn)
-            if record is None:
+    if args.template_action == "verify":
+        error: str | None = None
+        with connection() as conn:
+            client = get_client(conn)
+            if get_template(conn) is None:
                 raise CufaError("No template exists. Run `cufa template create` first.")
             try:
                 state = verify_template(conn, client)
             except TemplateNotVerified as exc:
-                print(str(exc), file=sys.stderr)
-                return 1
-            print(f"Template {state.form_id} verified: emailCollectionType=VERIFIED")
-            return 0
+                # The verdict (verified_email_confirmed_at cleared) still has to
+                # commit, so the failure is captured rather than raised through
+                # the transaction.
+                error = str(exc)
+        if error:
+            print(error, file=sys.stderr)
+            return 1
+        print(f"Template {state.form_id} verified: emailCollectionType=VERIFIED")
+        return 0
 
-        if args.template_action == "status":
+    if args.template_action == "status":
+        with connection() as conn:
             record = get_template(conn)
-            if record is None:
-                print("No template created yet.")
-                return 1
-            print(f"Template form: {record.form_id}")
-            print(f"  verified at    {record.verified_email_confirmed_at or '(never)'}")
-            print(f"  last checked   {record.last_verified_at or '(never)'}")
-            print(f"  settings seen  {json.dumps(record.settings_snapshot)}")
-            return 0 if record.is_verified else 1
+        if record is None:
+            print("No template created yet.")
+            return 1
+        print(f"Template form: {record.form_id}")
+        print(f"  verified at    {record.verified_email_confirmed_at or '(never)'}")
+        print(f"  last checked   {record.last_verified_at or '(never)'}")
+        print(f"  settings seen  {json.dumps(record.settings_snapshot)}")
+        return 0 if record.is_verified else 1
 
     raise CufaError(f"unknown template action {args.template_action!r}")
 
@@ -239,46 +251,54 @@ def cmd_session(args: argparse.Namespace) -> int:
         print(f"\n{GUIDANCE}", file=sys.stderr)
         return 0
 
-    with connection() as conn:
-        if args.session_action == "list":
+    if args.session_action == "list":
+        with connection() as conn:
             rows = list_sessions(conn, args.cohort)
-            if not rows:
-                print("(no sessions)")
-                return 0
-            for row in rows:
-                ready = "ready" if row["publish_verified_at"] else ("—" if not row["form_id"] else "UNPUBLISHED")
-                print(
-                    f"{row['session_id']}  {row['scheduled_at_local']}  "
-                    f"{row['timezone']:<20} {row['title'][:34]:<34} form={ready:<11} "
-                    f"responses={row['response_count']}"
-                )
+        if not rows:
+            print("(no sessions)")
             return 0
-
-        if args.session_action == "create":
-            local = datetime.fromisoformat(args.scheduled_at)
-            data = SessionInput(
-                cohort_id=args.cohort,
-                title=args.title,
-                scheduled_at_local=local,
-                timezone=args.timezone,
-                duration_minutes=args.duration,
-                grace_minutes=args.grace,
-                passphrase=args.passphrase,
+        for row in rows:
+            ready = (
+                "ready" if row["publish_verified_at"]
+                else ("—" if not row["form_id"] else "UNPUBLISHED")
             )
+            print(
+                f"{row['session_id']}  {row['scheduled_at_local']}  "
+                f"{row['timezone']:<20} {row['title'][:34]:<34} form={ready:<11} "
+                f"responses={row['response_count']}"
+            )
+        return 0
+
+    if args.session_action == "create":
+        local = datetime.fromisoformat(args.scheduled_at)
+        data = SessionInput(
+            cohort_id=args.cohort,
+            title=args.title,
+            scheduled_at_local=local,
+            timezone=args.timezone,
+            duration_minutes=args.duration,
+            grace_minutes=args.grace,
+            passphrase=args.passphrase,
+        )
+        with connection() as conn:
             warnings = check_reuse(conn, args.cohort, args.passphrase)
-            for warning in warnings:
-                print(f"WARNING: {warning.message()}", file=sys.stderr)
             if warnings and not args.allow_reuse:
+                for warning in warnings:
+                    print(f"WARNING: {warning.message()}", file=sys.stderr)
                 print("Refusing to save. Pass --allow-reuse to override.", file=sys.stderr)
                 return 1
             session_id = create_session(conn, data)
-            print(session_id)
-            return 0
+        for warning in warnings:
+            print(f"WARNING: {warning.message()}", file=sys.stderr)
+        print(session_id)
+        return 0
 
-        if args.session_action == "announce":
-            stamped = announce_now(conn, args.session)
-            print(f"announced_at_utc = {stamped}")
-            return 0
+    if args.session_action == "announce":
+        when = datetime.fromisoformat(args.at) if args.at else None
+        with connection() as conn:
+            stamped = announce_now(conn, args.session, when)
+        print(f"announced_at_utc = {stamped}")
+        return 0
 
     raise CufaError(f"unknown session action {args.session_action!r}")
 
@@ -288,16 +308,36 @@ def cmd_session(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------
 
 def cmd_provision(args: argparse.Namespace) -> int:
+    from .db import fetch_all
     from .google.factory import get_client
     from .provisioning import provision_session
 
+    if not args.session and not args.cohort:
+        raise CufaError("provision needs --session <id> or --cohort <id>")
+
     with connection() as conn:
         client = get_client(conn)
-        result = provision_session(conn, client, args.session, dry_run=args.dry_run)
+        if args.session:
+            targets = [args.session]
+        else:
+            targets = [
+                str(row["session_id"])
+                for row in fetch_all(
+                    conn,
+                    'select session_id from "session" where cohort_id = %s '
+                    "order by scheduled_at_utc",
+                    (args.cohort,),
+                )
+            ]
+        results = [
+            provision_session(conn, client, session_id, dry_run=args.dry_run)
+            for session_id in targets
+        ]
 
-    print(f"session {result.session_id}: {result.summary}")
-    if result.form_url:
-        print(f"  form: {result.form_url}")
+    for result in results:
+        print(f"session {result.session_id}: {result.summary}")
+        if result.form_url:
+            print(f"  form: {result.form_url}")
     return 0
 
 
@@ -359,56 +399,66 @@ def cmd_decide(args: argparse.Namespace) -> int:
 
     with connection() as conn:
         before = current_decision(conn, args.checkin)
-        if before:
-            print(
-                f"superseding: status={before['status']} by={before['decided_by']} "
-                f"rule={before['rule_name']} ai={before['ai_model']}"
-            )
         human_override(
             conn, args.checkin, status=args.status, by_email=args.by, note=args.note
+        )
+
+    if before:
+        print(
+            f"superseding: status={before['status']} by={before['decided_by']} "
+            f"rule={before['rule_name']} ai={before['ai_model']}"
         )
     print(f"checkin {args.checkin} -> {args.status} (human)")
     return 0
 
 
 def cmd_review(args: argparse.Namespace) -> int:
+    """Print one of the three review queues.
+
+    The `ai` queue matters as much as `needs_review`: tier 2 has to be auditable
+    by a person sampling its judgments, not trusted because it is a model.
+    """
     from .report import ai_decisions, needs_review_queue, unresolved_identities
 
     with connection() as conn:
         if args.status == "ai":
             rows = ai_decisions(conn, args.cohort)
-            for row in rows:
-                print(
-                    f"{row['checkin_id']}  {row['session_title'] or '(no session)'}\n"
-                    f"    typed:      {row['passphrase_raw']!r}\n"
-                    f"    status:     {row['status']} (confidence {row['confidence']})\n"
-                    f"    model:      {row['ai_model']} prompt={row['ai_prompt_version']}\n"
-                    f"    reasoning:  {row['ai_reasoning']}\n"
-                )
-            print(f"{len(rows)} AI decision(s). Spot-check these; do not assume them.")
-            return 0
-
-        if args.status == "unresolved-identity":
+        elif args.status == "unresolved-identity":
             rows = unresolved_identities(conn, args.cohort)
-            for row in rows:
-                print(
-                    f"{row['email']}  seen={row['occurrence_count']}  "
-                    f"first={row['first_seen_at']}  last={row['last_seen_at']}"
-                )
-            print(f"{len(rows)} unresolved address(es).")
-            return 0
+        else:
+            rows = needs_review_queue(conn, args.cohort)
 
-        rows = needs_review_queue(conn, args.cohort)
+    if args.status == "ai":
         for row in rows:
             print(
-                f"{row['checkin_id']}  {row['submitted_at_utc']}  "
-                f"{row['session_title'] or '(no session)'}\n"
-                f"    fellow:  {row['full_name'] or '(not on roster)'}\n"
-                f"    typed:   {row['passphrase_raw']!r}  match={row['passphrase_match']}\n"
-                f"    why:     {row['rule_name'] or row['ai_reasoning'] or '(no reason recorded)'}\n"
+                f"{row['checkin_id']}  {row['session_title'] or '(no session)'}\n"
+                f"    typed:      {row['passphrase_raw']!r}\n"
+                f"    status:     {row['status']} (confidence {row['confidence']})\n"
+                f"    model:      {row['ai_model']} prompt={row['ai_prompt_version']}\n"
+                f"    reasoning:  {row['ai_reasoning']}\n"
             )
-        print(f"{len(rows)} check-in(s) need review, oldest first.")
+        print(f"{len(rows)} AI decision(s). Spot-check these; do not assume them.")
         return 0
+
+    if args.status == "unresolved-identity":
+        for row in rows:
+            print(
+                f"{row['email']}  seen={row['occurrence_count']}  "
+                f"first={row['first_seen_at']}  last={row['last_seen_at']}"
+            )
+        print(f"{len(rows)} unresolved address(es).")
+        return 0
+
+    for row in rows:
+        print(
+            f"{row['checkin_id']}  {row['submitted_at_utc']}  "
+            f"{row['session_title'] or '(no session)'}\n"
+            f"    fellow:  {row['full_name'] or '(not on roster)'}\n"
+            f"    typed:   {row['passphrase_raw']!r}  match={row['passphrase_match']}\n"
+            f"    why:     {row['rule_name'] or row['ai_reasoning'] or '(no reason recorded)'}\n"
+        )
+    print(f"{len(rows)} check-in(s) need review, oldest first.")
+    return 0
 
 
 def cmd_report(args: argparse.Namespace) -> int:
@@ -495,12 +545,18 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--allow-reuse", action="store_true", help="save despite a reuse warning")
     q = sp.add_parser("announce", help="stamp announced_at_utc — what latency is measured from")
     q.add_argument("--session", required=True)
+    q.add_argument(
+        "--at",
+        default=None,
+        help="ISO-8601 instant WITH offset, e.g. 2026-09-27T23:18:00+00:00. Defaults to now.",
+    )
     q = sp.add_parser("suggest-passphrase")
     q.add_argument("--count", type=int, default=5)
     p.set_defaults(func=cmd_session)
 
     p = sub.add_parser("provision", help="create the Google Form for a session")
-    p.add_argument("--session", required=True)
+    p.add_argument("--session", default=None)
+    p.add_argument("--cohort", default=None, help="provision every session in a cohort")
     p.add_argument("--dry-run", action="store_true", help="log the calls without making them")
     p.set_defaults(func=cmd_provision)
 

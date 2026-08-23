@@ -42,6 +42,9 @@ class Settings:
     google_client_secret: str | None = None
     google_redirect_uri: str = "http://127.0.0.1:8000/google/callback"
     fake_google: bool = False
+    # Where the fake client persists its forms, so a multi-command demo and
+    # the console see the same state across processes.
+    fake_google_state: str = "fixtures/fake_google_state.json"
 
     gemini_api_key: str | None = None
     ai_model: str = "gemini-2.5-flash"
@@ -102,6 +105,8 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         google_redirect_uri=env.get("GOOGLE_OAUTH_REDIRECT_URI")
         or "http://127.0.0.1:8000/google/callback",
         fake_google=_truthy(env.get("CUFA_FAKE_GOOGLE")),
+        fake_google_state=env.get("CUFA_FAKE_GOOGLE_STATE")
+        or "fixtures/fake_google_state.json",
         gemini_api_key=(env.get("GEMINI_API_KEY") or "").strip() or None,
         ai_model=env.get("CUFA_AI_MODEL") or "gemini-2.5-flash",
         ai_max_calls_per_run=_int("CUFA_AI_MAX_CALLS_PER_RUN", 250),

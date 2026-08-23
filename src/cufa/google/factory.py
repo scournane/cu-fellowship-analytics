@@ -45,8 +45,12 @@ def get_client(conn: psycopg.Connection, settings: Settings | None = None) -> Fo
         if _FAKE_SINGLETON is None:
             from .fake import FakeGoogleClient
 
-            _FAKE_SINGLETON = FakeGoogleClient()
-            log.info("using FakeGoogleClient (CUFA_FAKE_GOOGLE=1); no Google calls will be made")
+            _FAKE_SINGLETON = FakeGoogleClient.restore(settings.fake_google_state)
+            log.info(
+                "using FakeGoogleClient (CUFA_FAKE_GOOGLE=1); no Google calls will "
+                "be made. state=%s",
+                settings.fake_google_state,
+            )
         return _FAKE_SINGLETON
 
     from .oauth import load_credentials

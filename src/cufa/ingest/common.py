@@ -41,6 +41,31 @@ class IngestResult:
     ambiguous_sessions: int = 0
     unresolved_identities: int = 0
     warnings: list[str] = field(default_factory=list)
+    _warning_counts: dict[str, int] = field(default_factory=dict, repr=False)
+
+    def warn(self, message: str, *, detail: str = "") -> None:
+        """Record a warning once per distinct cause, counting repeats.
+
+        One overlapping pair of session windows produces a warning for every
+        response in the overlap. Printing thirty copies of the same sentence
+        buries the one fact an operator needs — that two sessions overlap — so
+        repeats are counted and reported as a multiplier instead.
+        """
+        seen = self._warning_counts.get(message, 0)
+        self._warning_counts[message] = seen + 1
+        if seen == 0:
+            self.warnings.append(f"{message}{(' ' + detail) if detail else ''}")
+
+    def finalize_warnings(self) -> None:
+        """Append the repeat count to any warning that fired more than once."""
+        self.warnings = [
+            (
+                f"{text} [{self._warning_counts[key]}× in this run]"
+                if self._warning_counts.get(key, 0) > 1
+                else text
+            )
+            for key, text in zip(self._warning_counts, self.warnings)
+        ]
 
     def __str__(self) -> str:  # pragma: no cover - display only
         return summarize(
