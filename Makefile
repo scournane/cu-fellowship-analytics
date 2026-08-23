@@ -182,27 +182,32 @@ demo-again:
 	@$(CUFA) adjudicate --cohort $(COHORT) --no-ai
 	@$(CUFA) report --cohort $(COHORT)
 
+# Every line of a Make recipe is its own shell, so a bare `exit 0` in the guard
+# would end only that line and the rest of the target would run anyway. The
+# whole target is therefore one shell command.
 .PHONY: demo-ai
 demo-ai:
-	@if [ -z "$$GEMINI_API_KEY" ]; then \
+	@set -e; \
+	if [ -z "$$GEMINI_API_KEY" ]; then \
 		echo ""; \
-		echo "GEMINI_API_KEY is not set, so tier 2 cannot run."; \
+		echo "Skipping: GEMINI_API_KEY is not set, so tier 2 cannot run."; \
+		echo ""; \
 		echo "Set it in .env (see .env.example) and re-run 'make demo-ai'."; \
-		echo "Everything else works without it — 'make demo' is the offline path,"; \
-		echo "and mismatch cases there land in needs_review with"; \
-		echo "rule_name='ai_unavailable'."; \
+		echo "Nothing else depends on it — 'make demo' is the offline path, and"; \
+		echo "there mismatch cases land in needs_review with"; \
+		echo "rule_name='ai_unavailable' rather than being guessed at."; \
 		echo ""; \
 		exit 0; \
-	fi
-	@$(MAKE) demo
-	@echo ""
-	@echo "== tier 2 live (only mismatch-in-window cases reach Gemini) ============="
-	@$(CUFA) adjudicate --cohort $(COHORT)
-	@echo ""
-	@echo "== second pass: every pair is cached, so zero API calls ================="
-	@$(CUFA) adjudicate --cohort $(COHORT)
-	@echo ""
-	@$(CUFA) review --status ai --cohort $(COHORT)
+	fi; \
+	$(MAKE) demo; \
+	echo ""; \
+	echo "== tier 2 live (only mismatch-in-window cases reach Gemini) ============="; \
+	$(CUFA) adjudicate --cohort $(COHORT); \
+	echo ""; \
+	echo "== second pass: every pair is cached, so zero API calls ================="; \
+	$(CUFA) adjudicate --cohort $(COHORT); \
+	echo ""; \
+	$(CUFA) review --status ai --cohort $(COHORT)
 
 .PHONY: demo-console
 demo-console: demo

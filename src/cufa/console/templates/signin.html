@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Sign in</h1>
+
+{% if error %}
+<div class="callout callout-bad" role="alert">
+  <h2>Not signed in</h2>
+  <pre class="wrap">{{ error }}</pre>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Sign in with Google</h2>
+  <p>The console checks your address against the allowlist in
+     <code>CUFA_CONSOLE_ALLOWLIST</code>. There is no password to set or reset.</p>
+  {% if google_ready %}
+  <p><a class="btn" href="/signin/google?next={{ next_path }}">Sign in with Google</a></p>
+  {% else %}
+  <p class="muted">Google sign-in is unavailable: <code>GOOGLE_CLIENT_ID</code> and
+     <code>GOOGLE_CLIENT_SECRET</code> are not set. See
+     <code>docs/setup/google-cloud.md</code>.</p>
+  {% endif %}
+</div>
+
+{% if dev_signin %}
+<div class="card">
+  <h2>Developer sign-in <span class="tag tag-dev">bypass</span></h2>
+  <p>
+    This door is open because
+    {% if settings.fake_google %}the fake Google client is switched on{% else %}no allowlist is
+    configured{% endif %}. It contacts Google not at all, which is what lets
+    <code>make demo-console</code> and the test suite click through every screen offline.
+    <strong>It is not an authentication mechanism.</strong> Do not expose this console
+    to a network while this is available.
+  </p>
+  <form method="post" action="/signin/dev" class="stack">
+    <input type="hidden" name="next" value="{{ next_path }}">
+    <div class="field">
+      <label for="dev-email">Your email address</label>
+      <input id="dev-email" name="email" type="email" required autocomplete="email"
+             placeholder="you@civicsunplugged.org"
+             value="{{ settings.console_allowlist[0] if settings.console_allowlist else '' }}">
+      <p class="hint">
+        {% if settings.console_allowlist %}
+          Must be on the allowlist: {{ settings.console_allowlist | join(", ") }}
+        {% else %}
+          No allowlist is configured, so any address is accepted. That is the problem
+          this message exists to point at.
+        {% endif %}
+      </p>
+    </div>
+    <button class="btn" type="submit">Sign in without Google</button>
+  </form>
+</div>
+{% endif %}
+{% endblock %}

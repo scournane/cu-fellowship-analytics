@@ -20,9 +20,22 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-# Trap 4: exactly these two scopes, no more. `drive.file` is enough precisely
-# because the app creates the template itself, so the template — and every copy
-# of it — stays inside the app's own scope. Asking for broader Drive access
+# Trap 4: exactly these two scopes, no more.
+#
+#   forms.body  — create a form, update its title/description/questions, and
+#                 publish it (forms.create, forms.batchUpdate,
+#                 forms.setPublishSettings).
+#   drive.file  — two jobs, not one. It authorizes the Drive files.copy that
+#                 carries the template's Verified email setting onto each
+#                 session form, AND it is what authorizes reading responses:
+#                 forms.responses.list accepts drive, drive.file or
+#                 forms.responses.readonly, and NOT forms.body. Dropping
+#                 drive.file to "tighten" the grant would silently break every
+#                 pull, so it is load-bearing twice over.
+#
+# `drive.file` is sufficient — rather than the far broader `drive` — precisely
+# because the app creates the template itself, so the template and every copy of
+# it are app-created files inside the app's own scope. Asking for full Drive
 # would give this tool reach over a staff member's entire Drive to do a job that
 # never needs it.
 SCOPES: tuple[str, ...] = (

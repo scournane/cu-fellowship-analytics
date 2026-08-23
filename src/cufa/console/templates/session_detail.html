@@ -1,0 +1,260 @@
+{% extends "base.html" %}
+{% block content %}
+
+<p class="small"><a href="/sessions">← All sessions</a></p>
+<h1>{{ session.title }}</h1>
+<p class="muted">
+  {{ session.scheduled_at_local.strftime("%A %d %B %Y, %H:%M") if session.scheduled_at_local else "" }}
+  {{ session.timezone }} · {{ session.duration_minutes }} minutes
+  (+{{ session.grace_minutes }} minutes grace either side) · cohort {{ session.cohort_id }}
+  · <a href="/sessions/{{ session.session_id }}/edit">Edit</a>
+</p>
+
+<div class="callout callout-info" role="note">
+  <h2>Say it aloud <em>and</em> put it on screen</h2>
+  <p>{{ accessibility_reminder }}</p>
+</div>
+
+{% if notice %}
+<div class="callout callout-ok" role="status"><pre class="wrap">{{ notice }}</pre></div>
+{% endif %}
+{% if error %}
+<div class="callout callout-bad" role="alert">
+  <h2>This did not work — the form is not ready</h2>
+  <pre class="wrap">{{ error }}</pre>
+</div>
+{% endif %}
+{% if ingest_warnings %}
+<div class="callout callout-warn" role="alert">
+  <h2>Warnings from the pull</h2>
+  <ul>{% for warning in ingest_warnings %}<li>{{ warning }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Today's passphrase</h2>
+  {% if session.passphrase %}
+  <p class="passphrase-display mono">{{ session.passphrase }}</p>
+  <p class="small muted">Read this out and display it. It is one signal among
+     several and never proof on its own.</p>
+  {% else %}
+  <p><span class="tag tag-muted">none set</span></p>
+  <p class="small muted">No passphrase is configured for this session. That is legal:
+     check-ins will adjudicate as <code>not_set</code> rather than as failures.
+     <a href="/sessions/{{ session.session_id }}/edit">Set one</a> if you meant to.</p>
+  {% endif %}
+</div>
+
+{% if template_blocked %}
+<div class="callout callout-warn" role="alert">
+  <h2>Provisioning is blocked</h2>
+  <p>
+    {% if template is none %}
+      No template form exists yet.
+    {% else %}
+      The template form's email collection has not been verified as
+      <code>VERIFIED</code>.
+    {% endif %}
+    Forms copied from an unverified template collect a typed address instead of a
+    Google-confirmed one, so provisioning refuses to run.
+  </p>
+  <p><a class="btn btn-quiet" href="/template">Go to template setup</a></p>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>The form</h2>
+  {% if ready and form_url %}
+    <p><span class="tag tag-ok">published and verified</span>
+       <span class="small muted">Publish state was read back from the API, not assumed.</span></p>
+
+    <div class="split">
+      <div>
+        <div class="url-box">
+          <span class="url mono" id="form-url">{{ form_url }}</span>
+          <button class="btn" type="button" id="copy-btn" data-url="{{ form_url }}">Copy link</button>
+        </div>
+        <p class="small" id="copy-status" role="status"></p>
+        <p><a href="{{ form_url }}" rel="noopener">Open the form</a>
+           {% if session.edit_url %} · <a href="{{ session.edit_url }}" rel="noopener">Edit it in Google Forms</a>{% endif %}
+        </p>
+        <dl class="kv small">
+          <dt>Form ID</dt><dd class="mono">{{ session.form_id }}</dd>
+          <dt>Provisioned</dt><dd>{{ session.provisioned_at }}</dd>
+          <dt>Publish verified</dt><dd>{{ session.publish_verified_at }}</dd>
+          <dt>Last polled</dt><dd>{{ session.last_polled_at or "never" }}</dd>
+        </dl>
+      </div>
+      <div>
+        {% if qr %}
+        <div class="qr-frame">{{ qr }}</div>
+        <p class="small muted" style="max-width:16rem">Point a phone camera at this.
+           The link below it is the same address if the code will not scan.</p>
+        {% elif qr_error %}
+        <div class="callout callout-warn">
+          <p><strong>No QR code for this link.</strong></p>
+          <pre class="wrap">{{ qr_error }}</pre>
+          <p class="small">Use the link instead.</p>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  {% else %}
+    <p><span class="tag tag-warn">not ready</span></p>
+    <p>
+      {% if session.form_id %}
+        A form was copied ({{ session.form_id }}) but its publish state has not been
+        verified, so it may accept nothing while its link still resolves. Provision
+        again — it will resume this form rather than creating a second one.
+      {% else %}
+        No form has been provisioned for this session yet.
+      {% endif %}
+    </p>
+    <p class="small muted">No link or QR code is shown until the API confirms the
+       form is published and accepting responses.</p>
+  {% endif %}
+
+  <form method="post" action="/sessions/{{ session.session_id }}/provision" class="btn-row" style="margin-top:1rem">
+    <button class="btn" type="submit"{% if template_blocked %} disabled{% endif %}>
+      {% if ready %}Re-check provisioning{% else %}Provision form{% endif %}
+    </button>
+    <button class="btn btn-quiet" type="submit" name="dry_run" value="1"{% if template_blocked %} disabled{% endif %}>
+      Dry run
+    </button>
+  </form>
+  <p class="hint">Provisioning is safe to press twice: an existing form is shown,
+     never duplicated.</p>
+</div>
+
+<div class="card">
+  <h2>Announce</h2>
+  <p>
+    {% if session.announced_at_utc %}
+      Announced at <strong>{{ session.announced_at_utc }}</strong> (UTC). Latency for
+      every check-in in this session is measured from that moment.
+    {% else %}
+      Not announced yet. Until it is, latency is measured from the earliest matched
+      submission instead — which means the first person to submit always reads zero.
+    {% endif %}
+  </p>
+  <form method="post" action="/sessions/{{ session.session_id }}/announce">
+    <button class="btn" type="submit">
+      {% if session.announced_at_utc %}Announce again (resets T0){% else %}Announce now{% endif %}
+    </button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Responses</h2>
+  <p class="count" id="response-count" aria-live="polite">{{ session.response_count }}</p>
+  <p class="small muted">
+    Check-ins recorded for this session, refreshed every five seconds.
+    New submissions appear after a pull — the Forms API is polled on demand rather
+    than every few seconds, so the count is what has been stored, not what Google
+    has this instant.
+  </p>
+  <p class="small muted" id="last-submission"></p>
+
+  <form method="post" action="/sessions/{{ session.session_id }}/pull" class="btn-row">
+    <button class="btn" type="submit"{% if not ready %} disabled{% endif %}>Pull responses</button>
+  </form>
+  {% if not ready %}
+  <p class="hint">Pulling needs a provisioned, verified form.</p>
+  {% endif %}
+
+  <div class="field checkbox" style="margin-top:1rem">
+    <input type="checkbox" id="autopull">
+    <label for="autopull">
+      Keep pulling automatically every 20 seconds while this page is open.
+      <span class="muted small">Off by default: each pull is a Google API call.</span>
+    </label>
+  </div>
+  <p class="small" id="autopull-status" role="status"></p>
+</div>
+
+{% if provisioning_log %}
+<details class="card">
+  <summary><strong>Provisioning attempts</strong> ({{ provisioning_log | length }} most recent)</summary>
+  <div class="table-scroll" style="margin-top:.75rem">
+    <table>
+      <thead><tr><th scope="col">When</th><th scope="col">Action</th><th scope="col">Outcome</th><th scope="col">Error</th></tr></thead>
+      <tbody>
+        {% for entry in provisioning_log %}
+        <tr>
+          <td class="small">{{ entry.at }}</td>
+          <td class="small mono">{{ entry.action }}</td>
+          <td>
+            {% if entry.outcome == "success" %}<span class="tag tag-ok">success</span>
+            {% elif entry.outcome == "failure" %}<span class="tag tag-bad">failure</span>
+            {% else %}<span class="tag tag-muted">{{ entry.outcome }}</span>{% endif %}
+          </td>
+          <td class="small">{{ entry.error or "" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</details>
+{% endif %}
+
+<script>
+// Enhancement only. Without JavaScript the count is still correct on load, the
+// link is still selectable, and Pull responses is still a button.
+(function () {
+  var sessionId = {{ session.session_id | tojson }};
+
+  var copyButton = document.getElementById("copy-btn");
+  var copyStatus = document.getElementById("copy-status");
+  if (copyButton) {
+    copyButton.addEventListener("click", function () {
+      var url = copyButton.getAttribute("data-url");
+      var done = function () { copyStatus.textContent = "Link copied to the clipboard."; };
+      var failed = function () { copyStatus.textContent = "Could not copy — select the link and copy it by hand."; };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(done, failed);
+      } else {
+        failed();
+      }
+    });
+  }
+
+  var count = document.getElementById("response-count");
+  var last = document.getElementById("last-submission");
+  function refresh() {
+    fetch("/sessions/" + sessionId + "/responses.json", { headers: { "Accept": "application/json" } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (!data || typeof data.responses !== "number") { return; }
+        count.textContent = String(data.responses);
+        last.textContent = data.latest_submission_utc
+          ? "Most recent submission " + data.latest_submission_utc + " (UTC)."
+          : "";
+      })
+      .catch(function () { /* a dropped poll is not worth shouting about */ });
+  }
+  setInterval(refresh, 5000);
+
+  var autopull = document.getElementById("autopull");
+  var autopullStatus = document.getElementById("autopull-status");
+  var timer = null;
+  if (autopull) {
+    autopull.addEventListener("change", function () {
+      if (timer) { clearInterval(timer); timer = null; }
+      if (!autopull.checked) { autopullStatus.textContent = "Automatic pulling is off."; return; }
+      autopullStatus.textContent = "Pulling every 20 seconds…";
+      timer = setInterval(function () {
+        fetch("/sessions/" + sessionId + "/pull.json", { method: "POST" })
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            if (data.error) { autopullStatus.textContent = "Pull failed: " + data.error; return; }
+            autopullStatus.textContent = "Last pull: " + data.rows_read + " read, " +
+              data.rows_written + " new, " + data.rows_skipped + " already recorded.";
+            refresh();
+          })
+          .catch(function () { autopullStatus.textContent = "Pull failed — the server did not answer."; });
+      }, 20000);
+    });
+  }
+})();
+</script>
+{% endblock %}
