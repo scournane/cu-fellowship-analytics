@@ -158,7 +158,7 @@ cufa google connect | status | disconnect
 cufa template create | verify | status
 cufa load-roster    --csv <path> --cohort <id>
 cufa load-sessions  --csv <path>
-cufa session        list | create | announce | suggest-passphrase
+cufa session        list | create | edit | announce | suggest-passphrase
 cufa provision      --session <id> | --cohort <id> [--dry-run]
 cufa pull           --session <id> | --cohort <id>
 cufa ingest part-a  --csv <path> --cohort <id> --sheet-timezone <IANA>

@@ -25,6 +25,37 @@ from .logging_setup import configure_logging, get_logger
 log = get_logger("cufa")
 
 
+def _session_id(value: str) -> str:
+    """Validate a UUID argument before it reaches SQL.
+
+    Without this a typo'd id reaches Postgres and comes back as
+    `InvalidTextRepresentation`, which surfaces as a psycopg traceback and reads
+    like the tool is broken rather than like the argument is wrong.
+    """
+    import uuid as _uuid
+
+    try:
+        return str(_uuid.UUID(str(value).strip()))
+    except (ValueError, AttributeError, TypeError):
+        raise CufaError(
+            f"{value!r} is not a session id. Ids are UUIDs — run "
+            f"`cufa session list` to see them."
+        ) from None
+
+
+def _checkin_id(value: str) -> str:
+    """Same, for check-in ids."""
+    import uuid as _uuid
+
+    try:
+        return str(_uuid.UUID(str(value).strip()))
+    except (ValueError, AttributeError, TypeError):
+        raise CufaError(
+            f"{value!r} is not a check-in id. Ids are UUIDs — run "
+            f"`cufa review` to see them."
+        ) from None
+
+
 # --------------------------------------------------------------------------
 # database
 # --------------------------------------------------------------------------
@@ -254,7 +285,14 @@ def cmd_load_sessions(args: argparse.Namespace) -> int:
 
 def cmd_session(args: argparse.Namespace) -> int:
     from .passphrase import GUIDANCE, check_reuse, suggest
-    from .sessions import SessionInput, announce_now, create_session, list_sessions
+    from .sessions import (
+        SessionInput,
+        announce_now,
+        create_session,
+        get_session,
+        list_sessions,
+        update_session,
+    )
 
     if args.session_action == "suggest-passphrase":
         for word in suggest(args.count):
@@ -304,10 +342,59 @@ def cmd_session(args: argparse.Namespace) -> int:
         print(session_id)
         return 0
 
+    if args.session_action == "edit":
+        with connection() as conn:
+            existing = get_session(conn, _session_id(args.session))
+            if existing is None:
+                raise CufaError(f"No session with id {args.session}")
+
+            # Every field is optional: editing only the passphrase should not
+            # require re-typing the schedule, and re-typing it is how a time
+            # gets changed by accident.
+            local_raw = args.scheduled_at
+            local = (
+                datetime.fromisoformat(local_raw)
+                if local_raw
+                else existing["scheduled_at_local"]
+            )
+            passphrase = (
+                existing["passphrase"] if args.passphrase is None else args.passphrase
+            )
+            cohort_id = existing["cohort_id"]
+
+            warnings = check_reuse(
+                conn, cohort_id, passphrase, exclude_session_id=args.session
+            )
+            if warnings and not args.allow_reuse:
+                for warning in warnings:
+                    print(f"WARNING: {warning.message()}", file=sys.stderr)
+                print("Refusing to save. Pass --allow-reuse to override.", file=sys.stderr)
+                return 1
+
+            update_session(
+                conn,
+                _session_id(args.session),
+                SessionInput(
+                    cohort_id=cohort_id,
+                    title=args.title or existing["title"],
+                    scheduled_at_local=local,
+                    timezone=args.timezone or existing["timezone"],
+                    duration_minutes=args.duration or existing["duration_minutes"],
+                    grace_minutes=(
+                        existing["grace_minutes"] if args.grace is None else args.grace
+                    ),
+                    passphrase=passphrase,
+                ),
+            )
+        for warning in warnings:
+            print(f"WARNING: {warning.message()}", file=sys.stderr)
+        print(f"updated {_session_id(args.session)}")
+        return 0
+
     if args.session_action == "announce":
         when = datetime.fromisoformat(args.at) if args.at else None
         with connection() as conn:
-            stamped = announce_now(conn, args.session, when)
+            stamped = announce_now(conn, _session_id(args.session), when)
         print(f"announced_at_utc = {stamped}")
         return 0
 
@@ -334,7 +421,7 @@ def cmd_provision(args: argparse.Namespace) -> int:
     with connection() as conn:
         client = get_client(conn)
         if args.session:
-            targets = [args.session]
+            targets = [_session_id(args.session)]
         else:
             targets = [
                 str(row["session_id"])
@@ -372,7 +459,7 @@ def cmd_pull(args: argparse.Namespace) -> int:
     with connection() as conn:
         client = get_client(conn)
         if args.session:
-            result = pull_session(conn, client, args.session)
+            result = pull_session(conn, client, _session_id(args.session))
         else:
             result = pull_cohort(conn, client, args.cohort)
 
@@ -434,9 +521,10 @@ def cmd_decide(args: argparse.Namespace) -> int:
     from .decisions import current_decision, human_override
 
     with connection() as conn:
-        before = current_decision(conn, args.checkin)
+        checkin_id = _checkin_id(args.checkin)
+        before = current_decision(conn, checkin_id)
         human_override(
-            conn, args.checkin, status=args.status, by_email=args.by, note=args.note
+            conn, checkin_id, status=args.status, by_email=args.by, note=args.note
         )
 
     if before:
@@ -444,7 +532,7 @@ def cmd_decide(args: argparse.Namespace) -> int:
             f"superseding: status={before['status']} by={before['decided_by']} "
             f"rule={before['rule_name']} ai={before['ai_model']}"
         )
-    print(f"checkin {args.checkin} -> {args.status} (human)")
+    print(f"checkin {checkin_id} -> {args.status} (human)")
     return 0
 
 
@@ -584,6 +672,16 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--grace", type=int, default=15)
     q.add_argument("--passphrase", default=None)
     q.add_argument("--allow-reuse", action="store_true", help="save despite a reuse warning")
+    q = sp.add_parser("edit", help="change a session; every field is optional")
+    q.add_argument("--session", required=True)
+    q.add_argument("--title", default=None)
+    q.add_argument("--scheduled-at", default=None, help="local time, e.g. 2026-09-15T19:00")
+    q.add_argument("--timezone", default=None)
+    q.add_argument("--duration", type=int, default=None)
+    q.add_argument("--grace", type=int, default=None)
+    q.add_argument("--passphrase", default=None)
+    q.add_argument("--allow-reuse", action="store_true")
+
     q = sp.add_parser("announce", help="stamp announced_at_utc — what latency is measured from")
     q.add_argument("--session", required=True)
     q.add_argument(
