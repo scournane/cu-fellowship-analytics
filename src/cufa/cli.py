@@ -748,6 +748,25 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _force_utf8_output() -> None:
+    """Print UTF-8 regardless of the console's default encoding.
+
+    The report, the fixture names and the guidance text all contain em-dashes
+    and curly quotes. A Windows console still defaults to a legacy code page in
+    many setups, where printing those either raises UnicodeEncodeError — which
+    reads as the pipeline crashing — or renders them as replacement characters.
+    Neither is acceptable output for a tool whose job is to be readable.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                # A stream that cannot be reconfigured (already detached, or a
+                # test harness substitute) is not worth failing the command for.
+                pass
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point. Returns an exit code rather than raising.
 
@@ -755,6 +774,7 @@ def main(argv: list[str] | None = None) -> int:
     timezone flag) print their guidance and exit 1. Only genuinely unexpected
     exceptions reach the user as a traceback, so a traceback always means a bug.
     """
+    _force_utf8_output()
     args = build_parser().parse_args(argv)
     configure_logging(args.log_level or get_settings().log_level)
     try:

@@ -47,6 +47,44 @@ Supabase does not support that, and `npx supabase` inside the repo will warn you
 
 ---
 
+## Windows
+
+Everything here works on Windows; only the entry point differs.
+
+`make` is not present on a stock Windows install, and the Makefile's recipes were
+bash. Rather than ask you to install a POSIX toolchain to run a Python project,
+every target is implemented in `tasks.py` using only the standard library:
+
+```
+python tasks.py doctor        what is installed, what is missing, how to fix it
+python tasks.py setup
+python tasks.py demo
+python tasks.py test
+```
+
+On macOS and Linux, `make <target>` forwards to exactly these, so the two cannot
+drift.
+
+Windows-specific notes:
+
+- **Activating the virtualenv** is `.venv\Scripts\Activate.ps1` in PowerShell,
+  not `source .venv/bin/activate`. If PowerShell refuses to run it, that is
+  execution policy:
+  `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`.
+- **There is no `requirements.txt`.** Dependencies are declared in
+  `pyproject.toml`. The manual install is `pip install -e ".[dev]"` — **with the
+  quotes**, because PowerShell parses a bare `[dev]` as an array.
+- **Docker Desktop must be running**, not merely installed. `python tasks.py
+  doctor` distinguishes the two.
+- **Installing the Supabase CLI**: `scoop install supabase` (after
+  `scoop bucket add supabase https://github.com/supabase/scoop-bucket.git`), or
+  `npm install -g supabase`, or the `supabase_windows_amd64.zip` from the
+  [releases page](https://github.com/supabase/cli/releases).
+- **Console output is forced to UTF-8** by both `tasks.py` and the `cufa` CLI.
+  The report contains em-dashes, and a legacy Windows code page would otherwise
+  turn printing them into a `UnicodeEncodeError` that reads like a crash.
+
+
 ## The database
 
 ```bash

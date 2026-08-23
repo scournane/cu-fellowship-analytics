@@ -27,11 +27,33 @@ The full reasoning, and every alternative rejected, is in
 
 ## Clone to a working demo
 
-```bash
-git clone <this repo> && cd cu-fellowship-analytics
-make setup        # deps, supabase init, checks Docker is running
-make demo         # the whole pipeline on synthetic data
+**Windows (PowerShell), macOS, Linux — the same two commands everywhere:**
+
 ```
+git clone <this repo>
+cd cu-fellowship-analytics
+python tasks.py setup     # creates .venv, installs deps, checks Docker and Supabase
+python tasks.py demo      # the whole pipeline on synthetic data
+```
+
+On macOS and Linux, `make setup` and `make demo` do exactly the same thing — the
+Makefile just forwards to `tasks.py`, so the two cannot drift. There is no
+`make` on a stock Windows install, which is why `tasks.py` is the canonical
+entry point rather than a Windows afterthought.
+
+**If something is missing, ask before guessing:**
+
+```
+python tasks.py doctor
+```
+
+It reports Python, dependencies, Docker and the Supabase CLI, and prints the
+install command for whichever of them is absent, for your OS.
+
+> There is no `requirements.txt`. Dependencies live in `pyproject.toml`, which is
+> what pip reads — `pip install -e ".[dev]"` is the manual equivalent of
+> `python tasks.py setup`. (In PowerShell the quotes are required: without them
+> `[dev]` is parsed as an array.)
 
 `make demo` needs **no Google account and no `GEMINI_API_KEY`**. It runs against
 `FakeGoogleClient`, which reproduces each documented Google failure mode, so the
@@ -42,7 +64,7 @@ Re-run `make demo` and the numbers are identical — ingest is idempotent.
 
 Requirements: Python 3.11+, Docker (the local Supabase stack runs in it), and
 the [Supabase CLI](https://supabase.com/docs/guides/local-development/cli/getting-started).
-`make setup` checks all three and tells you exactly what is missing.
+`python tasks.py setup` checks all three and tells you exactly what is missing.
 
 ### What the demo actually does
 
@@ -60,11 +82,21 @@ the [Supabase CLI](https://supabase.com/docs/guides/local-development/cli/gettin
 
 ### Other entry points
 
-```bash
-make demo-console   # demo data plus the web console, zero Google calls
-make demo-ai        # tier 2 live; skips with a message if GEMINI_API_KEY is unset
-make test           # 85 tests, no network
-make clean          # stop Supabase, remove generated fixtures
+```
+python tasks.py demo-console   # demo data plus the web console, zero Google calls
+python tasks.py demo-again     # re-run over the same database, to show idempotency
+python tasks.py demo-ai        # tier 2 live; skips with a message if no GEMINI_API_KEY
+python tasks.py test           # 157 tests, no network
+python tasks.py clean          # stop Supabase, remove generated fixtures
+```
+
+Each has a `make` equivalent on macOS and Linux (`make demo-console`, and so on).
+
+To run `cufa` directly, activate the virtualenv first:
+
+```
+.venv\Scripts\Activate.ps1     # Windows PowerShell
+source .venv/bin/activate      # macOS / Linux
 ```
 
 Inspect the data visually in **Supabase Studio** at http://localhost:54323, or
