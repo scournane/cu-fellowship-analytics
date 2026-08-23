@@ -617,6 +617,15 @@ def main(argv: list[str] | None = None) -> int:
     except CufaError as exc:
         print(f"\nerror: {exc}\n", file=sys.stderr)
         return 1
+    except BrokenPipeError:
+        # `cufa review | head` closes the pipe partway through. That is a normal
+        # way to use these commands, not a failure, and a traceback here would
+        # look like the query broke. Python flushes stdout at exit, which would
+        # raise again, so stdout is redirected to devnull first.
+        import os
+
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 0
     except KeyboardInterrupt:  # pragma: no cover
         return 130
 
