@@ -15,6 +15,10 @@ T0 is the announcement:
   evidence of when the form went out.
 
 NULL when no session matched — there is nothing to measure from.
+
+Negative values are possible and are kept. They mean a submission arrived
+before the announcement was stamped, which is worth seeing rather than
+rounding away.
 """
 
 from __future__ import annotations
@@ -62,14 +66,19 @@ def recompute_for_session(conn: psycopg.Connection, session_id: str) -> int:
     if t0 is None:
         return 0
 
+    # Deliberately NOT clamped at zero. A submission that predates the
+    # announcement stamp is a real observation — usually the teacher pressed
+    # "Announce now" late, occasionally something else — and clamping it to 0
+    # would be interpreting the number, which this module explicitly does not
+    # do. A negative value is visible; a clamped one is not.
     updated = execute(
         conn,
         """
         update checkin
-           set latency_seconds = greatest(0, extract(epoch from (submitted_at_utc - %s))::int)
+           set latency_seconds = extract(epoch from (submitted_at_utc - %s))::int
          where session_id = %s
            and latency_seconds is distinct from
-               greatest(0, extract(epoch from (submitted_at_utc - %s))::int)
+               extract(epoch from (submitted_at_utc - %s))::int
         """,
         (t0, session_id, t0),
     )

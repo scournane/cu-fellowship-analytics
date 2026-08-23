@@ -477,3 +477,20 @@ def test_gemini_response_schema_is_valid_for_the_sdk():
     assert "justice" in rendered
     for leak in ("@", "fellow_id", "cohort", "CU-"):
         assert leak not in rendered, f"tier 2 prompt must not carry {leak!r}"
+
+
+def test_20d_a_submission_before_the_announcement_keeps_its_negative_latency(db, tmp_path):
+    """Latency is stored, not interpreted — including when it is negative.
+
+    A teacher who presses "Announce now" a minute after the first fellow has
+    already submitted produces exactly this. Clamping it to zero would be an
+    interpretation, and would hide the case worth noticing.
+    """
+    session_id = make_session(db, local=datetime(2026, 9, 15, 19, 0))
+    _ingest(db, tmp_path, ("2026-09-15 19:20:00", "early@example.invalid", "justice"))
+
+    # Announced a minute AFTER that submission landed.
+    announce_now(db, session_id, datetime(2026, 9, 15, 23, 21, tzinfo=UTC))
+    recompute_for_session(db, session_id)
+
+    assert fetch_one(db, "select latency_seconds from checkin")["latency_seconds"] == -60
