@@ -125,7 +125,7 @@ def cmd_google(args: argparse.Namespace) -> int:
     `status` and `disconnect` exit non-zero when there is nothing usable
     connected, so a shell script can gate on them.
     """
-    from .google.oauth import authorization_url, credential_status, disconnect, store_credential
+    from .google.oauth import credential_status, disconnect, store_credential
 
     settings = get_settings()
 
@@ -152,11 +152,16 @@ def cmd_google(args: argparse.Namespace) -> int:
         return 0
 
     if args.google_action == "connect":
-        # The console owns the redirect. On the CLI we print the URL and take
-        # the pasted code, so a headless machine can still connect.
+        # The console owns the redirect; here the whole round trip is one
+        # process, so a single Flow instance carries the PKCE verifier from
+        # the URL it prints to the fetch_token() call below — no state or
+        # cookie needed, unlike the console's two-HTTP-request version of this.
         from .google.oauth import build_flow
 
-        url, _state = authorization_url(settings)
+        flow = build_flow(settings)
+        url, _state = flow.authorization_url(
+            access_type="offline", include_granted_scopes="true", prompt="consent"
+        )
         print("Open this URL, sign in as the CU staff account that should own the forms:\n")
         print(f"  {url}\n")
         print("After approving you will be redirected to a URL containing `code=`.")
@@ -164,7 +169,6 @@ def cmd_google(args: argparse.Namespace) -> int:
         if not code:
             raise CufaError("No code supplied; nothing was stored.")
 
-        flow = build_flow(settings)
         flow.fetch_token(code=code)
         credentials = flow.credentials
         if not credentials.refresh_token:

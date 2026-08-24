@@ -79,18 +79,26 @@ def build_flow(settings: Settings | None = None, *, state: str | None = None) ->
     return flow
 
 
-def authorization_url(settings: Settings | None = None, *, state: str | None = None) -> tuple[str, str]:
-    """Return ``(url, state)`` for the consent screen.
+def authorization_url(
+    settings: Settings | None = None, *, state: str | None = None
+) -> tuple[str, str, str]:
+    """Return ``(url, state, code_verifier)`` for the consent screen.
 
     ``access_type=offline`` plus ``prompt=consent`` is what actually yields a
     refresh token; without both, a re-consent returns only an access token and
     the connection silently stops working an hour later.
+
+    The verifier is PKCE's proof that whoever exchanges the code for a token is
+    the same party that started this request. Flow generates it internally the
+    moment ``authorization_url()`` runs, and that only lives on this ``flow``
+    object — the token exchange happens on a separate later request, against a
+    freshly built Flow, so the caller must carry this value there itself.
     """
     flow = build_flow(settings, state=state)
     url, returned_state = flow.authorization_url(
         access_type="offline", include_granted_scopes="true", prompt="consent"
     )
-    return url, returned_state
+    return url, returned_state, flow.code_verifier
 
 
 def store_credential(

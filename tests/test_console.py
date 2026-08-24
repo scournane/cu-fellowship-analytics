@@ -18,8 +18,11 @@ sign-in is the dev bypass.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import os
 import uuid
+from urllib.parse import parse_qs, urlparse
 
 # Settings are read once and cached, and importing the app reads them, so the
 # environment has to be right before any cufa import happens.
@@ -35,6 +38,7 @@ from cufa import crypto  # noqa: E402
 from cufa.config import get_settings, reset_settings_cache  # noqa: E402
 from cufa.console import qr  # noqa: E402
 from cufa.console.app import app  # noqa: E402
+from cufa.console.auth import read_code_verifier  # noqa: E402
 from cufa.db import connection, execute, fetch_all  # noqa: E402
 from cufa.decisions import current_decision, record_decision  # noqa: E402
 from cufa.errors import DatabaseUnreachable  # noqa: E402
@@ -268,6 +272,66 @@ def test_connect_screen_simulates_the_connection_without_google(
 
     response = signed_in.post("/google/disconnect")
     assert response.status_code == 303
+
+
+# --------------------------------------------------------------------------
+# PKCE: the verifier must survive the redirect, not just the redirect itself
+# --------------------------------------------------------------------------
+#
+# Regression coverage for a bug where the console built a fresh Flow object on
+# the callback request, so it never had the code_verifier the first Flow
+# generated — Google's token endpoint then rejected every real sign-in and
+# connect attempt with "(invalid_grant) Missing code verifier". Nothing above
+# this line would have caught it: /google/connect only exercises the
+# CUFA_FAKE_GOOGLE branch, which never builds a Flow at all. These don't call
+# Google — authorization_url() is pure local URL construction — they just
+# prove the verifier recoverable from the callback side reproduces the
+# code_challenge already baked into the redirect Google was sent.
+
+
+def _assert_pkce_round_trips(response) -> None:
+    query = parse_qs(urlparse(response.headers["location"]).query)
+    assert query["code_challenge_method"][0] == "S256"
+    code_challenge = query["code_challenge"][0]
+
+    cookie = response.cookies.get("cufa_console_pkce")
+    assert cookie, "no PKCE cookie was set alongside the redirect"
+    verifier = read_code_verifier(get_settings(), cookie)
+    assert verifier, "the PKCE cookie did not verify"
+
+    recomputed = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
+    assert recomputed.decode().rstrip("=") == code_challenge
+
+
+def test_signin_google_carries_its_pkce_verifier_to_the_callback(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "test-client-id.apps.googleusercontent.com")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "test-client-secret")
+    reset_settings_cache()
+    try:
+        response = client.get("/signin/google")
+        assert response.status_code == 303
+        _assert_pkce_round_trips(response)
+    finally:
+        monkeypatch.undo()
+        reset_settings_cache()
+
+
+def test_google_connect_carries_its_pkce_verifier_to_the_callback(
+    signed_in: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "test-client-id.apps.googleusercontent.com")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "test-client-secret")
+    monkeypatch.setenv("CUFA_FAKE_GOOGLE", "0")
+    reset_settings_cache()
+    try:
+        response = signed_in.post("/google/connect")
+        assert response.status_code == 303
+        _assert_pkce_round_trips(response)
+    finally:
+        monkeypatch.undo()
+        reset_settings_cache()
 
 
 def test_an_unknown_session_id_is_a_404_not_a_500(signed_in: TestClient) -> None:

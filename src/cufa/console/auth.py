@@ -34,9 +34,11 @@ log = get_logger(__name__)
 COOKIE_NAME = "cufa_console_session"
 SESSION_MAX_AGE = 12 * 60 * 60  # one working day; re-signing in is cheap
 STATE_MAX_AGE = 10 * 60  # an OAuth round trip, generously
+PKCE_COOKIE_NAME = "cufa_console_pkce"
 
 _SESSION_SALT = "cufa-console-session"
 _STATE_SALT = "cufa-console-oauth-state"
+_PKCE_SALT = "cufa-console-oauth-pkce"
 
 
 class NotSignedIn(Exception):
@@ -89,6 +91,10 @@ def _session_serializer(settings: Settings) -> URLSafeTimedSerializer:
 
 def _state_serializer(settings: Settings) -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(settings.console_secret, salt=_STATE_SALT)
+
+
+def _pkce_serializer(settings: Settings) -> URLSafeTimedSerializer:
+    return URLSafeTimedSerializer(settings.console_secret, salt=_PKCE_SALT)
 
 
 def issue_session(settings: Settings, user: ConsoleUser) -> str:
@@ -144,15 +150,42 @@ def read_state(settings: Settings, token: str | None) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def sign_code_verifier(settings: Settings, code_verifier: str) -> str:
+    """Sign the PKCE ``code_verifier`` for its own short-lived cookie.
+
+    It rides in a cookie rather than as an extra key on ``state``: ``state``
+    becomes a URL query parameter that Google echoes straight back, so it ends
+    up in browser history and web server access logs, while a cookie only ever
+    travels in a request header between the browser and this origin — a
+    smaller footprint for a value that stands in for the authorization code.
+    """
+    return _pkce_serializer(settings).dumps(code_verifier)
+
+
+def read_code_verifier(settings: Settings, token: str | None) -> str | None:
+    """Verify a PKCE cookie value, or None if it is absent, stale or forged."""
+    if not token:
+        return None
+    try:
+        value = _pkce_serializer(settings).loads(token, max_age=STATE_MAX_AGE)
+    except (BadSignature, SignatureExpired):
+        log.warning("rejected a PKCE cookie that did not verify")
+        return None
+    return value if isinstance(value, str) else None
+
+
 __all__ = [
     "COOKIE_NAME",
+    "PKCE_COOKIE_NAME",
     "SESSION_MAX_AGE",
     "ConsoleUser",
     "NotSignedIn",
     "dev_signin_available",
     "is_allowed",
     "issue_session",
+    "read_code_verifier",
     "read_session",
     "read_state",
+    "sign_code_verifier",
     "sign_state",
 ]

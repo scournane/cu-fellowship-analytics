@@ -58,14 +58,18 @@ from ..template import MANUAL_STEP, create_template, get_template, verify_templa
 from ..timeutil import TimezoneError, get_zone
 from .auth import (
     COOKIE_NAME,
+    PKCE_COOKIE_NAME,
     SESSION_MAX_AGE,
+    STATE_MAX_AGE,
     ConsoleUser,
     NotSignedIn,
     dev_signin_available,
     is_allowed,
     issue_session,
+    read_code_verifier,
     read_session,
     read_state,
+    sign_code_verifier,
     sign_state,
 )
 from .qr import QrTooLong, qr_svg
@@ -235,7 +239,9 @@ def signin_google(request: Request, next: str = "/") -> Response:
             google_ready=False,
             error=str(exc),
         )
-    return RedirectResponse(url, status_code=303)
+    response = RedirectResponse(url, status_code=303)
+    _set_pkce_cookie(response, settings, flow.code_verifier)
+    return response
 
 
 @app.post("/signout")
@@ -256,6 +262,18 @@ def _set_session_cookie(response: Response, settings: Settings, user: ConsoleUse
         # The console is documented as local-only, and forcing Secure would make
         # it unusable over plain http on 127.0.0.1. Behind TLS the deployment
         # sets this; it is not something to guess from inside the process.
+        secure=False,
+    )
+
+
+def _set_pkce_cookie(response: Response, settings: Settings, code_verifier: str) -> None:
+    response.set_cookie(
+        PKCE_COOKIE_NAME,
+        sign_code_verifier(settings, code_verifier),
+        max_age=STATE_MAX_AGE,
+        httponly=True,
+        samesite="lax",
+        path="/",
         secure=False,
     )
 
@@ -349,10 +367,12 @@ def google_connect(request: Request, user: ConsoleUser = Depends(require_user)) 
         state = sign_state(
             settings, {"purpose": "connect", "nonce": secrets.token_urlsafe(12)}
         )
-        url, _ = authorization_url(settings, state=state)
+        url, _, code_verifier = authorization_url(settings, state=state)
     except CufaError as exc:
         return _connect_error(request, str(exc))
-    return RedirectResponse(url, status_code=303)
+    response = RedirectResponse(url, status_code=303)
+    _set_pkce_cookie(response, settings, code_verifier)
+    return response
 
 
 def _connect_error(request: Request, message: str) -> Response:
@@ -415,8 +435,17 @@ def google_callback(
 def _finish_signin(
     request: Request, settings: Settings, *, code: str, state: str | None, payload: dict[str, Any]
 ) -> Response:
+    code_verifier = read_code_verifier(settings, request.cookies.get(PKCE_COOKIE_NAME))
+    if not code_verifier:
+        return RedirectResponse(
+            "/signin?error="
+            + quote("Your sign-in session expired or cookies are blocked. Enable cookies and try again."),
+            status_code=303,
+        )
+
     try:
         flow = _signin_flow(settings, state=state)
+        flow.code_verifier = code_verifier
         flow.fetch_token(code=code)
         email = _account_email(flow.credentials)
     except Exception as exc:  # network, consent, or clock problems all land here
@@ -451,8 +480,15 @@ def _finish_connect(
 ) -> Response:
     from ..google.oauth import build_flow
 
+    code_verifier = read_code_verifier(settings, request.cookies.get(PKCE_COOKIE_NAME))
+    if not code_verifier:
+        return _connect_error(
+            request, "Your connect session expired or cookies are blocked. Enable cookies and try again."
+        )
+
     try:
         flow = build_flow(settings, state=state)
+        flow.code_verifier = code_verifier
         flow.fetch_token(code=code)
         credentials = flow.credentials
         if not credentials.refresh_token:
