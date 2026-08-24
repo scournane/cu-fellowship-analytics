@@ -1,0 +1,15 @@
+{
+  "version": "1.0.0",
+  "owner": "adiah@civicsunplugged.org",
+  "status": "DRAFT — NOT APPROVED",
+  "schedule": {
+    "teacher_question": [1, 4, 7, 10],
+    "muddiest_point":   [2, 5, 8],
+    "application":      [3, 6, 9]
+  },
+  "fixed_text": {
+    "muddiest_point": "What's still unclear?",
+    "application": "One way you'd use this in your project"
+  },
+  "wrap": true
+}

@@ -1,0 +1,18 @@
+{
+  "version": "1.0.0",
+  "status": "DRAFT — NOT APPROVED",
+  "_comment": [
+    "Who is emailed the moment a fellow ticks 'I'd like someone to check in with me'.",
+    "If `recipients` is empty, the checkbox is OMITTED from every provisioned Part B",
+    "form and provisioning logs why. That is deliberate: a system that invites people",
+    "to ask for help and routes it nowhere is worse than one that never asks.",
+    "CU confirmed on 2026-08-10 that no dedicated Fellow-support responder role exists",
+    "yet. The Director of Programs does exist, so that is the named human here until",
+    "CU names someone else. Change `recipients` to change who is woken up."
+  ],
+  "recipients": [
+    {"name": "Director of Programs", "email": "adiah@civicsunplugged.org"}
+  ],
+  "from_address": "no-reply@civicsunplugged.org",
+  "subject_prefix": "[Civic Innovators] Check-in request"
+}

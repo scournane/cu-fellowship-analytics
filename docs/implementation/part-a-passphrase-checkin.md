@@ -244,8 +244,8 @@ database. Leave no manual setup steps.
 
 - Migrations in `supabase/migrations/` (`supabase migration new <name>`)
 - Seed in `supabase/seed.sql`, applied by `supabase db reset`
-- Local Postgres: `postgresql://postgres:postgres@localhost:54322/postgres`
-- Studio (visual table browser): `http://localhost:54323`
+- Local Postgres: `postgresql://postgres:postgres@localhost:64322/postgres`
+- Studio (visual table browser): `http://localhost:64323`
 - Docker must be running before `supabase start` — say so, and fail with a clear
   message if the stack is unreachable
 
@@ -573,7 +573,7 @@ so the handling is actually tested:
 Google client, so every screen including provisioning and review can be clicked
 through without touching Google.
 
-**Inspecting results:** document Supabase Studio at `http://localhost:54323`, plus
+**Inspecting results:** document Supabase Studio at `http://localhost:64323`, plus
 copy-pasteable SQL for: current decisions per fellow, everything needing review,
 AI decisions with reasoning, cache hit rate, provisioning log.
 

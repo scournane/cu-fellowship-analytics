@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cufa"
+version = "0.1.0"
+description = "Civic Innovators Fellowship — mid-session passphrase check-in (part A) and end-of-session check-in (part B)"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "jinja2",
+    "psycopg[binary]",
+    "google-genai",
+    "google-auth",
+    "google-auth-oauthlib",
+    "google-api-python-client",
+    "cryptography",
+    "python-dotenv",
+    "itsdangerous",
+    "python-multipart",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "httpx"]
+
+[project.scripts]
+cufa = "cufa.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+cufa = ["console/templates/*.html", "console/static/*", "data/*.txt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
