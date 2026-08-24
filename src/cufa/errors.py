@@ -55,6 +55,24 @@ class EmailCollectionRejected(CufaError):
     """
 
 
+class FormUnreachable(CufaError):
+    """A stored form id cannot be read by the client that is connected.
+
+    Two causes, and both come back from Google as a bare 404 that says nothing
+    useful:
+
+    * **Simulated state in a real run.** ``make demo`` writes forms created by
+      ``FakeGoogleClient`` into whatever database ``CUFA_DATABASE_URL`` points
+      at. Connect a real Google account afterwards and the console asks Google
+      for ``fake-form-0001``, which has never existed.
+    * **A form that is genuinely gone**, or that belongs to a different Google
+      account than the one now connected.
+
+    Detected before the API call where possible, so the message can say which of
+    the two it is instead of forwarding "Requested entity was not found".
+    """
+
+
 class AmbiguousSession(CufaError):
     """A timestamp fell inside more than one session window."""
 

@@ -177,8 +177,27 @@ def test_every_documented_command_is_reachable():
         "db", "serve", "google", "template", "load-roster", "load-sessions",
         "session", "provision", "pull", "ingest", "adjudicate", "decide",
         "review", "report",
+        # Part B
+        "themes", "shoutouts", "help-requests", "rotation",
     }
     assert expected <= set(subparsers.choices)
+
+
+def test_the_part_aware_commands_all_take_a_part_flag():
+    """Everything Part B needs is a flag on an existing command, not a parallel
+    command tree. Two command trees is two places for a fix to be applied to
+    one of."""
+    parser = build_parser()
+    subparsers = next(
+        action for action in parser._actions if hasattr(action, "choices") and action.choices
+    )
+    for command in ("template", "provision", "pull"):
+        options = {
+            option
+            for action in subparsers.choices[command]._actions
+            for option in action.option_strings
+        }
+        assert "--part" in options, command
 
 
 def test_ingest_rejects_a_missing_timezone_at_the_cli(db, tmp_path, capsys):

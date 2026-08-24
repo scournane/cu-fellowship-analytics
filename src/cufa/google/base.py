@@ -1,7 +1,7 @@
 """The contract every Forms/Drive client implements — real or fake.
 
-Six methods, chosen so that each of the four documented traps is *observable*
-through the interface rather than hidden inside one implementation:
+Seven methods, chosen so that each documented trap is *observable* through the
+interface rather than hidden inside one implementation:
 
   * ``read_settings`` returns both the email-collection type (trap 2) and the
     publish state (trap 1), because both must be read back and asserted.
@@ -9,10 +9,14 @@ through the interface rather than hidden inside one implementation:
     reliably through ``batchUpdate`` (trap 2).
   * ``list_responses`` exists because there is no REST way to link a response
     spreadsheet (trap 3).
+  * ``get_form`` exists because ``forms.responses.list`` keys answers by
+    ``questionId``, and whether a Drive copy preserves those ids across copies is
+    **not verified either way** (trap 5). Ids are therefore read back off the
+    form after provisioning rather than assumed, hardcoded, or matched by title.
 
-The fake in ``fake.py`` implements the same six and can be told to reproduce
-each failure, so trap handling is exercised in tests rather than asserted in a
-comment.
+The fake in ``fake.py`` implements the same seven and can be told to reproduce
+each failure — including both possible question-id behaviours — so trap handling
+is exercised in tests rather than asserted in a comment.
 """
 
 from __future__ import annotations
@@ -107,18 +111,57 @@ class FormState:
 
 
 @dataclass(frozen=True)
+class FormItem:
+    """One question on a form, as ``forms.get`` describes it.
+
+    ``question_id`` is the key ``forms.responses.list`` files answers under, and
+    ``index`` is the position this application controlled when it created the
+    item. Part B resolves answers by index-assigned slot, never by title: the
+    rotating slot's title changes every week and a teacher may edit any of the
+    others in the Forms UI without telling anyone.
+    """
+
+    item_id: str
+    question_id: str
+    title: str
+    index: int
+    kind: str = "text"
+
+
+@dataclass(frozen=True)
+class FormDefinition:
+    """A form's structure, read back after provisioning to record its ids."""
+
+    form_id: str
+    title: str
+    items: tuple[FormItem, ...] = ()
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    def by_index(self) -> dict[int, FormItem]:
+        return {item.index: item for item in self.items}
+
+
+@dataclass(frozen=True)
 class FormResponse:
     """One submitted response, as returned by ``forms.responses.list``.
 
     ``submitted_at`` is RFC3339 UTC straight from the API — the reason this path
     is preferred over a linked spreadsheet, which writes locale-formatted times
     with no offset marker.
+
+    Two views of the same answers. ``answers`` is keyed by question *title* and
+    is what Part A's single-question form uses. ``answers_by_id`` is keyed by
+    ``questionId``, which is what the API actually returns and what Part B
+    resolves through ``form_question_map``. Titles are lossy — two items can
+    share one, and an edit in the Forms UI changes one — so the id-keyed view is
+    the authoritative one wherever a form has more than one question.
     """
 
     response_id: str
     respondent_email: str
     submitted_at: str
     answers: dict[str, str] = field(default_factory=dict)
+    answers_by_id: dict[str, str] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -132,10 +175,27 @@ class ResponsePage:
 
 @runtime_checkable
 class FormsClient(Protocol):
-    """The six calls this system makes against Google."""
+    """The seven calls this system makes against Google."""
+
+    #: Whether this client simulates Google rather than calling it. Read by
+    #: ``cufa.provenance`` to catch a stored form id that belongs to the other
+    #: kind of client — the demo's simulated forms sitting in a database a real
+    #: account has since been connected to, or the reverse. Both otherwise
+    #: surface as a bare 404 that explains nothing.
+    is_fake: bool
 
     def create_template(self, title: str, description: str = "") -> FormRef:
         """Create the one template form all session forms are copied from."""
+        ...
+
+    def get_form(self, form_id: str) -> FormDefinition:
+        """Read a form's items back, with the question ids the API assigned.
+
+        Called after provisioning a Part B form so the ``questionId`` -> slot
+        mapping can be recorded. Never skipped and never cached across a
+        ``batchUpdate``: a copy may or may not preserve ids, and assuming either
+        way produces answers filed under the wrong field with no error.
+        """
         ...
 
     def read_settings(self, form_id: str) -> FormState:

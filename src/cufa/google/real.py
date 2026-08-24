@@ -8,8 +8,14 @@ and exercised identically here.
 Two details worth knowing before editing this file:
 
 * ``forms.responses.list`` keys answers by ``questionId``, not by question text.
-  The mapping is read from the form once and cached, so the passphrase answer
-  can be looked up by the title a human recognises.
+  Both views are returned: ``answers`` keyed by title for Part A's single
+  question, and ``answers_by_id`` keyed by ``questionId``, which is what Part B
+  resolves through ``form_question_map``. Titles are a convenience; ids are the
+  contract.
+* ``get_form`` is a separate call from ``read_settings`` even though both hit
+  ``forms.get``. They answer different questions — publish state versus question
+  ids — and the id read must never be served from a cache that a ``batchUpdate``
+  could have invalidated.
 * ``setPublishSettings`` is newer than some builds of the discovery document.
   If the generated client does not expose it, the request is issued directly
   against the REST endpoint with the same credentials rather than being skipped —
@@ -26,6 +32,8 @@ from typing import Any
 from ..logging_setup import get_logger
 from .base import (
     PASSPHRASE_QUESTION_TITLE,
+    FormDefinition,
+    FormItem,
     FormRef,
     FormResponse,
     FormState,
@@ -86,6 +94,8 @@ def _execute(request: Any) -> Any:
 class RealGoogleClient:
     """``FormsClient`` backed by the live Forms and Drive APIs."""
 
+    is_fake = False
+
     def __init__(self, credentials: Any) -> None:
         from googleapiclient.discovery import build
 
@@ -113,7 +123,79 @@ class RealGoogleClient:
                     }
                 ],
             )
+        self._rename_in_drive(form_id, title)
         return self._ref(form_id, created)
+
+    def _rename_in_drive(self, form_id: str, name: str) -> None:
+        """Give the Drive file the same name as the form.
+
+        A form's document title and its Drive filename are separate, and
+        ``forms.create`` sets only the first. Without this the templates sit in
+        a staff member's Drive as two files called "Untitled form", which is
+        exactly the pair of files somebody needs to find later to do the manual
+        Verified step on.
+
+        Session forms do not need it — ``files.copy`` takes a ``name`` — so this
+        is only for the two created from scratch.
+
+        Best-effort: a template with the wrong filename is untidy, and failing
+        the creation over it would be worse than untidy.
+        """
+        try:
+            _execute(
+                self._drive.files().update(
+                    fileId=form_id, body={"name": name}, fields="id", supportsAllDrives=True
+                )
+            )
+        except GoogleApiError as exc:  # pragma: no cover - cosmetic only
+            log.warning(
+                "could not rename form %s in Drive (%s); it will show as "
+                "'Untitled form' there",
+                form_id,
+                exc,
+            )
+
+    def get_form(self, form_id: str) -> FormDefinition:
+        """Read the form's items back, with the ids responses will be keyed by.
+
+        Not cached. This is called once per provisioned form, immediately after
+        its questions are created, to record the ``questionId`` -> slot mapping —
+        and a cached answer there would be the one bug the mapping table exists
+        to prevent.
+        """
+        form = _execute(self._forms.forms().get(formId=form_id))
+        items: list[FormItem] = []
+        for index, item in enumerate(form.get("items", [])):
+            question = (item.get("questionItem") or {}).get("question") or {}
+            question_id = question.get("questionId")
+            if not question_id:
+                # Page breaks, images and section headers are items too and have
+                # no question id. They still occupy an index, so they are skipped
+                # rather than counted — which is why the index recorded on
+                # FormItem is the enumerate position of the item, and slot
+                # assignment is done against the items this app created.
+                continue
+            if "scaleQuestion" in question:
+                kind = "scale"
+            elif "choiceQuestion" in question:
+                kind = "choice"
+            else:
+                kind = "text"
+            items.append(
+                FormItem(
+                    item_id=item.get("itemId", ""),
+                    question_id=question_id,
+                    title=item.get("title") or "",
+                    index=index,
+                    kind=kind,
+                )
+            )
+        return FormDefinition(
+            form_id=form_id,
+            title=(form.get("info") or {}).get("title", ""),
+            items=tuple(items),
+            raw=form,
+        )
 
     def read_settings(self, form_id: str) -> FormState:
         form = _execute(self._forms.forms().get(formId=form_id))
@@ -194,6 +276,7 @@ class RealGoogleClient:
                 # not when the fellow answered.
                 submitted_at=item.get("lastSubmittedTime") or item.get("createTime", ""),
                 answers=_extract_answers(item.get("answers") or {}, titles),
+                answers_by_id=_extract_answers(item.get("answers") or {}, {}),
                 raw=item,
             )
             for item in payload.get("responses", [])
@@ -246,7 +329,13 @@ class RealGoogleClient:
 
 
 def _extract_answers(answers: dict[str, Any], titles: dict[str, str]) -> dict[str, str]:
-    """Flatten the answers payload to ``{question title: text}``."""
+    """Flatten the answers payload, keyed by title or — with no titles — by id.
+
+    A checkbox with one option comes back the same way a text answer does: a
+    ``textAnswers.answers`` list whose single value is the option's text. That is
+    why the help field needs no special case here and is instead recognised by
+    the slot its question id maps to.
+    """
     flattened: dict[str, str] = {}
     for question_id, answer in answers.items():
         values = ((answer or {}).get("textAnswers") or {}).get("answers") or []

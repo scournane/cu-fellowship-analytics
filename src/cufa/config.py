@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 from .errors import ConfigError
 
-DEFAULT_DSN = "postgresql://postgres:postgres@localhost:54322/postgres"
+DEFAULT_DSN = "postgresql://postgres:postgres@localhost:64322/postgres"
 
 
 def _repo_root() -> Path:
@@ -34,6 +34,15 @@ class Settings:
     encryption_key: str | None = None
 
     console_allowlist: tuple[str, ...] = ()
+    #: Who may open the help-requests screen. A SUBSET of console_allowlist, and
+    #: deliberately a separate list: the general console allowlist is "CU staff
+    #: who run lessons", and a record that a young person asked to be contacted
+    #: is not routine operational data. When this is empty the recipients named
+    #: in config/help_routing.json are used instead — the people already being
+    #: emailed the requests are the obvious people allowed to read them, and
+    #: invariant 2 guarantees that list is non-empty whenever the field exists
+    #: on a form at all.
+    help_allowlist: tuple[str, ...] = ()
     console_secret: str = "dev-insecure-secret"
     console_host: str = "127.0.0.1"
     console_port: int = 8000
@@ -78,11 +87,15 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         load_dotenv(_repo_root() / ".env", override=False)
         env = dict(os.environ)
 
-    allowlist = tuple(
-        item.strip().lower()
-        for item in (env.get("CUFA_CONSOLE_ALLOWLIST") or "").split(",")
-        if item.strip()
-    )
+    def _addresses(name: str) -> tuple[str, ...]:
+        return tuple(
+            item.strip().lower()
+            for item in (env.get(name) or "").split(",")
+            if item.strip()
+        )
+
+    allowlist = _addresses("CUFA_CONSOLE_ALLOWLIST")
+    help_allowlist = _addresses("CUFA_HELP_ALLOWLIST")
 
     def _int(name: str, default: int) -> int:
         raw = (env.get(name) or "").strip()
@@ -97,6 +110,7 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         database_url=env.get("CUFA_DATABASE_URL") or DEFAULT_DSN,
         encryption_key=(env.get("CUFA_ENCRYPTION_KEY") or "").strip() or None,
         console_allowlist=allowlist,
+        help_allowlist=help_allowlist,
         console_secret=env.get("CUFA_CONSOLE_SECRET") or "dev-insecure-secret",
         console_host=env.get("CUFA_CONSOLE_HOST") or "127.0.0.1",
         console_port=_int("CUFA_CONSOLE_PORT", 8000),

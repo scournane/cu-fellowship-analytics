@@ -1,6 +1,8 @@
 """Google Forms and Drive access, and the fake that stands in for both."""
 
 from .base import (
+    FormDefinition,
+    FormItem,
     FormRef,
     FormResponse,
     FormState,
@@ -14,6 +16,8 @@ from .base import (
 )
 
 __all__ = [
+    "FormDefinition",
+    "FormItem",
     "FormRef",
     "FormResponse",
     "FormState",

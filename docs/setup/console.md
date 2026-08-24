@@ -2,8 +2,9 @@
 
 The console is a small internal web app for two or three CU staff. It exists so
 that nobody has to build a Google Form by hand — a staff member fills in the
-session details, and the system provisions the form, publishes it, verifies that
-it published, and pulls the responses back later.
+session details, and the system provisions **both** forms for that session,
+publishes them, verifies that they published, and pulls the responses back
+later.
 
 Everything here is also a `cufa` command. The console is a convenience layer, not
 the only entry point; if it ever breaks, the pipeline still runs from a terminal.
@@ -29,13 +30,21 @@ this repo deploys it.
 | Path | Screen | Equivalent command |
 |---|---|---|
 | `/` | Connect Google | `cufa google connect` / `status` / `disconnect` |
-| `/template` | Template setup | `cufa template create` / `verify` / `status` |
+| `/template` | Template setup — **both parts**, each with its own manual step | `cufa template create` / `verify` / `status` `--part a|b` |
 | `/sessions` | Sessions — list, create, edit | `cufa session list` / `create` / `edit` |
-| `/sessions/{id}` | Session detail — the mid-lesson view | `cufa provision`, `cufa session announce`, `cufa pull` |
-| `/review` | Needs-review queue, AI decisions, unresolved addresses | `cufa review`, `cufa decide` |
+| `/sessions/{id}` | Session detail — the mid-lesson view, and both forms | `cufa provision`, `cufa session announce`, `cufa pull` |
+| `/sessions/{id}/responses` | Part B responses — confidence, takeaways, themes | `cufa themes` |
+| `/rotation` | Which question each upcoming week will ask | `cufa rotation` |
+| `/shoutouts` | Names waiting for a human to link | `cufa shoutouts review` / `link` |
+| `/review` | Needs-review queue, AI decisions, unresolved addresses, straight-lining | `cufa review`, `cufa decide` |
+| `/help-requests` | **Access-gated.** Fellows who asked to be checked in with | `cufa help-requests list` / `ack` / `close` |
 
 `/healthz` reports whether the database is reachable, and
 `/sessions/{id}/responses.json` is what the live response counter polls.
+
+**`/help-requests` has its own access list**, separate from the sign-in
+allowlist below — being able to use the console does not open it. See
+[`../safeguarding.md`](../safeguarding.md).
 
 ---
 
@@ -46,6 +55,11 @@ Google sign-in, restricted to an allowlist of CU addresses in `.env`:
 ```
 CUFA_CONSOLE_ALLOWLIST=alice@civicsunplugged.org,bob@civicsunplugged.org
 CUFA_CONSOLE_SECRET=<a long random string>
+
+# Who may open the Help requests screen. A SUBSET of the list above, and a
+# separate one on purpose. Leave blank to fall back to whoever is named in
+# config/help_routing.json — the people already receiving those emails.
+CUFA_HELP_ALLOWLIST=alice@civicsunplugged.org
 ```
 
 There is deliberately no password system. Passwords for an internal tool used by
@@ -195,6 +209,10 @@ The **Review** screen has three lists:
 | A session shows a form but not "ready" | Its publish state was never verified. It may be accepting nothing. Re-provision. |
 | No responses arriving | Check the form is ready, then check the session's scheduled time, duration and grace — a mismatch shows up as ingest warnings. |
 | The database banner says unreachable | Docker or the Supabase stack is not running. `make db-up`. |
+| Provision Part B is greyed out | Either the Part B template is not verified — it has its own manual step — or this week asks the teacher's own question and none is set. The banner on the session says which. |
+| Pulling Part B refuses with "question map is missing" | The form's `questionId` → field map is incomplete, so answers cannot be told apart. Press **Re-check Part B**: it re-reads the form and records the map again without touching a single question. |
+| The help checkbox is not on a form | Nobody is named in `config/help_routing.json`. The session screen says so. This is deliberate — see [`../safeguarding.md`](../safeguarding.md). |
+| "Help requests" is missing from the nav | Your address is not on `CUFA_HELP_ALLOWLIST` (or, if that is unset, not named in `config/help_routing.json`). |
 
 ---
 
@@ -202,4 +220,6 @@ The **Review** screen has three lists:
 
 - [`local-dev.md`](local-dev.md) — Docker, Supabase, Studio, SQL snippets
 - [`google-cloud.md`](google-cloud.md) — enabling the APIs and creating the OAuth client
+- [`part-b-form.md`](part-b-form.md) — the end-of-session form, its own Verified step, and the rotation
+- [`../safeguarding.md`](../safeguarding.md) — the help-request path, for CU staff
 - [`../google-api-traps.md`](../google-api-traps.md) — why the setup is shaped this way

@@ -1,0 +1,3 @@
+/* Layer order must be declared before any layered rule lands, so that the
+   theme can override library defaults and product styles can override both. */
+@layer reset, astryx-base, astryx-theme, product;

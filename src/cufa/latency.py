@@ -31,14 +31,25 @@ from .logging_setup import get_logger
 log = get_logger(__name__)
 
 
-def t0_for_session(conn: psycopg.Connection, session_id: str) -> tuple[object | None, str]:
+# Which observation table each part's submissions live in. Part B measures
+# latency from the same T0 as Part A — the announcement — but falls back to its
+# OWN earliest submission, not Part A's: the two forms go out at different
+# moments, so deriving Part B's origin from a Part A arrival would measure the
+# gap between two different events and call it a response time.
+_OBSERVATION_TABLE = {"a": "checkin", "b": "checkin_b"}
+
+
+def t0_for_session(
+    conn: psycopg.Connection, session_id: str, part: str = "a"
+) -> tuple[object | None, str]:
     """Return ``(t0, source)`` where source is 'announced' or 'derived' or 'none'."""
+    table = _OBSERVATION_TABLE[part]
     row = fetch_one(
         conn,
-        """
+        f"""
         select s.announced_at_utc,
-               (select min(c.submitted_at_utc) from checkin c where c.session_id = s.session_id)
-                   as first_submission
+               (select min(c.submitted_at_utc) from {table} c
+                 where c.session_id = s.session_id) as first_submission
           from "session" s
          where s.session_id = %s
         """,
@@ -53,16 +64,19 @@ def t0_for_session(conn: psycopg.Connection, session_id: str) -> tuple[object | 
     return None, "none"
 
 
-def recompute_for_session(conn: psycopg.Connection, session_id: str) -> int:
+def recompute_for_session(
+    conn: psycopg.Connection, session_id: str, part: str = "a"
+) -> int:
     """Recompute ``latency_seconds`` for every check-in matched to one session.
 
-    This is the one column on ``checkin`` that is allowed to change after
-    insert, and the database trigger enforces that boundary. It has to be
-    recomputable because T0 legitimately moves: a teacher presses "Announce now"
-    after the first fellow has already submitted, and every latency in that
+    This is the one column on ``checkin`` / ``checkin_b`` that is allowed to
+    change after insert, and the database triggers enforce that boundary. It has
+    to be recomputable because T0 legitimately moves: a teacher presses "Announce
+    now" after the first fellow has already submitted, and every latency in that
     session was measured from the wrong origin until this runs.
     """
-    t0, source = t0_for_session(conn, session_id)
+    table = _OBSERVATION_TABLE[part]
+    t0, source = t0_for_session(conn, session_id, part)
     if t0 is None:
         return 0
 
@@ -73,8 +87,8 @@ def recompute_for_session(conn: psycopg.Connection, session_id: str) -> int:
     # do. A negative value is visible; a clamped one is not.
     updated = execute(
         conn,
-        """
-        update checkin
+        f"""
+        update {table}
            set latency_seconds = extract(epoch from (submitted_at_utc - %s))::int
          where session_id = %s
            and latency_seconds is distinct from
@@ -83,16 +97,19 @@ def recompute_for_session(conn: psycopg.Connection, session_id: str) -> int:
         (t0, session_id, t0),
     )
     if updated:
-        log.info("latency recomputed session=%s rows=%d t0=%s", session_id, updated, source)
+        log.info(
+            "latency recomputed session=%s part=%s rows=%d t0=%s",
+            session_id, part, updated, source,
+        )
     return updated
 
 
-def recompute_for_cohort(conn: psycopg.Connection, cohort_id: str) -> int:
+def recompute_for_cohort(conn: psycopg.Connection, cohort_id: str, part: str = "a") -> int:
     from .db import fetch_all
 
     total = 0
     for row in fetch_all(
         conn, 'select session_id from "session" where cohort_id = %s', (cohort_id,)
     ):
-        total += recompute_for_session(conn, str(row["session_id"]))
+        total += recompute_for_session(conn, str(row["session_id"]), part)
     return total

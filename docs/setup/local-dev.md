@@ -97,9 +97,9 @@ make db-down     # supabase stop
 
 | Service | URL |
 |---|---|
-| Postgres | `postgresql://postgres:postgres@localhost:54322/postgres` |
-| Studio (visual table browser) | http://localhost:54323 |
-| API gateway | http://localhost:54321 |
+| Postgres | `postgresql://postgres:postgres@localhost:64322/postgres` |
+| Studio (visual table browser) | http://localhost:64323 |
+| API gateway | http://localhost:64321 |
 
 The DSN goes in `.env` as `CUFA_DATABASE_URL`. The Makefile exports it for every recipe,
 so a clean checkout works before you have written a `.env` at all.
@@ -112,7 +112,7 @@ actually use).
 
 ### Supabase Studio
 
-http://localhost:54323 — the table editor and SQL editor for the local stack. Use it to
+http://localhost:64323 — the table editor and SQL editor for the local stack. Use it to
 browse `checkin`, `attendance_decision`, `provisioning_log` and the two views without
 writing a connection string.
 
@@ -129,7 +129,7 @@ Two things to know:
 `psql` works too:
 
 ```bash
-psql "postgresql://postgres:postgres@localhost:54322/postgres"
+psql "postgresql://postgres:postgres@localhost:64322/postgres"
 ```
 
 ---
@@ -169,9 +169,9 @@ Run `make` (or `make help`) for the list. Overridable variables: `COHORT` (defau
 | Target | What it does |
 |---|---|
 | `make setup` | Creates `.venv`, installs `-e '.[dev]'`, checks Python 3.11+, checks Docker is running, checks the Supabase CLI, runs `supabase init` if needed. |
-| `make demo` | The whole pipeline on synthetic data, **no Google account and no `GEMINI_API_KEY`**: `db-reset` → generate fixtures → load roster and sessions → create the template → *prove provisioning is blocked until the template verifies* → verify → provision every session → seed responses into the fake → pull via the Forms API path → import a CSV via the fallback path → adjudicate `--no-ai` → report → acceptance checks. |
-| `make demo-again` | Re-runs pull, ingest, adjudicate and report over the **same** database, without a reset. This is the idempotency demonstration: identical numbers, zero new rows. |
-| `make demo-ai` | `make demo`, then adjudicates with tier 2 live, then adjudicates again to show the second pass makes zero API calls, then prints `cufa review --status ai`. Exits with a clear message (not an error) if `GEMINI_API_KEY` is unset. |
+| `make demo` | **Refuses to run if this database looks like a real install** — a connected Google account, a real template form, or recorded check-ins. `make demo` begins with a database reset, and running it over a working install deletes the roster, the sessions and the credential while leaving the real forms stranded in Drive. Point it at a scratch database (`CUFA_DATABASE_URL=…/cufa_demo make demo`, which resets *that* database rather than the linked project's) or override with `CUFA_DEMO_FORCE=1`. Otherwise: **both parts** end to end on synthetic data, **no Google account and no `GEMINI_API_KEY`**: `db-reset` → generate fixtures → load roster and sessions → create *each part's* template and *prove provisioning is blocked until each verifies* → print the rotation and *prove a teacher-question week with no question is refused* → provision both forms for every session → seed responses → pull Part A → import a CSV via the fallback path → seed Part B → *prove a form with an incomplete question map refuses to ingest*, then repair it by re-provisioning → pull Part B → adjudicate `--no-ai` → cluster themes → shoutout queue → help requests → reports → acceptance checks. |
+| `make demo-again` | Re-runs both pulls, ingest, adjudicate, report and the acceptance checks over the **same** database, without a reset. This is the idempotency demonstration: identical numbers, zero new rows. |
+| `make demo-ai` | `make demo`, then adjudicates with tier 2 live, then adjudicates again to show the second pass makes zero API calls, then prints `cufa review --status ai`, then clusters the muddiest-point themes for real. Exits with a clear message (not an error) if `GEMINI_API_KEY` is unset. |
 | `make demo-console` | `make demo`, then `cufa serve` on `PORT` against the demo data and the fake client — every screen, including provisioning and review, clickable with zero Google calls. |
 | `make test` | `pytest`. No network. |
 | `make clean` | `supabase stop --no-backup`, removes `fixtures/`, `__pycache__/`, `.pytest_cache`. |
@@ -185,13 +185,18 @@ reach Google by forgetting a flag.
 
 ## Inspecting results
 
-Open Studio (http://localhost:54323) or paste these into `psql`. They are written
-against the real schema and the two views — `v_current_decision` (the one live decision
-per check-in) and `v_checkin_resolved` (every check-in with its roster identity and
-current decision attached). Replace `'demo'` with your cohort id.
+Open Studio (http://localhost:64323) or paste these into `psql`. They are written
+against the real schema and its views — `v_current_decision` (the one live decision per
+check-in), `v_checkin_resolved` (every Part A check-in with its roster identity and
+current decision attached), and `v_checkin_b_resolved` plus the confidence views for
+Part B. Replace `'demo'` with your cohort id.
 
-Identity resolves at read time in `v_checkin_resolved`, so `fellow_id IS NULL` means
-"the address is not on the roster", not "the row is missing".
+Identity resolves at read time in both resolved views, so `fellow_id IS NULL` means "the
+address is not on the roster", not "the row is missing".
+
+**One table is deliberately absent from every view and every snippet below:
+`help_request`.** It is read by one module and one console screen, and by nothing else —
+see [`../safeguarding.md`](../safeguarding.md). Please do not add a join to it here.
 
 ### Current decisions per fellow
 
@@ -329,6 +334,102 @@ what the previous row said) but still performs a cache lookup. **The exact per-r
 numbers are printed by `cufa adjudicate`**, which reports `ai_calls=` and `cache_hits=`
 on its summary line.
 
+### Part B — both parts side by side, per session
+
+Joined on the session, never merged. A blank in one column and a number in the other is
+legal data: a fellow may answer one form and not the other.
+
+```sql
+select s.week_index,
+       s.title,
+       (select count(*) from checkin   c where c.session_id = s.session_id) as part_a,
+       (select count(*) from checkin_b b where b.session_id = s.session_id) as part_b
+  from "session" s
+ where s.cohort_id = 'demo'
+ order by s.scheduled_at_utc;
+```
+
+### Confidence by week — median and IQR, never a mean
+
+A 7-point Likert scale is ordinal, so the mean of it is a number with no defined
+meaning. `percentile_disc` returns an actual point on the scale rather than
+interpolating a 4.5 nobody could have selected.
+
+```sql
+select week_index, session_title, responses, median, q1, q3, iqr
+  from v_confidence_trend
+ where cohort_id = 'demo'
+ order by week_index nulls last;
+```
+
+Read the **trend and the dip**, not the level. A fellow moving 6 → 3 across two sessions
+is informative; a fellow sitting flat at 4 mostly is not.
+
+### Confidence values the scale cannot express
+
+Never clamped. An out-of-range answer is stored as NULL with the raw value kept, because
+a clamped 8 is a plausible number invented from a broken form.
+
+```sql
+select submitted_email,
+       extra_fields ->> '_confidence_rejected_raw' as raw_value
+  from checkin_b
+ where extra_fields ? '_confidence_rejected_raw';
+```
+
+### What each form actually asked
+
+Snapshotted at provisioning time, never reconstructed from `config/rotation.json` — the
+config may well have changed since.
+
+```sql
+select s.week_index, m.slot, m.rotating_kind, m.question_text
+  from form_question_map m
+  join session_form sf on sf.form_id = m.form_id and sf.part = 'b'
+  join "session" s     on s.session_id = sf.session_id
+ where s.cohort_id = 'demo' and m.slot = 'rotating'
+ order by s.week_index;
+```
+
+### Shoutouts waiting for a human
+
+Two kinds land here and only one is a problem: an ambiguous name (never auto-linked,
+because a wrong link is invisible) and a name matching nobody (legal — guest speakers and
+staff get thanked too).
+
+```sql
+select raw_text, session_title, submitted_at_utc
+  from v_shoutout_review
+ where cohort_id = 'demo'
+ order by created_at;
+```
+
+### Straight-lining
+
+A data-quality flag on the responses, not a finding about the person, and an input to
+nothing.
+
+```sql
+select full_name, confidence_raw, run_length, session_titles
+  from v_confidence_straightline
+ where cohort_id = 'demo'
+ order by run_length desc;
+```
+
+### Muddiest-point themes, with the answers behind them
+
+Regenerating supersedes rather than overwrites, so this filters on `superseded_at`.
+
+```sql
+select t.label, t.summary, b.rotating_text
+  from muddiest_theme t
+  join muddiest_theme_member m on m.theme_id = t.theme_id
+  join checkin_b b             on b.checkin_b_id = m.checkin_b_id
+  join "session" s             on s.session_id = t.session_id
+ where s.cohort_id = 'demo' and t.superseded_at is null
+ order by t.label, b.submitted_at_utc;
+```
+
 ### The provisioning log
 
 Every attempt, successful or not:
@@ -380,10 +481,11 @@ select s.title,
 ## Troubleshooting
 
 **`supabase start` hangs or fails.** Check `docker ps`. First run pulls several images
-and is slow. If a port is already taken, something else is on 54321–54329; stop it or
-edit `supabase/config.toml`.
+and is slow. If a port is already taken, something else is on 64321–64329; stop it or
+edit `supabase/config.toml`. On Windows, Hyper-V often reserves 54321–54329, which is
+why this project uses 6432x instead of the Supabase defaults.
 
-**`connection refused` on 54322.** The stack is down. `make db-up`.
+**`connection refused` on 64322.** The stack is down. `python tasks.py db-up`.
 
 **Migrations changed and the schema did not.** `supabase db reset` — migrations are only
 applied on reset locally, not on `start`.

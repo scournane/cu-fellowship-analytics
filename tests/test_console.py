@@ -20,13 +20,15 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
+import re
 import os
 import uuid
 from urllib.parse import parse_qs, urlparse
 
 # Settings are read once and cached, and importing the app reads them, so the
 # environment has to be right before any cufa import happens.
-os.environ.setdefault("CUFA_DATABASE_URL", "postgresql://postgres:postgres@127.0.0.1:54322/postgres")
+os.environ.setdefault("CUFA_DATABASE_URL", "postgresql://postgres:postgres@127.0.0.1:64322/postgres")
 os.environ["CUFA_FAKE_GOOGLE"] = "1"
 os.environ["CUFA_CONSOLE_ALLOWLIST"] = "staff@example.invalid,second@example.invalid"
 os.environ["CUFA_CONSOLE_SECRET"] = "test-secret-not-used-anywhere-real"
@@ -186,10 +188,28 @@ def test_every_screen_redirects_when_not_signed_in(client: TestClient) -> None:
         assert response.headers["location"].startswith("/signin"), path
 
 
+def boot_state(response) -> dict:
+    """The JSON the server hands the React screen.
+
+    The sign-in screen renders client-side, so its text is not in the response.
+    What the server is actually responsible for is the state it ships, and that
+    is what these tests assert on.
+    """
+    match = re.search(
+        r'<script type="application/json" id="__CUFA_STATE__">(.*?)</script>',
+        response.text,
+        re.DOTALL,
+    )
+    assert match, "no boot state in the response"
+    return json.loads(match.group(1))
+
+
 def test_signin_page_is_public(client: TestClient) -> None:
     response = client.get("/signin")
     assert response.status_code == 200
-    assert "Developer sign-in" in response.text
+    # The dev bypass door is open under the test settings, and the screen is
+    # told so. Whether it draws a form is the front-end's business.
+    assert boot_state(response)["devSignin"] is True
 
 
 def test_dev_signin_rejects_an_address_not_on_the_allowlist(client: TestClient) -> None:
@@ -257,8 +277,9 @@ def test_every_screen_returns_200_for_an_allowlisted_user(
 
 def test_fake_google_banner_is_shown(signed_in: TestClient) -> None:
     response = signed_in.get("/")
-    assert "Fake Google client" in response.text
-    assert "No Google calls will be made" in response.text
+    # The banner copy lives in the front-end now; what the server owes the
+    # screen is the flag that makes it appear.
+    assert boot_state(response)["fakeGoogle"] is True
 
 
 def test_connect_screen_simulates_the_connection_without_google(
@@ -272,6 +293,54 @@ def test_connect_screen_simulates_the_connection_without_google(
 
     response = signed_in.post("/google/disconnect")
     assert response.status_code == 303
+
+
+def test_the_connect_screen_is_told_the_scopes_are_sufficient(
+    signed_in: TestClient,
+) -> None:
+    """Regression: a computed property does not survive the trip on its own.
+
+    ``CredentialStatus.has_required_scopes`` is a ``@property``, and the encoder
+    that builds the boot state serialises dataclass *fields* only. When it went
+    missing the screen read ``undefined``, took it for false, and told a
+    correctly connected account that a required scope was missing — while
+    listing both required scopes directly above the warning.
+    """
+    assert signed_in.post("/google/connect").status_code == 303
+    status = boot_state(signed_in.get("/"))["status"]
+    assert status["connected"] is True
+    assert status["has_required_scopes"] is True, (
+        "the screen hides its missing-scope warning on this value; absent, "
+        "every connected account is told a scope is missing"
+    )
+
+
+def test_a_cli_authorization_code_is_handed_back_not_swallowed(
+    client: TestClient,
+) -> None:
+    """`cufa google connect` redirects into this console, by design of the URI.
+
+    The CLI signs no state — it keeps the whole round trip in one process — so
+    the console cannot verify what comes back and used to answer with "that
+    sign-in link did not verify". The code was sitting in the address bar the
+    whole time, but the page said the opposite. It now hands the code over.
+    """
+    response = client.get(
+        "/google/callback", params={"code": "4/CLI-ISSUED-CODE", "state": "unsigned-cli-state"}
+    )
+    assert response.status_code == 200
+    state = boot_state(response)
+    assert state["code"] == "4/CLI-ISSUED-CODE"
+    assert "terminal" in state["heading"].lower()
+
+
+def test_a_bad_state_with_no_code_is_still_refused(client: TestClient) -> None:
+    """The forgery path must not be softened by the convenience above."""
+    response = client.get("/google/callback", params={"state": "tampered"})
+    assert response.status_code == 400
+    state = boot_state(response)
+    assert state.get("code") is None
+    assert "did not verify" in state["heading"]
 
 
 # --------------------------------------------------------------------------
@@ -349,14 +418,14 @@ def test_template_screen_blocks_downstream_work_until_verified(
 ) -> None:
     response = signed_in.get("/template")
     assert response.status_code == 200
-    assert "Downstream work is blocked" in response.text
+    assert boot_state(response)["blocked"] is True
 
     created = signed_in.post("/template/create")
     assert created.status_code == 200
-    assert "Downstream work is blocked" in created.text
+    state = boot_state(created)
+    assert state["blocked"] is True
     # The one manual step is on the screen, not in a document somewhere.
-    assert "Collect email addresses" in created.text
-    assert "Verified" in created.text
+    assert "Collect email addresses" in state["manual_step"]
 
 
 def test_verify_fails_red_when_the_api_does_not_say_verified(
@@ -365,11 +434,11 @@ def test_verify_fails_red_when_the_api_does_not_say_verified(
     signed_in.post("/template/create")
     response = signed_in.post("/template/verify")
     assert response.status_code == 200
-    assert "Not verified" in response.text
+    state = boot_state(response)
+    assert state["blocked"] is True
     # The exception text itself, not a summary of it.
-    assert "emailCollectionType=" in response.text
-    assert "DO_NOT_COLLECT" in response.text
-    assert "Provisioning is blocked" in response.text
+    assert "emailCollectionType=" in state["error"]
+    assert "DO_NOT_COLLECT" in state["error"]
 
 
 def test_verify_goes_green_only_after_the_api_confirms_it(
@@ -396,13 +465,13 @@ def test_provisioning_is_refused_while_the_template_is_unverified(
     session_id = make_session(signed_in, cohort)
 
     detail = signed_in.get(f"/sessions/{session_id}")
-    assert "Provisioning is blocked" in detail.text
+    assert boot_state(detail)["template_blocked"] is True
 
     response = signed_in.post(f"/sessions/{session_id}/provision")
     assert response.status_code == 200
-    assert "not ready" in response.text
-    assert "Provisioning is blocked until this reads back as VERIFIED" in response.text
-    assert "published and verified" not in response.text
+    state = boot_state(response)
+    assert state["ready"] is False
+    assert "Provisioning is blocked until this reads back as VERIFIED" in state["error"]
 
 
 # --------------------------------------------------------------------------
@@ -417,9 +486,10 @@ def test_provisioning_success_shows_the_link_and_a_qr_code(
     response = signed_in.post(f"/sessions/{session_id}/provision")
 
     assert response.status_code == 200
-    assert "published and verified" in response.text
-    assert "forms.example.invalid" in response.text
-    assert "<svg" in response.text and 'class="qr"' in response.text
+    state = boot_state(response)
+    assert state["ready"] is True
+    assert "forms.example.invalid" in state["form_url"]
+    assert state["qr"].lstrip().startswith("<svg")
     # Publishing was actually called, not assumed.
     assert verified_template.calls("set_publish_settings")
 
@@ -443,21 +513,19 @@ def test_a_publish_that_does_not_read_back_never_looks_ready(
         response = signed_in.post(f"/sessions/{session_id}/provision")
 
         assert response.status_code == 200
-        assert "This did not work" in response.text
-        assert "isAcceptingResponses=False" in response.text
-        assert "accepts no responses while its link still resolves" in response.text
+        state = boot_state(response)
+        assert "isAcceptingResponses=False" in state["error"]
+        assert "accepts no responses while its link still resolves" in state["error"]
         # No link, no QR, no green tick.
-        assert "published and verified" not in response.text
-        assert "<svg" not in response.text
-        assert "not ready" in response.text
+        assert state["ready"] is False
+        assert state["qr"] is None
 
         with connection() as conn:
             row = get_session_form(conn, session_id)
         assert row is not None and row["publish_verified_at"] is None
 
-        # The failed attempt is recorded and visible, not just raised.
-        assert "Provisioning attempts" in response.text
-        assert "failure" in response.text
+        # The failed attempt is recorded and handed to the screen, not just raised.
+        assert any(entry["outcome"] == "failure" for entry in state["provisioning_log"])
     finally:
         set_fake_client(None)
 
@@ -483,7 +551,7 @@ def test_dry_run_makes_no_form(
     session_id = make_session(signed_in, cohort)
     response = signed_in.post(f"/sessions/{session_id}/provision", data={"dry_run": "1"})
     assert response.status_code == 200
-    assert "dry run — no Google calls were made" in response.text
+    assert "dry run — no Google calls were made" in boot_state(response)["notice"]
     assert not verified_template.calls("copy_form")
 
 
@@ -495,7 +563,7 @@ def test_announce_stamps_and_shows_the_utc_instant(
     assert response.status_code == 303
 
     detail = signed_in.get(f"/sessions/{session_id}")
-    assert "Announced at" in detail.text
+    assert boot_state(detail)["session"]["announced_at_utc"] is not None
     payload = signed_in.get(f"/sessions/{session_id}/responses.json").json()
     assert payload["announced_at_utc"] is not None
 
@@ -555,11 +623,12 @@ def test_the_accessibility_reminder_is_in_the_ui(
 def test_the_passphrase_guidance_is_inline_on_the_form(signed_in: TestClient) -> None:
     from cufa.passphrase import GUIDANCE
 
-    page = signed_in.get("/sessions/new").text
-    assert GUIDANCE.split(".")[0] in page
-    assert "Suggest a passphrase" in page
-    # The browser's zone is the default, filled in by the page itself.
-    assert "Intl.DateTimeFormat().resolvedOptions().timeZone" in page
+    state = boot_state(signed_in.get("/sessions/new"))
+    assert GUIDANCE.split(".")[0] in state["guidance"]
+    # The zone is deliberately left empty here: the screen fills it from the
+    # browser. That now happens inside the bundle, so it is proved by the
+    # browser walk-through rather than by this request.
+    assert state["values"]["timezone"] == ""
 
 
 def test_suggest_returns_a_word_from_the_curated_list(signed_in: TestClient) -> None:
@@ -603,8 +672,8 @@ def test_a_reused_passphrase_warns_and_refuses_to_save_until_confirmed(
         },
     )
     assert response.status_code == 200
-    assert "already used" in response.text
-    assert 'name="confirm_reuse"' in response.text
+    # The warning and the confirm box are drawn from this list.
+    assert boot_state(response)["reuse_warnings"]
 
     with connection() as conn:
         rows = fetch_all(conn, 'select title from "session" where cohort_id = %s', (cohort,))
@@ -766,8 +835,9 @@ def test_an_unresolved_address_appears_on_the_identities_tab(
         )
     page = signed_in.get(f"/review?tab=identities&cohort={cohort}")
     assert page.status_code == 200
-    assert "typo@example.invalid" in page.text
-    assert "identity never blocks ingest" in page.text
+    state = boot_state(page)
+    assert state["tab"] == "identities"
+    assert any(row["email"] == "typo@example.invalid" for row in state["rows"])
 
 
 def test_an_invalid_review_status_is_refused(signed_in: TestClient, cohort: str) -> None:

@@ -40,8 +40,18 @@ class IngestResult:
     unmatched_sessions: int = 0
     ambiguous_sessions: int = 0
     unresolved_identities: int = 0
+    #: Sessions a cohort pull could not read at all. Distinct from a warning:
+    #: an overlapping window is advisory and the run still collected everything,
+    #: whereas a session that failed has responses sitting uncollected. The CLI
+    #: exits non-zero on this and not on warnings, so a scheduled pull that
+    #: half-worked is visible to whatever is running it.
+    sessions_failed: int = 0
     warnings: list[str] = field(default_factory=list)
     _warning_counts: dict[str, int] = field(default_factory=dict, repr=False)
+    #: Where each counted warning landed in ``warnings``. Positional
+    #: correspondence between the two cannot be assumed — see finalize_warnings.
+    _warning_at: dict[str, int] = field(default_factory=dict, repr=False)
+    _finalized: bool = field(default=False, repr=False)
 
     def warn(self, message: str, *, detail: str = "") -> None:
         """Record a warning once per distinct cause, counting repeats.
@@ -54,21 +64,38 @@ class IngestResult:
         seen = self._warning_counts.get(message, 0)
         self._warning_counts[message] = seen + 1
         if seen == 0:
+            self._warning_at[message] = len(self.warnings)
             self.warnings.append(f"{message}{(' ' + detail) if detail else ''}")
 
     def finalize_warnings(self) -> None:
-        """Append the repeat count to any warning that fired more than once."""
-        self.warnings = [
-            (
-                f"{text} [{self._warning_counts[key]}× in this run]"
-                if self._warning_counts.get(key, 0) > 1
-                else text
-            )
-            for key, text in zip(self._warning_counts, self.warnings)
-        ]
+        """Append the repeat count to any warning that fired more than once.
+
+        Rewrites entries **in place, by recorded index**. The obvious
+        implementation — zip ``_warning_counts`` against ``warnings`` and rebuild
+        the list — assumes the two correspond positionally, and they do not:
+        ``warnings`` is a plain list that callers also append to directly. The
+        trap-1 "this form may be accepting nothing" warning is one of those, and
+        it is added *before* any counted warning.
+
+        That assumption corrupted output three different ways: a directly
+        appended warning was dropped when the zip truncated; a repeat count was
+        printed against the wrong warning's text; and a cohort roll-up — which
+        extends ``warnings`` and never calls ``warn`` — lost every warning it
+        had. Each of those quietly removes the one message explaining why no
+        responses are arriving.
+
+        Idempotent: calling it twice does not double the suffix.
+        """
+        if self._finalized:
+            return
+        self._finalized = True
+        for message, index in self._warning_at.items():
+            count = self._warning_counts.get(message, 0)
+            if count > 1 and 0 <= index < len(self.warnings):
+                self.warnings[index] += f" [{count}× in this run]"
 
     def __str__(self) -> str:  # pragma: no cover - display only
-        return summarize(
+        counts = dict(
             read=self.rows_read,
             written=self.rows_written,
             skipped=self.rows_skipped,
@@ -76,6 +103,9 @@ class IngestResult:
             ambiguous=self.ambiguous_sessions,
             unknown_email=self.unresolved_identities,
         )
+        if self.sessions_failed:
+            counts["sessions_failed"] = self.sessions_failed
+        return summarize(**counts)
 
 
 @dataclass(frozen=True)
@@ -106,7 +136,7 @@ def source_event_id(origin_key: str, email: str, submitted_at_utc: datetime) -> 
 
 
 def origin_key_for_session(
-    conn: psycopg.Connection, session_id: str | None, cohort_id: str
+    conn: psycopg.Connection, session_id: str | None, cohort_id: str, part: str = "a"
 ) -> str:
     """The first component of the idempotency key.
 
@@ -130,7 +160,9 @@ def origin_key_for_session(
     """
     if session_id:
         row = fetch_one(
-            conn, "select form_id from session_form where session_id = %s", (session_id,)
+            conn,
+            "select form_id from session_form where session_id = %s and part = %s",
+            (session_id, part),
         )
         if row and row["form_id"]:
             return str(row["form_id"])
@@ -335,6 +367,101 @@ def write_checkin(
         ),
     )
     return str(row["checkin_id"]) if row else None
+
+
+# ---------------------------------------------------------------------------
+# Part B
+# ---------------------------------------------------------------------------
+
+#: The scale the confidence question actually offers. Values outside it are not
+#: clamped — see ``parse_confidence``.
+CONFIDENCE_LOW = 1
+CONFIDENCE_HIGH = 7
+
+
+def parse_confidence(value: str | None) -> tuple[int | None, str | None]:
+    """Parse the 1-7 confidence answer. Returns ``(value, rejected_raw)``.
+
+    Three outcomes, and the middle one is the interesting one:
+
+    * a whole number inside 1..7 -> that number, nothing rejected
+    * anything else that was actually typed ("0", "8", "four") -> ``(None, raw)``
+    * blank -> ``(None, None)``, because nothing was answered and nothing was
+      rejected
+
+    **Never clamped.** An 8 becoming a 7 is a silent lie about what someone
+    selected, and it produces a plausible number from a broken form — which is
+    the failure mode with no symptom. NULL plus the raw string in
+    ``extra_fields`` keeps the observation and forces the question to be asked.
+    """
+    text = (value or "").strip()
+    if not text:
+        return None, None
+    try:
+        number = int(text)
+    except ValueError:
+        return None, text
+    if CONFIDENCE_LOW <= number <= CONFIDENCE_HIGH:
+        return number, None
+    return None, text
+
+
+def write_checkin_b(
+    conn: psycopg.Connection,
+    *,
+    source_event_id_value: str,
+    source: str,
+    submitted_email: str,
+    submitted_at_utc: datetime,
+    session_id: str | None,
+    session_match: str,
+    confidence_raw: int | None,
+    takeaway_text: str | None,
+    rotating_kind: str | None,
+    rotating_text: str | None,
+    shoutout_text: str | None,
+    extra_fields: dict[str, Any],
+    load_id: str | None,
+) -> str | None:
+    """Insert one Part B observation. Returns the id, or None if it existed.
+
+    Same ``on conflict do nothing`` shape as ``write_checkin``, and for the same
+    reason: the uniqueness check lives in the database, not in a set that only
+    holds for one process.
+
+    Note the absence of a help-request parameter. The checkbox is not a column
+    here — it is routed to its own table by the caller, so that no SELECT * over
+    this table, and no export derived from one, can carry it.
+    """
+    row = fetch_one(
+        conn,
+        """
+        insert into checkin_b (
+            source_event_id, source, submitted_email, submitted_at_utc,
+            session_id, session_match, confidence_raw, takeaway_text,
+            rotating_kind, rotating_text, shoutout_text, extra_fields, load_id
+        )
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+        on conflict (source_event_id) do nothing
+        returning checkin_b_id
+        """,
+        (
+            source_event_id_value,
+            source,
+            normalize_email(submitted_email),
+            to_utc(submitted_at_utc),
+            session_id,
+            session_match,
+            confidence_raw,
+            takeaway_text,
+            rotating_kind,
+            rotating_text,
+            shoutout_text,
+            json.dumps(extra_fields or {}),
+            load_id,
+        ),
+    )
+    return str(row["checkin_b_id"]) if row else None
 
 
 def cohort_for_session(conn: psycopg.Connection, session_id: str) -> str | None:

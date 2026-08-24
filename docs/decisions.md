@@ -4,9 +4,10 @@ One record per decision that would be expensive or dangerous to reverse by accid
 Each says what the situation was, what was chosen, what was rejected, and why. If you
 are about to change one of these, the "why" is the thing to argue with.
 
-Status of every ADR below: **accepted**, August 2026, Part A.
+Status of ADR-001 to ADR-020: **accepted**, August 2026, Part A.
 
-Two things are deliberately **not** decided and must not be invented — see ADR-020.
+Two things are deliberately **not** decided and must not be invented — see ADR-020,
+which Part B extends rather than resolves.
 
 ---
 
@@ -483,3 +484,341 @@ What has to be decided before the policies can be written is listed in the migra
 itself: whether `fellow` is readable by the same people as `checkin`, whether a decision
 is more restricted than an observation, and whether fellows ever read their own rows and
 on what claim.
+
+**Part B extends this rather than resolving it.** `checkin_b` and `peer_shoutout` get the
+same non-permissive stub, and `peer_shoutout` adds a question of its own: a shoutout is
+data about a third party who did not submit it, so whatever rule CU writes must also
+answer whether the person *named* may read it. `help_request` is deliberately **outside**
+the shared stub — RLS on, no policy, and grants revoked from `anon` and `authenticated`
+outright — so that a future migration loosening the shared stub, which is the likely way
+this leaks, does not reach it by accident. Its retention question is separate too, and
+carries its own `TODO(retention)`: the right answer for "a young person asked to be
+contacted" is very unlikely to be the right answer for "submitted at 10:14".
+
+---
+
+Status of ADR-021 to ADR-028: **accepted**, August 2026, Part B.
+
+---
+
+## ADR-021 — Field order comes from completion research, not from visual balance
+
+**Context.** Part B has six fields, and their order is the kind of thing that gets
+"tidied" by whoever edits the form next.
+
+**Decision.** The order is fixed and documented as load-bearing: an easy click first, the
+core processing artefact second, the rotating slot third, the optional shoutout fourth,
+and the sensitive help checkbox last. Only the first three are required.
+
+**Rejected.** Grouping the two free-text fields together for visual balance; putting the
+help checkbox near the top so it is "not buried"; making every field required so no
+response is partial.
+
+**Why.** Surveys opening with a simple multiple-choice complete at **89% versus 83%** for
+open-ended, so the cheapest possible first action is what gets someone into the form at
+all. Sensitive items placed early measurably raise abandonment of the **whole form**, not
+just of that item — so a help checkbox moved up would collect fewer help requests, not
+more, while looking more prominent. Forcing responses measurably hurts completion, and
+forcing the shoutout or the help field would be worse than that: an optional field that
+must be answered is not optional, and a compulsory "do you need help?" is a different
+question from a voluntary one.
+
+The rationale is displayed in the console wherever a staff member might add a field,
+because the numbers are the only durable answer to "just one more question".
+
+---
+
+## ADR-022 — A 7-point confidence scale, not a 5-point one
+
+**Context.** The confidence field is the only quantitative item on the form and the only
+one that gets graphed.
+
+**Decision.** `scaleQuestion` with `low: 1`, `high: 7`, labels on the endpoints only.
+Stored as the integer 1–7, never rescaled, never converted to a percentage on write.
+Read-time views expose **median and interquartile range**, never a mean.
+
+**Rejected.** Five points, because it is the familiar default; ten points, for finer
+resolution; a 0–100 slider; storing a normalized 0–1 value.
+
+**Why.** Preston & Colman found scales under 5 points lose reliability with 7–10
+performing best, and Krosnick & Presser converge on 5–7 as optimal. Critically, **5-point
+scales induce interpolation** — respondents try to answer between two values — and since
+this field is graphed, the extra resolution is the difference between a readable trend and
+a stepped one. Endpoint-only labels stop people reading the words instead of the position.
+
+The mean is refused because a Likert scale is **ordinal**: the distance between 3 and 4 is
+not known to equal the distance between 6 and 7, so summing and dividing produces a number
+with no defined meaning however comfortable it looks. `percentile_disc` rather than
+`percentile_cont` for the same reason — it returns an actual point on the scale rather
+than interpolating a 4.5 nobody could have selected.
+
+A percentage is refused because it implies a ratio scale: that 6 is twice 3.
+
+---
+
+## ADR-023 — One rotating question, not every question every week
+
+**Context.** Three dimensions are worth collecting — the teacher's own content question,
+the muddiest point, and an application prompt. Asking all three every week is the obvious
+design.
+
+**Decision.** One slot in position 4, rotating by week. Teacher's question on weeks 1, 4,
+7 and 10; muddiest point on 2, 5 and 8; application on 3, 6 and 9. The schedule lives in
+`config/rotation.json`, owned by the Director of Programs. Weeks past the end wrap.
+
+**Rejected.** All three every week; letting the teacher choose each week; deriving the
+question from the lesson title.
+
+**Why.** Survey fatigue is the constraint, and it is measurable: three questions to four
+drops completion by **18%**, response rates fall roughly **60%** past eight minutes, and
+fatigued respondents **straight-line about a third more often** — which corrupts the
+confidence trend rather than merely shortening the form. Over ten weeks the rotation
+collects all three dimensions while no fellow ever faces more than four questions at once.
+
+The teacher's question appears most often because it is the **only genuinely unfakeable
+one**: it depends on content that only someone present would know.
+
+Ownership sits with the Director of Programs rather than in code because which dimension
+matters in which week is a programme decision, not an engineering one.
+
+---
+
+## ADR-024 — Answers are resolved through a recorded question-id map
+
+**Context.** `forms.responses.list` returns answers keyed by `questionId`. Part A had one
+question so the answer was unambiguous; Part B has five. **When this was decided, whether
+Drive's `files.copy` preserves question ids across copies could not be verified.** It has
+since been measured against a live account — it preserves them — which does not change the
+decision and sharpens the reason for it; see the addendum.
+
+**Decision.** After provisioning, every Part B form is read back with `forms.get` and the
+mapping from `questionId` to semantic slot is recorded in `form_question_map`, keyed by
+form. Every response is resolved through that table. Slots are matched by **item index**,
+which the application controls at creation time. A form whose map is missing or incomplete
+**refuses to ingest**. The exact question text shown is snapshotted at provisioning time.
+
+**Rejected.** Assuming ids are preserved and reusing the template's; assuming they are
+regenerated and reading them once per form into a cache; matching answers by question
+title; matching by position in the response payload; skipping fields whose id is unknown.
+
+**Why.** Both assumptions about `files.copy` are equally plausible descriptions of
+reality, and code correct under only one of them produces answers filed against the wrong
+field **with no error** — a confidence score stored as a takeaway, and every downstream
+number looking entirely plausible. Reading the ids back costs one API call per form and
+removes the question.
+
+Titles are refused as a key because the rotating slot's title changes every week *by
+design*, and a teacher can retitle any field in the Forms UI without telling anyone.
+Position is refused because a teacher adding a question shifts it.
+
+Refusing to ingest, rather than skipping the unmapped field, is invariant 1 inverted: a
+dropped observation is recoverable by re-pulling, but a mis-attributed one is not
+detectable at all.
+
+The text snapshot exists because "what was actually asked in week 3" has to be answerable
+from the database alone. Reconstructing it later from `config/rotation.json` would give
+whatever the config says *now*.
+
+The fake Google client takes a `question_id_scheme` argument and the test suite runs the
+mapping tests under both settings. That is not an edge case being covered; it is the
+unresolved question being made harmless.
+
+**Addendum, August 2026 — measured.** `files.copy` **preserves** question ids. Every Part
+B form copied from one template answers under the same ids, so the rotating slot carries
+the *same* `questionId` in week 2 and week 5 while showing different text. That makes the
+per-form map and its `question_text` snapshot **necessary rather than belt-and-braces**: a
+map keyed on `questionId` alone would have merged ten weeks of different questions into
+one entry and looked entirely correct doing it. The `regenerate` setting stays, and both
+are still tested — one measurement on one account is evidence about current behaviour, not
+a guarantee, and correctness under both costs one API call per form.
+
+---
+
+## ADR-025 — The help checkbox requires a named recipient, or it is not on the form
+
+**Context.** The last field asks whether the fellow would like someone to check in with
+them. CU confirmed on 2026-08-10 that no dedicated fellow-support responder role exists
+yet.
+
+**Decision.** `config/help_routing.json` names the recipient. If it names nobody, the
+field is **omitted from the form entirely** at provisioning time, and the omission is
+logged, shown on the session screen, and recorded in the provisioning history. The
+repository ships with the Director of Programs named, because that is a real person who
+exists today. Requests are emailed **immediately on ingest**, not on a batch schedule.
+
+**Rejected.** Shipping the field with an unrouted destination and a TODO; collecting
+requests into the database only, for someone to find later; defaulting to a shared inbox
+nobody was asked about; a weekly digest.
+
+**Why.** A system that invites a young person to ask for help and routes the request
+nowhere is **worse than one that never asks**. The request gets recorded, nobody is told,
+and everybody involved — the fellow especially — assumes it was handled. Omitting the
+field is the honest state, and it is visible rather than silent.
+
+Immediate rather than batched because a fellow asking for contact should not wait for a
+weekly pipeline run, and because the gap between "raised their hand" and "someone replied"
+is the only part of this a program can actually shorten.
+
+The row is written **before** the email is attempted, so a mail failure never loses a
+request — the console screen, not the email, is the durable channel.
+
+---
+
+## ADR-026 — The help checkbox is excluded from every signal, permanently
+
+**Context.** The obvious implementation is a boolean column on the Part B response row.
+
+**Decision.** It is a **separate table**, `help_request`, with stricter RLS than anything
+else in the system, its own console access list, and no policy granting anything. It
+appears in no report, no export, no aggregate and no participation computation. The AI
+tier never receives it. Nothing about a request is logged at any level, DEBUG included.
+Two tests enforce this: one runs every export and report path against data containing a
+request and asserts nothing from it comes out; the other **inspects the SQL each
+participation, report and export path actually executes** and fails if any of them
+mentions the table.
+
+**Rejected.** A boolean column on `checkin_b` with a note not to include it; excluding it
+by convention and code review; a permissive RLS policy matching the other tables.
+
+**Why.** A column travels with every `SELECT *` anyone ever writes, into every export and
+every aggregate, and **nothing announces it**. A separate table makes inclusion a
+deliberate act.
+
+The exclusion has to be permanent and has to be believable, because the field only works
+while fellows believe it. If a fellow can suspect that ticking the box costs them
+something, they stop ticking it — and the programme loses its only self-reported distress
+channel, while the numbers continue to look fine.
+
+Convention was rejected as the enforcement mechanism for the same reason a comment was
+rejected as the enforcement mechanism for observation immutability in ADR-008: the failure
+is invisible, so it needs a test that fails rather than a rule someone remembers.
+
+The runtime SQL inspection is kept alongside a source scan because they catch different
+things — a query built at runtime escapes a source scan, and a path this suite does not
+exercise escapes the runtime check.
+
+---
+
+## ADR-027 — The AI clusters content, never people
+
+**Context.** Gemini is available and there is a great deal of free text.
+
+**Decision.** The model's only role in Part B is clustering *muddiest-point* answers into
+2–5 themes for the teacher. It receives **anonymous strings and nothing else** — no names,
+no addresses, no fellow ids, no counts per person, no confidence scores, no takeaways, and
+nothing from the help table. Its output is about content. Free text is **counted, never
+graded**. Straight-lining is flagged as a data-quality property of the responses and
+enters no participation signal. No API key means no themes and a clear message, never a
+failed run. Regenerating supersedes rather than overwrites.
+
+**Rejected.** Scoring takeaway quality; classifying engagement from free text; summarising
+a fellow's answers across weeks; flagging at-risk fellows; sentiment analysis; ranking
+answers.
+
+**Why.** Grading writing penalises ESL and neurodivergent fellows for reasons unrelated to
+engagement — a fellow who writes "ok" and one who writes a paragraph may have taken away
+exactly the same thing. Recording that a substantive response exists is fair; rating how
+well written it is, is not, and a model will happily produce the second while looking like
+it produced the first.
+
+Clustering is about the lesson rather than about a person, which is why it is the one
+place a model is allowed near this data at all. Anonymity is better privacy *and* better
+accuracy at the same time: the model's job is finding what a group of students found
+confusing, and everything else is context it could be wrong about.
+
+Degrading rather than crashing matters because an optional enrichment that can fail a run
+has stopped being optional.
+
+Superseding rather than overwriting matters because a teacher who planned a lesson around
+last week's themes has to be able to see what they actually read.
+
+**Closing the loop is the highest-leverage trust move in the project.** Showing fellows
+what their confusion changed about the teaching is what makes the form visibly *for* them
+rather than *about* them, and research on youth data collection is consistent that this
+drives honest responding. It also maps onto the Director of Programs' instruction to leave
+room for a model where information is shared with fellows. The teacher-facing view is
+built; the fellow-facing view is deliberately **not**, because that is a decision for the
+data owner rather than a default.
+
+---
+
+## ADR-028 — Shoutouts are collected and resolved, never ranked
+
+**Context.** Field 5 asks who helped you today. The obvious next step is a leaderboard.
+
+**Decision.** Names are split, normalized and matched against the roster within the cohort
+only. One unambiguous match links automatically; **ambiguity is never resolved
+automatically** and goes to a review queue with the resolving human's identity recorded.
+A name matching nobody is **legal, not an error**. There is no leaderboard, ranking, points
+total, streak or public display, and none is built.
+
+**Rejected.** Picking the closest fuzzy match; picking the first of two matches; treating
+an unmatched name as a parse failure; a "most thanked" list; points for giving or
+receiving recognition.
+
+**Why.** A wrong link is worse than no link, and asymmetrically so: an unlinked fragment
+sits visibly in a queue, while a wrongly linked one is invisible — it attributes someone's
+praise to a person who did not earn it and nothing ever surfaces the mistake. Two fellows
+named Jordan is the normal case, not the edge case.
+
+A name matching nobody is legal because guest speakers, teachers and people outside the
+cohort get thanked, and treating that as an error would train people to stop naming them.
+
+A peer shoutout is **data about a third party who did not submit it**. It gets the same
+protection as the submitter's own data, and it is never surfaced to the person named
+without an explicit decision by the data owner.
+
+**Recorded for whenever gamification is designed:** the research is explicit that
+recognition, if it is ever ranked at all, should be ranked by **giving, not receiving**.
+Ranking on recognition received builds a popularity contest and rewards the
+already-visible; ranking on recognition given rewards the behaviour the programme actually
+wants. Nothing here builds either — this note exists so the finding is not lost when
+somebody picks the question up.
+
+---
+
+## ADR-029 — Simulated state is detected before Google is asked, and the demo will not overwrite a real install
+
+**Context.** `make demo` resets the working database and fills it with forms created by
+`FakeGoogleClient`. Connect a real Google account afterwards — which is what anybody does
+after trying the demo — and the console asks Google for `fake-form-0001`. Google answers
+`404 Requested entity was not found`. This is not hypothetical; it is what the first real
+install did, and the message named neither the form, the account, nor the fact that the id
+had never been real.
+
+**Decision.** Three things. Form ids carry their provenance (`fake-form-` is not a
+possible Google id), and a stored id belonging to the other kind of client is detected
+**before any API call**, producing a message that names the account and the two ways out.
+`cufa template replace --part a|b` retires an unusable template and creates a fresh one,
+deactivating rather than deleting so copied forms keep their provenance. And `make demo`
+**refuses to run** when the database holds a connected account, a real template, or
+recorded check-ins, unless `CUFA_DEMO_FORCE=1`.
+
+**Rejected.** Letting the 404 through with a friendlier wrapper; auto-creating a
+replacement template on detection; making the demo use a separate database by default;
+deleting the stale rows automatically.
+
+**Why.** A 404 from Google is indistinguishable from an outage, a permissions problem and
+a deleted form. Detecting the case offline is what lets the message be specific, and being
+specific is the whole difference between a dead end and a next step.
+
+Replacing a template is **explicit** because a template carries a one-time human Verified
+step. Creating one silently would drop that step on the floor while the screen still
+looked green — the exact false reassurance trap 2 exists to prevent.
+
+A stale *session* form is different and is healed automatically: an id the client never
+issued has no form behind it, so no response can be attached to it and there is nothing to
+lose. A **real** form that 404s is never discarded, because it may be in Drive's bin with
+every response still on it, and restoring it is the recovery — throwing the row away would
+strand them.
+
+The demo guard exists because the alternative is a destructive default. `make demo` is the
+first thing anybody runs and the thing they run again to show someone; it should not be
+able to delete a term's roster because it was pointed at the wrong database. Refusing is
+recoverable; resetting is not.
+
+**Related, found the same day.** Provisioning promised that a copy made before a failure
+"leaves a row that a later run resumes". It did not: every caller wraps provisioning in a
+transaction and rolls it back, taking the bookkeeping row with it, so each failed attempt
+left another untracked form in Drive. The row is now written on a separate autocommit
+connection. A promise about what survives a failure has to be tested under the failure.

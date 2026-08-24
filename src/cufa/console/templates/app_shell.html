@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }} · CU check-in console</title>
+  {% for href in css %}<link rel="stylesheet" href="{{ href }}">
+  {% endfor %}
+  <link rel="icon" href="data:,">
+</head>
+<body>
+<div id="root"></div>
+{# The screen's data, server-rendered into the document so the first paint
+   needs no round trip. `tojson` escapes </script> safely. #}
+<script type="application/json" id="__CUFA_STATE__">{{ state | tojson }}</script>
+{% for src in js %}<script type="module" src="{{ src }}"></script>
+{% endfor %}
+<noscript>
+  <p>This screen needs JavaScript. The same actions are available from the
+     command line — see <code>docs/setup/console.md</code>.</p>
+</noscript>
+</body>
+</html>

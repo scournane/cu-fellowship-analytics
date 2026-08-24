@@ -62,10 +62,14 @@ def _answer_for_passphrase(answers: dict[str, str]) -> str:
     return ""
 
 
-def _list_with_backoff(
+def list_with_backoff(
     client: FormsClient, form_id: str, *, response_filter: str | None, page_token: str | None
 ) -> Any:
-    """One page, retrying 429s with exponential backoff."""
+    """One page, retrying 429s with exponential backoff.
+
+    Shared with the Part B pull rather than reimplemented there: the retry
+    policy is a property of the API, not of which form is being read.
+    """
     for attempt in range(_MAX_RATE_LIMIT_RETRIES):
         try:
             return client.list_responses(
@@ -97,7 +101,8 @@ def pull_session(
                s.duration_minutes, s.grace_minutes, s.passphrase,
                sf.form_id, sf.response_watermark, sf.publish_verified_at
           from "session" s
-          join session_form sf on sf.session_id = s.session_id
+          join session_form sf
+            on sf.session_id = s.session_id and sf.part = 'a'
          where s.session_id = %s
         """,
         (session_id,),
@@ -129,7 +134,7 @@ def pull_session(
         response_filter = f"timestamp > {watermark}" if watermark else None
 
         while True:
-            page = _list_with_backoff(
+            page = list_with_backoff(
                 client, form_id, response_filter=response_filter, page_token=page_token
             )
 
@@ -227,7 +232,7 @@ def pull_session(
             update session_form
                set response_watermark = coalesce(%s, response_watermark),
                    last_polled_at = now()
-             where session_id = %s
+             where session_id = %s and part = 'a'
             """,
             (newest_seen, session_id),
         )
@@ -239,7 +244,10 @@ def pull_session(
         # The watermark is deliberately untouched: a partial pull re-reads next
         # time, and the idempotency key makes re-reading harmless.
         execute(
-            conn, "update session_form set last_polled_at = now() where session_id = %s", (session_id,)
+            conn,
+            "update session_form set last_polled_at = now() "
+            "where session_id = %s and part = 'a'",
+            (session_id,),
         )
         finish_load_run(conn, load_id, result, error=str(exc))
         raise
@@ -261,14 +269,27 @@ def pull_cohort(
         """
         select s.session_id
           from "session" s
-          join session_form sf on sf.session_id = s.session_id
+          join session_form sf
+            on sf.session_id = s.session_id and sf.part = 'a'
          where s.cohort_id = %s
          order by s.scheduled_at_utc
         """,
         (cohort_id,),
     )
     for row in rows:
-        result = pull_session(conn, client, str(row["session_id"]), settings)
+        session_id = str(row["session_id"])
+        try:
+            result = pull_session(conn, client, session_id, settings)
+        except Exception as exc:  # noqa: BLE001 - see below
+            # One session's form being unreadable must not cost the other nine
+            # their responses. The failure is carried out as a warning rather
+            # than raised: ingest is idempotent, so the session that failed is
+            # re-read on the next run, and the watermark it did not advance
+            # makes that automatic.
+            log.warning("pull failed session=%s: %s", session_id, type(exc).__name__)
+            combined.sessions_failed += 1
+            combined.warnings.append(f"session {session_id} could not be pulled: {exc}")
+            continue
         combined.rows_read += result.rows_read
         combined.rows_written += result.rows_written
         combined.rows_skipped += result.rows_skipped

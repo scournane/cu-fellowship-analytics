@@ -15,6 +15,13 @@ Defaults reproduce Google's real behaviour as of August 2026:
 
 So the happy path through this fake is only reachable by code that handles the
 traps correctly.
+
+One knob is different in kind from the others. ``question_id_scheme`` decides
+whether a Drive copy preserves question ids or mints new ones, because **which
+of those Google actually does is not verified**. It is not a failure mode to be
+switched on for one test — both settings are equally plausible descriptions of
+reality, and the mapping logic has to be correct under either, so the suite runs
+the same assertions twice.
 """
 
 from __future__ import annotations
@@ -31,12 +38,54 @@ from .base import (
     EMAIL_COLLECTION_RESPONDER_INPUT,
     EMAIL_COLLECTION_VERIFIED,
     PASSPHRASE_QUESTION_TITLE,
+    FormDefinition,
+    FormItem,
     FormRef,
     FormResponse,
     FormState,
     GoogleApiError,
     ResponsePage,
 )
+
+#: How a Drive copy treats question ids.
+#:
+#: ``preserve``    — the copy keeps the source form's question ids.
+#: ``regenerate``  — the copy mints new ones.
+#:
+#: Measured against a live account in August 2026: Google **preserves** them, so
+#: ``preserve`` is the default here. Both are still implemented and both are
+#: still tested — one measurement is evidence about current behaviour rather
+#: than a guarantee, and code that reads the ids back off each form is correct
+#: under either. Code that assumes one is silently wrong under the other, and
+#: the wrongness looks like plausible data.
+#:
+#: Note which way round the risk runs. Under ``preserve`` every form copied from
+#: one template answers under the SAME ids, so a map keyed on question id alone
+#: would merge every week's rotating question into one entry — and look right
+#: doing it. That is why the map is keyed per form.
+QUESTION_IDS_PRESERVED = "preserve"
+QUESTION_IDS_REGENERATED = "regenerate"
+
+
+@dataclass
+class _FakeItem:
+    """One question on a fake form."""
+
+    item_id: str
+    question_id: str
+    title: str
+    description: str = ""
+    kind: str = "text"
+
+
+@dataclass
+class _FakeResponse:
+    """A submission, stored the way the API returns it: keyed by question id."""
+
+    response_id: str
+    respondent_email: str
+    submitted_at: str
+    answers_by_id: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -47,17 +96,33 @@ class _FakeForm:
     email_collection_type: str = EMAIL_COLLECTION_DO_NOT_COLLECT
     is_published: bool = False
     is_accepting_responses: bool = False
-    question_title: str = PASSPHRASE_QUESTION_TITLE
-    responses: list[FormResponse] = field(default_factory=list)
+    items: list[_FakeItem] = field(default_factory=list)
+    responses: list[_FakeResponse] = field(default_factory=list)
+
+    @property
+    def question_title(self) -> str:
+        """Part A's single question. Kept for the tests that still name it."""
+        return self.items[0].title if self.items else PASSPHRASE_QUESTION_TITLE
+
+    def item_at(self, index: int) -> _FakeItem | None:
+        return self.items[index] if 0 <= index < len(self.items) else None
+
+    def titles(self) -> dict[str, str]:
+        return {item.question_id: item.title for item in self.items}
 
 
 class FakeGoogleClient:
     """Implements ``FormsClient`` against a dictionary.
 
-    Every knob below turns on one specific real failure. They are constructor
+    Every knob below turns on one specific real behaviour. They are constructor
     arguments rather than monkeypatches so a test reads as a description of the
     scenario it covers.
     """
+
+    #: Read by ``cufa.provenance``: every form this client mints carries a
+    #: ``fake-form-`` id, and asking Google for one of those returns a 404 that
+    #: says nothing about where it came from.
+    is_fake = True
 
     def __init__(
         self,
@@ -70,6 +135,9 @@ class FakeGoogleClient:
         default_email_collection: str = EMAIL_COLLECTION_DO_NOT_COLLECT,
         # Trap 2: batchUpdate rejects emailCollectionType. True mirrors reality.
         reject_email_collection: bool = True,
+        # Trap 5: whether files.copy preserves question ids. Unverified in
+        # reality, so tests run both.
+        question_id_scheme: str = QUESTION_IDS_PRESERVED,
         # Pagination granularity for list_responses.
         page_size: int = 2,
         # Raise 429 on this many list_responses calls before succeeding.
@@ -88,18 +156,25 @@ class FakeGoogleClient:
         self.publish_readback_fails = publish_readback_fails
         self.default_email_collection = default_email_collection
         self.reject_email_collection = reject_email_collection
+        if question_id_scheme not in (QUESTION_IDS_PRESERVED, QUESTION_IDS_REGENERATED):
+            raise ValueError(
+                f"question_id_scheme must be {QUESTION_IDS_PRESERVED!r} or "
+                f"{QUESTION_IDS_REGENERATED!r}, got {question_id_scheme!r}"
+            )
+        self.question_id_scheme = question_id_scheme
         self.page_size = max(1, page_size)
         self.rate_limit_calls = rate_limit_calls
         self.fail_on_response_page = fail_on_response_page
 
         self._next_id = 1
+        self._next_question = 1
         self._list_calls = 0
 
     # -- helpers used by tests and the demo ---------------------------------
 
     def _record(self, action: str, **details: Any) -> None:
         self.call_log.append((action, details))
-        if self.state_path is not None and action != "read_settings":
+        if self.state_path is not None and action not in ("read_settings", "get_form"):
             self.save()
 
     def calls(self, action: str) -> list[dict[str, Any]]:
@@ -110,6 +185,11 @@ class FakeGoogleClient:
         form_id = f"fake-form-{self._next_id:04d}"
         self._next_id += 1
         return form_id
+
+    def _new_question_id(self) -> str:
+        question_id = f"q{self._next_question:05x}"
+        self._next_question += 1
+        return question_id
 
     def _get(self, form_id: str) -> _FakeForm:
         try:
@@ -132,29 +212,67 @@ class FakeGoogleClient:
         self._get(form_id).email_collection_type = EMAIL_COLLECTION_RESPONDER_INPUT
         self.save()
 
+    def simulate_teacher_retitles(self, form_id: str, index: int, title: str) -> None:
+        """A teacher edits a question's wording in the Forms UI.
+
+        Question ids do not change when the text does — which is exactly why
+        answers are resolved by id and slots are assigned by index, never by
+        matching the title back.
+        """
+        item = self._get(form_id).item_at(index)
+        if item is None:
+            raise GoogleApiError(f"no item at index {index}", status=400)
+        item.title = title
+        self.save()
+
     def seed_responses(
         self,
         form_id: str,
         rows: list[tuple[str, str, str]] | list[dict[str, Any]],
     ) -> None:
-        """Load responses as ``(email, rfc3339_timestamp, passphrase)`` triples."""
+        """Load responses into a form.
+
+        Accepts, in decreasing order of convenience:
+
+        * ``(email, rfc3339_timestamp, passphrase)`` triples — Part A's single
+          question, answered at item index 0.
+        * ``{"email", "submitted_at", "answers_by_index": {0: "5", 1: "..."}}`` —
+          Part B. Indexed rather than keyed by question id so a fixture does not
+          have to know which id scheme the copy used.
+        * ``{"email", "submitted_at", "answers": {title: value}}`` or
+          ``"answers_by_id"`` — when a test wants to be explicit.
+        """
         form = self._get(form_id)
+        by_title = {item.title: item.question_id for item in form.items}
+
         for index, row in enumerate(rows):
             if isinstance(row, dict):
                 email = row["email"]
                 submitted_at = row["submitted_at"]
-                answers = dict(row.get("answers") or {})
-                if "passphrase" in row:
-                    answers.setdefault(form.question_title, row["passphrase"])
+                answers: dict[str, str] = dict(row.get("answers_by_id") or {})
+
+                for slot_index, value in (row.get("answers_by_index") or {}).items():
+                    item = form.item_at(int(slot_index))
+                    if item is not None:
+                        answers[item.question_id] = value
+
+                for title, value in (row.get("answers") or {}).items():
+                    question_id = by_title.get(title)
+                    if question_id is not None:
+                        answers[question_id] = value
+
+                if "passphrase" in row and form.items:
+                    answers.setdefault(form.items[0].question_id, row["passphrase"])
             else:
                 email, submitted_at, passphrase = row
-                answers = {form.question_title: passphrase}
+                answers = {form.items[0].question_id: passphrase} if form.items else {}
+
             form.responses.append(
-                FormResponse(
+                _FakeResponse(
                     response_id=f"{form_id}-resp-{len(form.responses) + index:04d}",
                     respondent_email=email,
                     submitted_at=submitted_at,
-                    answers=answers,
+                    answers_by_id=answers,
                 )
             )
         # The API returns responses oldest-first; keeping that order here means
@@ -172,6 +290,8 @@ class FakeGoogleClient:
     def to_dict(self) -> dict[str, Any]:
         return {
             "next_id": self._next_id,
+            "next_question": self._next_question,
+            "question_id_scheme": self.question_id_scheme,
             "forms": {
                 form_id: {
                     "form_id": form.form_id,
@@ -180,13 +300,22 @@ class FakeGoogleClient:
                     "email_collection_type": form.email_collection_type,
                     "is_published": form.is_published,
                     "is_accepting_responses": form.is_accepting_responses,
-                    "question_title": form.question_title,
+                    "items": [
+                        {
+                            "item_id": item.item_id,
+                            "question_id": item.question_id,
+                            "title": item.title,
+                            "description": item.description,
+                            "kind": item.kind,
+                        }
+                        for item in form.items
+                    ],
                     "responses": [
                         {
                             "response_id": r.response_id,
                             "respondent_email": r.respondent_email,
                             "submitted_at": r.submitted_at,
-                            "answers": r.answers,
+                            "answers_by_id": r.answers_by_id,
                         }
                         for r in form.responses
                     ],
@@ -198,6 +327,25 @@ class FakeGoogleClient:
     def load_dict(self, payload: dict[str, Any]) -> None:
         self.forms = {}
         for form_id, data in (payload.get("forms") or {}).items():
+            items = [
+                _FakeItem(
+                    item_id=item["item_id"],
+                    question_id=item["question_id"],
+                    title=item.get("title", ""),
+                    description=item.get("description", ""),
+                    kind=item.get("kind", "text"),
+                )
+                for item in (data.get("items") or [])
+            ]
+            responses = [
+                _FakeResponse(
+                    response_id=r["response_id"],
+                    respondent_email=r["respondent_email"],
+                    submitted_at=r["submitted_at"],
+                    answers_by_id=dict(r.get("answers_by_id") or {}),
+                )
+                for r in (data.get("responses") or [])
+            ]
             self.forms[form_id] = _FakeForm(
                 form_id=data["form_id"],
                 title=data.get("title", ""),
@@ -207,18 +355,11 @@ class FakeGoogleClient:
                 ),
                 is_published=bool(data.get("is_published", False)),
                 is_accepting_responses=bool(data.get("is_accepting_responses", False)),
-                question_title=data.get("question_title", PASSPHRASE_QUESTION_TITLE),
-                responses=[
-                    FormResponse(
-                        response_id=r["response_id"],
-                        respondent_email=r["respondent_email"],
-                        submitted_at=r["submitted_at"],
-                        answers=dict(r.get("answers") or {}),
-                    )
-                    for r in (data.get("responses") or [])
-                ],
+                items=items,
+                responses=responses,
             )
         self._next_id = int(payload.get("next_id", 1))
+        self._next_question = int(payload.get("next_question", 1))
 
     def save(self) -> None:
         if self.state_path is None:
@@ -290,9 +431,59 @@ class FakeGoogleClient:
             },
         )
 
+    def get_form(self, form_id: str) -> FormDefinition:
+        """The form's items, with the ids ``list_responses`` will use."""
+        form = self._get(form_id)
+        self._record("get_form", form_id=form_id)
+        items = tuple(
+            FormItem(
+                item_id=item.item_id,
+                question_id=item.question_id,
+                title=item.title,
+                index=index,
+                kind=item.kind,
+            )
+            for index, item in enumerate(form.items)
+        )
+        return FormDefinition(
+            form_id=form_id,
+            title=form.title,
+            items=items,
+            raw={
+                "formId": form_id,
+                "info": {"title": form.title, "description": form.description},
+                "items": [
+                    {
+                        "itemId": item.item_id,
+                        "title": item.title,
+                        "questionItem": {"question": {"questionId": item.question_id}},
+                    }
+                    for item in form.items
+                ],
+            },
+        )
+
     def copy_form(self, source_form_id: str, new_title: str) -> FormRef:
         source = self._get(source_form_id)
         form_id = self._new_id()
+
+        # The whole reason ``question_id_scheme`` exists. Under `preserve`, the
+        # copy answers under the same ids as the template; under `regenerate` it
+        # answers under new ones. Anything that hardcoded a template's ids, or
+        # cached them across a copy, is wrong under exactly one of these and
+        # produces answers filed against the wrong field with no error.
+        preserve = self.question_id_scheme == QUESTION_IDS_PRESERVED
+        items = [
+            _FakeItem(
+                item_id=item.item_id if preserve else self._new_question_id(),
+                question_id=item.question_id if preserve else self._new_question_id(),
+                title=item.title,
+                description=item.description,
+                kind=item.kind,
+            )
+            for item in source.items
+        ]
+
         self.forms[form_id] = _FakeForm(
             form_id=form_id,
             title=new_title,
@@ -301,9 +492,15 @@ class FakeGoogleClient:
             email_collection_type=source.email_collection_type,
             is_published=False,
             is_accepting_responses=False,
-            question_title=source.question_title,
+            items=items,
         )
-        self._record("copy_form", source_form_id=source_form_id, form_id=form_id, title=new_title)
+        self._record(
+            "copy_form",
+            source_form_id=source_form_id,
+            form_id=form_id,
+            title=new_title,
+            question_id_scheme=self.question_id_scheme,
+        )
         return FormRef(
             form_id=form_id,
             responder_url=f"https://forms.example.invalid/d/e/{form_id}/viewform",
@@ -335,12 +532,59 @@ class FakeGoogleClient:
                     form.email_collection_type = settings["emailCollectionType"]
             elif "updateItem" in request:
                 item = request["updateItem"].get("item", {})
+                at = int((request["updateItem"].get("location") or {}).get("index", 0))
+                target = form.item_at(at)
+                if target is None:
+                    # An update against an index that does not exist is a 400 in
+                    # the real API, not a silent create.
+                    raise GoogleApiError(
+                        f"no item at index {at} on form {form_id}",
+                        status=400,
+                        reason="INVALID_ARGUMENT",
+                    )
+                if "questionItem" not in item:
+                    # Verbatim in shape from the live API. An item body without
+                    # a questionItem reads as "turn this question into a text
+                    # block", whatever the updateMask says — so sending only the
+                    # field being changed is rejected. This cost a real Part B
+                    # provisioning run, because the offline fake used to accept
+                    # it happily.
+                    raise GoogleApiError(
+                        f"Invalid requests[{index}]: A QuestionItem or "
+                        "QuestionGroupItem cannot be changed into a non question "
+                        "Item type by an Update operation.",
+                        status=400,
+                        reason="INVALID_ARGUMENT",
+                    )
                 if "title" in item:
-                    form.question_title = item["title"]
+                    target.title = item["title"]
+                if "description" in item:
+                    target.description = item["description"]
+            elif "deleteItem" in request:
+                at = int((request["deleteItem"].get("location") or {}).get("index", 0))
+                if form.item_at(at) is not None:
+                    form.items.pop(at)
             elif "createItem" in request:
                 item = request["createItem"].get("item", {})
-                if "title" in item:
-                    form.question_title = item["title"]
+                at = (request["createItem"].get("location") or {}).get("index")
+                position = len(form.items) if at is None else min(int(at), len(form.items))
+                question = (item.get("questionItem") or {}).get("question") or {}
+                if "scaleQuestion" in question:
+                    kind = "scale"
+                elif "choiceQuestion" in question:
+                    kind = "choice"
+                else:
+                    kind = "text"
+                form.items.insert(
+                    position,
+                    _FakeItem(
+                        item_id=self._new_question_id(),
+                        question_id=self._new_question_id(),
+                        title=item.get("title", ""),
+                        description=item.get("description", ""),
+                        kind=kind,
+                    ),
+                )
 
         return {"form": {"formId": form_id}}
 
@@ -397,7 +641,21 @@ class FakeGoogleClient:
         limit = page_size or self.page_size
         page = rows[offset : offset + limit]
         next_token = str(offset + limit) if offset + limit < len(rows) else None
-        return ResponsePage(responses=tuple(page), next_page_token=next_token)
+
+        titles = form.titles()
+        responses = tuple(
+            FormResponse(
+                response_id=r.response_id,
+                respondent_email=r.respondent_email,
+                submitted_at=r.submitted_at,
+                answers={
+                    titles.get(qid, qid): value for qid, value in r.answers_by_id.items()
+                },
+                answers_by_id=dict(r.answers_by_id),
+            )
+            for r in page
+        )
+        return ResponsePage(responses=responses, next_page_token=next_token)
 
 
 def _parse_timestamp_filter(expression: str) -> datetime | None:
@@ -427,4 +685,9 @@ def demo_client(state_path: str | Path | None = None, **kwargs: Any) -> FakeGoog
     return client
 
 
-__all__ = ["FakeGoogleClient", "demo_client"]
+__all__ = [
+    "QUESTION_IDS_PRESERVED",
+    "QUESTION_IDS_REGENERATED",
+    "FakeGoogleClient",
+    "demo_client",
+]

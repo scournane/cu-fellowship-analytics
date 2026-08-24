@@ -45,6 +45,15 @@ class NotSignedIn(Exception):
     """Raised by the guard so the app can redirect rather than 401 a browser."""
 
 
+class NotPermitted(Exception):
+    """Signed in, but not for this screen.
+
+    Distinct from ``NotSignedIn`` because the response has to be: signing in
+    again would not help, so bouncing to the sign-in page would read as a broken
+    link rather than as a boundary. Carries the reason, which is shown.
+    """
+
+
 @dataclass(frozen=True)
 class ConsoleUser:
     """The signed-in operator, as carried in the cookie."""

@@ -118,6 +118,8 @@ def load_sessions(conn: psycopg.Connection, path: str | Path) -> LoadSummary:
             duration = _pick(row, headers, "duration_minutes", "duration")
             grace = _pick(row, headers, "grace_minutes", "grace") or "15"
             passphrase = _pick(row, headers, "passphrase")
+            week_raw = _pick(row, headers, "week_index", "week")
+            teacher_question = _pick(row, headers, "teacher_question")
 
             if not (cohort_id and title and local_raw and zone and duration):
                 skipped += 1
@@ -130,6 +132,21 @@ def load_sessions(conn: psycopg.Connection, path: str | Path) -> LoadSummary:
 
             ensure_cohort(conn, cohort_id)
             local = _parse_local(local_raw)
+
+            week: int | None = None
+            if week_raw:
+                try:
+                    week = int(week_raw)
+                except ValueError:
+                    # A bad week number is not worth losing the session over —
+                    # Part A does not need it, and Part B refuses loudly later
+                    # rather than guessing.
+                    log.warning(
+                        "session row %d has week_index=%r, which is not a whole "
+                        "number; the session is created without one",
+                        read,
+                        week_raw,
+                    )
 
             existing = fetch_one(
                 conn,
@@ -153,6 +170,8 @@ def load_sessions(conn: psycopg.Connection, path: str | Path) -> LoadSummary:
                     duration_minutes=int(duration),
                     grace_minutes=int(grace),
                     passphrase=passphrase or None,
+                    week_index=week,
+                    teacher_question=teacher_question or None,
                 ),
             )
             written += 1

@@ -2,8 +2,9 @@
 """Assert the acceptance criteria against the database the demo just built.
 
 `make demo` printing a report proves it ran. These checks prove it ran
-*correctly* — chiefly that nothing was dropped and that the decision table has
-exactly one live row per observation.
+*correctly* — chiefly that nothing was dropped, that the decision table has
+exactly one live row per observation, and that the help-request table is
+reachable from nothing.
 """
 
 from __future__ import annotations
@@ -175,6 +176,258 @@ def main() -> int:
         )["n"]
         check("unexpected CSV column preserved in extra_fields", preserved > 0,
               f"{preserved} rows")
+
+
+        # ------------------------------------------------------------------
+        # Part B
+        # ------------------------------------------------------------------
+        print("-" * 62)
+
+        # 11. Every Part B fixture response is in checkin_b, whatever the
+        #     validity of any individual field. Invariant 1 again: a dropped
+        #     observation is unrecoverable.
+        actual_b = (fetch_one(conn, "select count(*) as n from checkin_b") or {})["n"]
+        expected_b = manifest["expected_checkin_b_rows"]
+        check(
+            f"every Part B fixture response is in checkin_b ({actual_b} rows)",
+            actual_b == expected_b,
+            f"expected {expected_b} "
+            f"({manifest['part_b_responses']} responses − "
+            f"{manifest['part_b_intentional_duplicates']} intentional duplicate)",
+        )
+
+        # 12. Confidence out of range: NULL, raw kept, never clamped.
+        clamped = (
+            fetch_one(
+                conn,
+                """
+                select count(*) as n from checkin_b
+                 where extra_fields ? '_confidence_rejected_raw'
+                   and confidence_raw is not null
+                """,
+            )
+            or {}
+        )["n"]
+        rejected = (
+            fetch_one(
+                conn,
+                "select count(*) as n from checkin_b "
+                "where extra_fields ? '_confidence_rejected_raw'",
+            )
+            or {}
+        )["n"]
+        check(
+            "out-of-range confidence was rejected, not clamped",
+            rejected > 0 and clamped == 0,
+            f"{rejected} rejected, {clamped} wrongly kept a value",
+        )
+        in_range = (
+            fetch_one(
+                conn,
+                "select count(*) as n from checkin_b where confidence_raw is not null "
+                "and confidence_raw not between 1 and 7",
+            )
+            or {}
+        )["n"]
+        check("no stored confidence is outside 1-7", in_range == 0)
+
+        # 13. Free text is preserved verbatim, whitespace included.
+        whitespace = (
+            fetch_one(
+                conn,
+                "select count(*) as n from checkin_b "
+                "where takeaway_text ~ '^[[:space:]]+$'",
+            )
+            or {}
+        )["n"]
+        check(
+            "a whitespace-only takeaway survived verbatim",
+            whitespace > 0,
+            f"{whitespace} row(s)",
+        )
+
+        # 14. Every answer was resolved through a complete question map.
+        unmapped = (
+            fetch_one(
+                conn,
+                """
+                select count(*) as n
+                  from session_form sf
+                 where sf.part = 'b'
+                   and (select count(*) from form_question_map m
+                         where m.form_id = sf.form_id) < 4
+                """,
+            )
+            or {}
+        )["n"]
+        check("every provisioned Part B form has a complete question map", unmapped == 0)
+
+        # 15. The rotating question text is a SNAPSHOT, not a reconstruction.
+        rotating = fetch_all(
+            conn,
+            """
+            select distinct rotating_kind, question_text
+              from form_question_map
+             where slot = 'rotating'
+             order by rotating_kind
+            """,
+        )
+        kinds = {row["rotating_kind"] for row in rotating}
+        check(
+            "all three rotating kinds were asked across the ten weeks",
+            kinds == {"teacher_question", "muddiest_point", "application"},
+            ", ".join(sorted(k for k in kinds if k)),
+        )
+        blank_text = [r for r in rotating if not (r["question_text"] or "").strip()]
+        check("every rotating slot snapshotted the text it showed", not blank_text)
+
+        # 16. Shoutouts: split, resolved conservatively, never auto-guessed.
+        shoutouts = {
+            row["match_method"]: row["n"]
+            for row in fetch_all(
+                conn,
+                "select match_method, count(*) as n from peer_shoutout "
+                "group by match_method",
+            )
+        }
+        check(
+            "shoutout names were extracted",
+            sum(shoutouts.values()) > 0,
+            f"{sum(shoutouts.values())} name(s)",
+        )
+        check(
+            "some resolved to exactly one fellow",
+            shoutouts.get("exact_name", 0) > 0,
+            f"{shoutouts.get('exact_name', 0)}",
+        )
+        check(
+            "ambiguous and non-roster names are unresolved, not guessed",
+            shoutouts.get("unresolved", 0) > 0,
+            f"{shoutouts.get('unresolved', 0)} in the review queue",
+        )
+        guessed = (
+            fetch_one(
+                conn,
+                "select count(*) as n from peer_shoutout "
+                "where match_method = 'unresolved' and named_fellow_id is not null",
+            )
+            or {}
+        )["n"]
+        check("nothing unresolved was silently linked anyway", guessed == 0)
+
+        # 17. Help requests: recorded, and NOWHERE else.
+        help_rows = (fetch_one(conn, "select count(*) as n from help_request") or {})["n"]
+        check(
+            "help requests were recorded",
+            help_rows == manifest["expected_help_requests"],
+            f"{help_rows}, expected {manifest['expected_help_requests']}",
+        )
+        help_column = (
+            fetch_one(
+                conn,
+                """
+                select count(*) as n from information_schema.columns
+                 where table_schema = 'public' and table_name = 'checkin_b'
+                   and column_name ilike '%help%'
+                """,
+            )
+            or {}
+        )["n"]
+        check("the help checkbox is not a column on checkin_b", help_column == 0)
+        help_in_views = (
+            fetch_one(
+                conn,
+                """
+                select count(*) as n from information_schema.view_column_usage
+                 where table_schema = 'public' and table_name = 'help_request'
+                """,
+            )
+            or {}
+        )["n"]
+        check("no view reads help_request", help_in_views == 0)
+        help_policies = (
+            fetch_one(
+                conn,
+                "select count(*) as n from pg_policies "
+                "where tablename = 'help_request'",
+            )
+            or {}
+        )["n"]
+        rls_on = fetch_one(
+            conn,
+            "select relrowsecurity from pg_class where relname = 'help_request'",
+        )
+        check(
+            "help_request has RLS on and no permissive policy",
+            bool(rls_on and rls_on["relrowsecurity"]) and help_policies == 0,
+        )
+
+        # 18. Straight-lining is detected, and is only a data-quality flag.
+        runs = fetch_all(
+            conn,
+            "select fellow_id, confidence_raw, run_length "
+            "from v_confidence_straightline",
+        )
+        check(
+            "a fellow answering identically 4+ sessions running is flagged",
+            any(r["run_length"] >= 4 for r in runs),
+            f"{len(runs)} run(s)",
+        )
+
+        # 19. Both parts are independent: each has someone the other does not.
+        b_only = (
+            fetch_one(
+                conn,
+                """
+                select count(*) as n from (
+                    select distinct v.fellow_id from v_checkin_b_resolved v
+                     where v.fellow_id is not null
+                       and not exists (
+                           select 1 from v_checkin_resolved a
+                            where a.fellow_id = v.fellow_id
+                       )
+                ) t
+                """,
+            )
+            or {}
+        )["n"]
+        a_only = (
+            fetch_one(
+                conn,
+                """
+                select count(*) as n from (
+                    select distinct a.fellow_id from v_checkin_resolved a
+                     where a.fellow_id is not null
+                       and not exists (
+                           select 1 from v_checkin_b_resolved v
+                            where v.fellow_id = a.fellow_id
+                       )
+                ) t
+                """,
+            )
+            or {}
+        )["n"]
+        check(
+            "a fellow submitted Part B and not Part A",
+            b_only > 0,
+            f"{b_only} fellow(s)",
+        )
+        check(
+            "a fellow submitted Part A and not Part B",
+            a_only > 0,
+            f"{a_only} fellow(s)",
+        )
+
+        # 20. Latency is derived per part, and NULL where nothing matched.
+        leaked_b = (
+            fetch_one(
+                conn,
+                "select count(*) as n from checkin_b "
+                "where session_id is null and latency_seconds is not null",
+            )
+            or {}
+        )["n"]
+        check("Part B latency is NULL when no session matched", leaked_b == 0)
 
     print("=" * 62)
     if failures:

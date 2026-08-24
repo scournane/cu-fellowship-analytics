@@ -1,13 +1,19 @@
-# Four Google API traps this system is built around
+# Six Google API traps this system is built around
 
 Read this before you change anything under `src/cufa/google/`, `src/cufa/template.py`,
-`src/cufa/provisioning.py`, or `src/cufa/ingest/`.
+`src/cufa/provisioning.py`, `src/cufa/question_map.py`, or `src/cufa/ingest/`.
 
-Four behaviours of the Google Forms and Drive APIs will break attendance collection
-**silently**. Not with an exception, not with a 500 — the code returns 200, the form
-link opens in a browser, the teacher shares it, and either nothing arrives or what
-arrives cannot be attributed to a person. You find out weeks later, when the data you
-needed does not exist and cannot be recreated.
+Six behaviours of the Google Forms and Drive APIs will break collection **silently**.
+Not with an exception, not with a 500 — the code returns 200, the form link opens in a
+browser, the teacher shares it, and either nothing arrives, or what arrives cannot be
+attributed to a person, or it is attributed to the wrong field. You find out weeks
+later, when the data you needed does not exist and cannot be recreated.
+
+Traps 1 to 4 came from Part A. **Trap 5 came from Part B** and only bites a form with
+more than one question, which is why Part A never met it — and it is the only one where
+Google's actual behaviour could not be established at all. **Trap 6 came from the first
+real provisioning run against a live account**, which is also where trap 2 turned out to
+have been fixed by Google; see the note on it below.
 
 Everything below is current as of **August 2026**. Each section says what the trap is,
 what it silently breaks, exactly where this codebase handles it, how to check the
@@ -15,7 +21,7 @@ handling still works, and what to do if Google changes the behaviour.
 
 If you are about to "simplify" one of these — publish without reading the state back,
 set email collection through the API, link a response spreadsheet, use a service
-account — this document is the argument against it.
+account, hardcode a question id — this document is the argument against it.
 
 ---
 
@@ -105,6 +111,22 @@ browser window and submit a test response.
 ---
 
 ## Trap 2 — `emailCollectionType: VERIFIED` is unreliable through the API
+
+> **Update, August 2026 — observed working.** On a live run against a real
+> Workspace account, `batchUpdate` → `updateSettings` → `emailCollectionType:
+> VERIFIED` was **accepted**, and reading the settings back confirmed `VERIFIED`.
+> Both templates verified with no human step at all.
+>
+> **Nothing below has been removed, and nothing should be.** The code already
+> handles this outcome: `try_set_verified_email` attempts the call precisely so
+> that "if Google fixes it the human step disappears for free", and
+> `verify_template` reads the state back regardless — so a 200 was never what
+> unblocked provisioning, and is not what unblocked it here. The manual step is
+> still documented, still offered, and still the fallback the moment the API
+> goes back to rejecting it or a template is edited by hand. One successful run
+> against one account is not a guarantee about Google's behaviour, and this is
+> exactly the shape of thing that regresses quietly.
+
 
 ### What it is
 
@@ -404,9 +426,265 @@ and email addresses at INFO and above.
 
 ---
 
+## Trap 5 — responses are keyed by `questionId`, and copies share them
+
+> **Update, August 2026 — resolved by measurement.** Against a live Workspace
+> account, `files.copy` **preserves** question ids: a copy of the Part B
+> template carried all four of the template's ids unchanged. `FakeGoogleClient`
+> defaults to that behaviour, so the fake now matches reality.
+>
+> **This makes the read-back more important, not less.** Every Part B form
+> copied from one template shares the same ids — so the rotating slot has the
+> *same* `questionId` in week 2 and in week 5, with different question text. The
+> id therefore says nothing about which week's question it was, and "what was
+> actually asked in week 3" is answerable only from the per-form
+> `question_text` snapshot. Anything that keyed a map on `questionId` alone
+> would look correct and quietly merge ten weeks of different questions into
+> one.
+>
+> The `regenerate` setting is kept and the mapping tests still run under both.
+> One measurement, on one account, on one day, is evidence about Google's
+> current behaviour and not a guarantee about it — and the cost of keeping the
+> code correct under either is one API call per provisioned form.
+>
+> One id is *not* shared: the help checkbox is created on each copy rather than
+> carried by the template, so it gets a fresh id per form. A form's map is
+> therefore partly shared and partly unique, which is exactly the shape that
+> defeats reasoning about ids in the abstract.
+
+Added with Part B. Trap 1 through trap 4 apply unchanged; this one only bites a form
+with more than one question, which is why Part A never met it.
+
+### What it is
+
+`forms.responses.list` returns each response's answers keyed by **`questionId`** — not by
+question title, not by position in the form:
+
+```json
+"answers": {
+  "1a2b3c4d": {"questionId": "1a2b3c4d", "textAnswers": {"answers": [{"value": "6"}]}},
+  "5e6f7a8b": {"questionId": "5e6f7a8b", "textAnswers": {"answers": [{"value": "…"}]}}
+}
+```
+
+Part A had one question, so "the answer" was whatever came back. Part B has five, and
+every one of them has to be told apart.
+
+**When this was written, whether Drive's `files.copy` preserves question ids could not
+be verified either way.** It has since been measured — it preserves them, see the note
+above — but the handling was built without that knowledge, and is unchanged by it: the
+ids are read back off each form rather than assumed. What follows describes both
+possibilities, because code that is correct under only one of them fails silently under
+the other, and because the measurement is an observation rather than a promise.
+
+### What it silently breaks
+
+Everything, in the worst possible way — quietly and plausibly.
+
+If the code assumes ids are **preserved** and Google regenerates them, every answer
+arrives under an id nothing recognises. If the code assumes they are **regenerated** and
+Google preserves them, a cached id from another form still resolves. Either mistake puts
+a confidence rating in the takeaway column and a takeaway in the confidence column.
+
+The result is not an error. It is a table full of data that looks entirely ordinary:
+integers in the integer column, sentences in the text column, a confidence trend that
+plots. Nobody discovers it, because there is nothing to discover — the numbers are just
+wrong.
+
+Matching on **title** instead has its own failure, and it is a certainty rather than a
+risk: the rotating slot's title changes every single week *by design*, and a teacher can
+retitle any field in the Forms editor without telling anyone. Matching on **position**
+breaks the first time somebody adds a question.
+
+### How this codebase handles it
+
+Nothing is assumed and nothing is hardcoded.
+
+1. **The form is read back after it is built.** `provision_session(..., part="b")` calls
+   `client.get_form(form_id)` — a separate call from `read_settings`, deliberately, and
+   never served from a cache a `batchUpdate` could have invalidated.
+
+   `src/cufa/provisioning.py` → `_apply_part_b_content`
+
+2. **The mapping is recorded per form**, in `form_question_map`: `questionId` → one of
+   `confidence` / `takeaway` / `rotating` / `shoutout` / `help`, plus the item index, the
+   rotating kind, and **the exact text shown to fellows**.
+
+   `src/cufa/question_map.py` → `record_map`
+
+3. **Slots are matched by item index**, which this application controls at creation time.
+   Never by title.
+
+   `src/cufa/form_content_b.py` → `item_specs`
+
+4. **Ingest resolves every answer through that table, and refuses a form whose map is
+   missing or incomplete.** Not "skip that field" — refuse the form, write nothing, and
+   say which slot is missing.
+
+   `src/cufa/question_map.py` → `require_map`; `src/cufa/ingest/forms_b.py`
+
+5. **The question text is snapshotted at provisioning time and never reconstructed.**
+   `config/rotation.json` may have changed since; "what was actually asked in week 3" has
+   to be answerable from the database alone.
+
+Re-provisioning is the repair. On a form that is already published, provisioning re-reads
+it and refreshes the map **without touching a single question**, so pressing it on a form
+that is already collecting is safe.
+
+### How to verify the handling still works
+
+`FakeGoogleClient` takes a `question_id_scheme` argument with two settings, and the suite
+runs the mapping tests under **both**:
+
+```python
+# Ids survive the copy.
+FakeGoogleClient(question_id_scheme=QUESTION_IDS_PRESERVED)
+# Ids are minted fresh on the copy.
+FakeGoogleClient(question_id_scheme=QUESTION_IDS_REGENERATED)
+```
+
+That is not an edge case being covered. It is the unresolved question being made
+harmless: whichever one Google does, the same assertions hold.
+
+```bash
+pytest tests/test_part_b.py -k "question_ids or map or retitled"
+```
+
+The tests that matter:
+
+- `test_1_2_question_ids_resolve_under_either_copy_behaviour` — the confidence rating
+  lands in `confidence_raw` and the takeaway in `takeaway_text`, under both schemes.
+- `test_2b_a_retitled_question_does_not_move_its_answers` — a teacher fixes a typo; the
+  answers stay where they were.
+- `test_3_an_incomplete_map_refuses_to_ingest` — a deleted slot stops the run and writes
+  nothing.
+- `test_4_question_text_is_snapshot_and_survives_a_config_change` — rewriting
+  `config/rotation.json` does not rewrite history.
+
+`make demo` also stages the failure deliberately: it deletes one slot from one form's
+map, shows `cufa pull --part b` refusing that form, and then repairs it by
+re-provisioning.
+
+### If Google changes this
+
+- **Now that the copy behaviour is known**, this stays exactly as it is. Reading the ids
+  back costs one API call per form, per provisioning run, and removes an entire class of
+  invisible corruption. Do not "optimise" it away on the strength of one measurement — and
+  note that "ids are preserved" is the case that makes a per-form map *necessary* rather
+  than redundant, because it means every week's form answers under the same ids.
+- **If `forms.get` stops returning `questionId` on items**, provisioning must fail loudly
+  rather than record a partial map — `record_map` already raises when a spec's index has no
+  question id.
+- **If a stable, documented alias for a question becomes available** (something the caller
+  sets and the API echoes back), that is worth adopting: it would let the map be asserted
+  rather than merely recorded. Keep the read-back regardless.
+
+---
+
+## Trap 6 — `updateItem` needs the whole item body, not the field you are changing
+
+Found on the first real provisioning run, in August 2026. Offline it looks
+right; the fake used to accept it; the live API does not.
+
+### What it is
+
+To retitle an existing question you send `updateItem` with an `updateMask`. The
+obvious request sends only the field named in the mask:
+
+```json
+{"updateItem": {
+  "item": {"title": "What's still unclear?"},
+  "location": {"index": 2},
+  "updateMask": "title"}}
+```
+
+The live API rejects it:
+
+```
+400 Invalid requests[1]: A QuestionItem or QuestionGroupItem cannot be changed
+    into a non question Item type by an Update operation.
+```
+
+An item body with no `questionItem` reads to Google as a request to convert the
+question into a plain text block — **whatever the `updateMask` says**. The mask
+decides what is applied; the body has to describe the item it still is.
+
+### What it silently breaks
+
+Part B only, and completely.
+
+Part A has always sent its full item body, so it works and goes on working. Part
+B retitles the rotating slot on **every single provision** — that is what the
+rotation *is* — so a title-only body means no Part B form can ever be created,
+while Part A carries on fine. The failure is loud but the cause is not: nothing
+in the message mentions the mask, and the request looks like the documentation.
+
+Worse, it fails **after** `files.copy` has already succeeded, so each attempt
+leaves an orphaned copy in Drive. See below.
+
+### How this codebase handles it
+
+`ItemSpec` holds the item body once, and both requests are built from it:
+
+```python
+spec.request         # createItem: {"item": <body>, "location": {...}}
+spec.update_request  # updateItem: {"item": <body>, "location": {...},
+                     #              "updateMask": "title"}
+```
+
+`src/cufa/form_content_b.py` → `ItemSpec.update_request`
+
+Because the body is shared, a create and an update cannot describe different
+items — which is the other way this bites, quietly, when somebody keeps two
+copies in sync by hand.
+
+### How to verify the handling still works
+
+`FakeGoogleClient.batch_update` now raises the same 400 for an `updateItem`
+whose body has no `questionItem`. Every Part B provisioning test retitles the
+rotating slot, so all of them exercise it:
+
+```bash
+pytest tests/test_part_b.py -q
+```
+
+There is no separate "trap 6 test" because there does not need to be one: the
+fake refuses the bad shape, so any regression fails the whole Part B suite
+rather than one case somebody might delete.
+
+### The orphan it leaves behind
+
+`files.copy` succeeds, then `batchUpdate` fails. The copy is real, in Drive, and
+nothing points at it.
+
+`provision_session` records that copy so a retry **resumes** it instead of
+making another — and records it on a **separate autocommit connection**, because
+every caller wraps provisioning in a transaction and rolls it back when this
+raises. Writing the row on the caller's connection looks correct and is not: it
+disappears with the rollback, and the orphan becomes invisible.
+
+`src/cufa/provisioning.py` → `_record_orphan`
+
+Covered by `tests/test_provenance.py`:
+`test_a_form_copied_before_a_failure_is_recorded_despite_a_rollback` and
+`test_the_next_run_resumes_that_form_rather_than_copying_another`.
+
+To find orphans that predate this fix, list the forms the app can see in Drive
+and compare against `session_form` and `form_template` — anything in Drive with
+no row is an orphan, and safe to bin once you have checked it has no responses.
+
+### If Google changes this
+
+If a title-only body starts being accepted, nothing here needs to change —
+sending the full body remains correct and is not more expensive. Do not
+"simplify" it back; the saving is a few hundred bytes per provision and the cost
+is Part B not working at all.
+
+---
+
 ## How each trap is tested — `FakeGoogleClient`
 
-`src/cufa/google/fake.py` implements the same six-method `FormsClient` protocol as the
+`src/cufa/google/fake.py` implements the same seven-method `FormsClient` protocol as the
 real client, in memory. Its purpose is not offline tests — that is a side effect. Its
 purpose is that **trap handling is only trustworthy if the failures are actually
 exercised.** A comment saying "we check the publish state" proves nothing; a fake that
@@ -422,6 +700,8 @@ the fake is reachable *only* by code that handles the traps:
 | a new form is `DO_NOT_COLLECT` | trap 2, Google's real default |
 | `batchUpdate` with `emailCollectionType` raises `400 INVALID_ARGUMENT` | trap 2 |
 | `copy_form` carries the source's `email_collection_type` | why template-and-copy works |
+| `copy_form` preserves question ids | trap 5 — one of two equally plausible behaviours |
+| `updateItem` with no `questionItem` in the body raises `400` | trap 6 |
 
 ### The knobs
 
@@ -433,12 +713,15 @@ the fake is reachable *only* by code that handles the traps:
 | `page_size=N` *(default 2)* | Pagination granularity for `list_responses`, so a multi-page loop is exercised with a handful of rows. | 3 |
 | `rate_limit_calls=N` | Raise `429 RESOURCE_EXHAUSTED` on the next N `list_responses` calls, then succeed — exercises `_list_with_backoff`. | 3 |
 | `fail_on_response_page=N` | Raise `503` on the Nth `list_responses` call (1-based, counted across the client). Not retried, so it propagates — exercises watermark safety. | 3 |
+| `question_id_scheme=...` | Whether `copy_form` preserves question ids (`QUESTION_IDS_PRESERVED`, the default) or mints new ones (`QUESTION_IDS_REGENERATED`). Unlike every other knob here, neither setting is "the failure" — Google's real behaviour is unknown, so the Part B mapping tests run under **both**. | 5 |
 
 | Method | What it simulates |
 |---|---|
 | `simulate_human_sets_verified(form_id)` | The one manual step. It is **only** available explicitly, never as a side effect of an API call — because that is exactly the property being modelled. |
 | `simulate_human_breaks_verified(form_id)` | Someone edits the template and turns collection back to `RESPONDER_INPUT`. |
-| `seed_responses(form_id, rows)` | Load `(email, rfc3339, passphrase)` triples (or dicts with extra answers), kept oldest-first the way the API returns them. |
+| `simulate_teacher_retitles(form_id, index, title)` | A teacher fixes the wording of a question in the Forms editor. The question id does not change — which is exactly why answers are resolved by id and slots assigned by index. |
+| `seed_responses(form_id, rows)` | Load `(email, rfc3339, passphrase)` triples for Part A, or dicts with `answers_by_index` / `answers_by_id` for Part B, kept oldest-first the way the API returns them. Answers are stored keyed by question id, as the API returns them. |
+| `get_form(form_id)` | The form's items with their question ids — what provisioning reads back to build the map. |
 | `calls(action)` | Every recorded call of one kind — for assertions like "publish was called after every create". |
 | `demo_client()` | A fake already walked through create-template plus the human's Verified step, so the demo starts where a real CU install starts on day two. |
 | `save()` / `restore(path)` | Persist the fake's forms and responses to a JSON file (`CUFA_FAKE_GOOGLE_STATE`, default `fixtures/fake_google_state.json`), so `make demo` and `make demo-console` share one fake across separate `cufa` processes. |
@@ -534,8 +817,9 @@ method name — Google has already moved these once, from `/forms/api/…` to
 
 ## See also
 
-- `docs/decisions.md` — ADR-002 through ADR-005 record why each of these was decided
-  the way it was, and what was rejected.
+- `docs/decisions.md` — ADR-002 through ADR-005 record why traps 1-4 were decided the
+  way they were; **ADR-024** does the same for trap 5.
 - `docs/setup/google-cloud.md` — enabling the APIs, the OAuth client, the two scopes.
-- `src/cufa/google/base.py` — the six-method contract, chosen so that each trap is
+- `docs/setup/part-b-form.md` — the Part B form, its own Verified step, and the rotation.
+- `src/cufa/google/base.py` — the seven-method contract, chosen so that each trap is
   *observable* through the interface rather than hidden inside one implementation.
