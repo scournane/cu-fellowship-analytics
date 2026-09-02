@@ -47,6 +47,11 @@ TEST_TZ = "America/New_York"
 
 # Order matters: children before parents, so a cascade is not relied on.
 _TABLES = (
+    # Slack: events reference workspace, so they go first.
+    "slack_event",
+    "slack_user",
+    "slack_channel",
+    "slack_workspace",
     "attendance_decision",
     "checkin",
     "muddiest_theme_member",

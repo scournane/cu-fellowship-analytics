@@ -23,7 +23,8 @@ PY ?= python3
 .DEFAULT_GOAL := help
 
 .PHONY: help doctor setup demo demo-again demo-ai demo-console frontend test clean \
-        db-up db-reset db-test db-down studio fixtures
+        db-up db-reset db-test db-down studio fixtures \
+        demo-slack demo-slack-batch slack-bot
 
 help:
 	@$(PY) tasks.py help
@@ -43,3 +44,6 @@ db-test:       ; @$(PY) tasks.py db-test
 db-down:       ; @$(PY) tasks.py db-down
 studio:        ; @$(PY) tasks.py studio
 fixtures:      ; @$(PY) tasks.py fixtures
+demo-slack:    ; @$(PY) tasks.py demo-slack
+demo-slack-batch: ; @$(PY) tasks.py demo-slack-batch
+slack-bot:     ; @$(PY) tasks.py slack-bot

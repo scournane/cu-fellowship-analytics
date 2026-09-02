@@ -62,6 +62,28 @@ class Settings:
     max_edit_distance: int = 1
     log_level: str = "INFO"
 
+    # --- Slack -----------------------------------------------------------
+    #: xoxb- bot token. Required for both HTTP and Socket Mode.
+    slack_bot_token: str | None = None
+    #: xapp- app-level token. Socket Mode only.
+    slack_app_token: str | None = None
+    #: Verifies every inbound HTTP delivery. Required for `cufa slack serve`.
+    slack_signing_secret: str | None = None
+    #: Override the Web API base. The demo points this at the fake server;
+    #: blank means slack.com. Must end in "/api/".
+    slack_api_base_url: str | None = None
+    #: Which cohort this workspace's members belong to.
+    slack_cohort: str = "demo"
+    #: Whether message TEXT is stored. Default off — the participation
+    #: definition counts acts; it does not read them. See the migration.
+    slack_store_text: bool = False
+    slack_port: int = 3000
+    #: How long a users.info answer is trusted before it is refreshed.
+    slack_user_cache_hours: int = 24
+    #: HTTP mode: run the listener before answering Slack (deterministic for
+    #: the demo and tests) rather than acking first and writing in a thread.
+    slack_process_before_response: bool = True
+
     fixtures_dir: Path = field(default_factory=lambda: _repo_root() / "fixtures")
 
     def require_encryption_key(self) -> str:
@@ -126,6 +148,15 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         ai_max_calls_per_run=_int("CUFA_AI_MAX_CALLS_PER_RUN", 250),
         max_edit_distance=_int("CUFA_MAX_EDIT_DISTANCE", 1),
         log_level=(env.get("CUFA_LOG_LEVEL") or "INFO").upper(),
+        slack_bot_token=(env.get("SLACK_BOT_TOKEN") or "").strip() or None,
+        slack_app_token=(env.get("SLACK_APP_TOKEN") or "").strip() or None,
+        slack_signing_secret=(env.get("SLACK_SIGNING_SECRET") or "").strip() or None,
+        slack_api_base_url=(env.get("SLACK_API_BASE_URL") or "").strip() or None,
+        slack_cohort=(env.get("CUFA_SLACK_COHORT") or "demo").strip(),
+        slack_store_text=_truthy(env.get("CUFA_SLACK_STORE_TEXT")),
+        slack_port=_int("CUFA_SLACK_PORT", 3000),
+        slack_user_cache_hours=_int("CUFA_SLACK_USER_CACHE_HOURS", 24),
+        slack_process_before_response=not _truthy(env.get("CUFA_SLACK_ACK_FIRST")),
     )
 
 

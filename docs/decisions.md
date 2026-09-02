@@ -822,3 +822,62 @@ recoverable; resetting is not.
 transaction and rolls it back, taking the bookkeeping row with it, so each failed attempt
 left another untracked form in Drive. The row is now written on a separate autocommit
 connection. A promise about what survives a failure has to be tested under the failure.
+
+## ADR-030 — Slack participation is captured by a bot, as it happens
+
+**Decision.** A Slack app subscribed to message, reaction and membership events
+writes each one to `slack_event` on arrival. `conversations.history` is used only
+to backfill what the bot did not see. Every row is keyed by the act (channel +
+message ts; or channel + message + user + reaction), never by Slack's delivery
+id, so a retry, a restart and a backfill all collide with the live row instead of
+duplicating it.
+
+**Rejected.** Periodic workspace exports; a scheduled `conversations.history`
+pull with no live component; the Slack analytics CSV as the source of record;
+Zapier.
+
+**Why.** Slack's free plan hides messages after 90 days and deletes them after a
+year, and the workspace CU is waiting on may start on the free plan. Any approach
+that *asks Slack later* is bounded by that window; a bot that records on arrival
+is not. The analytics CSV counts messages but not reactions, and the Director's
+definition names reacting explicitly. Zapier cannot confirm attendance at all.
+
+The cost is that a bot must be running, and the contract ends. That risk is not
+solved here; it is made visible (`load_run` left in `running`, `last_received`
+in `cufa slack stats`) and made recoverable (backfill, and the Slack for
+Nonprofits upgrade that removes the window). docs/setup/slack-bot.md ends with a
+`TODO(owner)` for the person who restarts it, because a bot with no named owner
+is a bot that is off by November.
+
+The idempotency key is the same design as the forms pipeline: what identifies the
+act, not how it was delivered. The test that matters is the one where a message
+is recorded live, then read back through history, and the table still has one
+row.
+
+## ADR-031 — Message text is not stored
+
+**Decision.** `slack_event.text` is NULL unless `CUFA_SLACK_STORE_TEXT=1`. Length,
+word count, whether there was a link, whether it was a thread reply, and the
+reaction name are stored; the words are not. The status page and the logs never
+show text at any level, even when it is stored.
+
+**Rejected.** Storing text by default and redacting on display; storing a hash of
+the text; storing text for public channels only.
+
+**Why.** The participation definition is "sending messages, reacting to messages,
+etc" — it counts acts, it does not read them. Nothing downstream needs the words.
+The people talking are young; the channel is their conversation with each other;
+and a table of everything they said is a very different thing to hold than a
+table of when they said something, both for them and for whoever inherits this
+database without a data manager. Minimum necessary is the rule, and here the
+minimum is the count.
+
+Redact-on-display would still leave the text in Postgres. A hash still answers
+"did anyone write exactly this", which is a question this system should not be
+able to answer. Public-only would make the exposure depend on a channel setting a
+fellow cannot see.
+
+The switch exists because the data owner may decide otherwise for a specific
+workspace — for the muddiest-point-style clustering that Part B does on form
+answers, say. That is her decision to take, and taking it should be one line in
+`.env`, not a code change.

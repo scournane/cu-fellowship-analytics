@@ -961,6 +961,113 @@ def cmd_rotation(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_slack(args: argparse.Namespace) -> int:
+    """``cufa slack …`` — the participation bot and its tools."""
+    from .slack import bot as slack_bot
+
+    settings = get_settings()
+    action = args.slack_action
+
+    if action == "serve":
+        print(f"slack bot (HTTP) on http://{args.host}:{args.port}  — status page at /, JSON at /stats")
+        print("Slack's Request URL for this bot ends in /slack/events")
+        slack_bot.run_http(settings, host=args.host, port=args.port)
+        return 0
+
+    if action == "socket":
+        slack_bot.run_socket(settings)
+        return 0
+
+    client = slack_bot.make_web_client(settings)
+
+    if action == "backfill":
+        from .slack.backfill import backfill_workspace
+        from .slack.store import ensure_workspace
+
+        with connection() as conn:
+            ws = ensure_workspace(conn, client, settings.slack_cohort)
+            result = backfill_workspace(
+                conn, client, ws.team_id,
+                channels=args.channel or None,
+                days=args.days,
+                store_text=settings.slack_store_text,
+                include_private=not args.public_only,
+            )
+        print(f"backfill team={ws.team_id} {result}")
+        for err in result.errors:
+            print(f"  error: {err}")
+        return 1 if result.errors and result.events_written == 0 else 0
+
+    if action == "stats":
+        from .slack.store import stats
+
+        with connection() as conn:
+            data = stats(conn)
+        if args.json:
+            print(json.dumps(data, indent=2, default=str))
+            return 0
+        print("Slack participation — database totals")
+        for key in ("events", "messages", "reactions", "joins", "distinct_users",
+                    "users_on_roster", "unattributed_users", "channels",
+                    "identity_unresolved_open", "first_event", "last_event", "last_received"):
+            print(f"  {key:<26} {data.get(key)}")
+        print("  by type:")
+        for k, v in (data.get("by_type") or {}).items():
+            print(f"    {k:<24} {v}")
+        print("  by channel:")
+        for k, v in (data.get("by_channel") or {}).items():
+            print(f"    #{k:<23} {v}")
+        return 0
+
+    if action == "report":
+        from .slack.store import per_fellow
+
+        with connection() as conn:
+            rows = per_fellow(conn, args.cohort, days=args.days)
+        if args.json:
+            print(json.dumps(rows, indent=2, default=str))
+            return 0
+        window = f"last {args.days} days" if args.days else "all time"
+        print(f"Slack activity per fellow — cohort {args.cohort}, {window}")
+        print(f"  {'fellow':<10} {'name':<26} {'msgs':>5} {'replies':>7} {'reacts':>6} {'chans':>5} {'days':>4}")
+        for r in rows:
+            print(
+                f"  {(r['fellow_id'] or '—'):<10} {r['full_name'][:26]:<26} "
+                f"{r['messages']:>5} {r['thread_replies']:>7} {r['reactions_given']:>6} "
+                f"{r['channels']:>5} {r['active_days']:>4}"
+            )
+        if not rows:
+            print("  (no Slack activity recorded for this cohort)")
+        return 0
+
+    if action == "users":
+        from .slack.store import ensure_workspace
+        from .slack.users import sync_users
+
+        with connection() as conn:
+            ws = ensure_workspace(conn, client, settings.slack_cohort)
+            n = sync_users(conn, client, ws.team_id)
+        print(f"synced {n} users for team {ws.team_id}")
+        return 0
+
+    if action == "channels":
+        from .slack.backfill import channels_for, sync_channels
+        from .slack.store import ensure_workspace
+
+        with connection() as conn:
+            ws = ensure_workspace(conn, client, settings.slack_cohort)
+            sync_channels(conn, client, ws.team_id, include_private=not args.public_only)
+            rows = channels_for(conn, ws.team_id)
+        print(f"channels the bot can see in {ws.team_id}:")
+        for r in rows:
+            kind = "private" if r["is_private"] else "public"
+            mark = r["backfilled_through_ts"] or "—"
+            print(f"  #{r['name']:<24} {kind:<8} {r['channel_id']:<14} backfilled through {mark}")
+        return 0
+
+    raise CufaError(f"unknown slack action {action!r}")
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     """Run the console.
 
@@ -1190,6 +1297,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="check this cohort's sessions for missing teacher questions",
     )
     p.set_defaults(func=cmd_rotation)
+
+    p = sub.add_parser("slack", help="the Slack participation bot and its tools")
+    sp = p.add_subparsers(dest="slack_action", required=True)
+    q = sp.add_parser("serve", help="run the bot over HTTP (Slack POSTs to /slack/events)")
+    q.add_argument("--host", default="127.0.0.1")
+    q.add_argument("--port", type=int, default=get_settings().slack_port)
+    q = sp.add_parser("socket", help="run the bot in Socket Mode (no public URL needed)")
+    q = sp.add_parser("backfill", help="read channel history the bot did not see live")
+    q.add_argument("--channel", action="append", help="channel name or id; repeatable. Default: all")
+    q.add_argument("--days", type=int, help="only this many days back (default: from each channel's watermark)")
+    q.add_argument("--public-only", action="store_true")
+    q = sp.add_parser("stats", help="database totals")
+    q.add_argument("--json", action="store_true")
+    q = sp.add_parser("report", help="messages and reactions per fellow")
+    q.add_argument("--cohort", required=True)
+    q.add_argument("--days", type=int)
+    q.add_argument("--json", action="store_true")
+    q = sp.add_parser("users", help="refresh the user → email cache from users.list")
+    q = sp.add_parser("channels", help="list channels the bot can see, with backfill watermarks")
+    q.add_argument("--public-only", action="store_true")
+    p.set_defaults(func=cmd_slack)
 
     return parser
 

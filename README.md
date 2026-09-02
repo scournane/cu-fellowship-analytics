@@ -121,6 +121,18 @@ use the copy-pasteable SQL in
 
 ---
 
+```
+make demo-slack          # the Slack bot + a fake Slack workspace you drive from a browser
+make demo-slack-batch    # the same, driven automatically and checked — what CI runs
+```
+
+`demo-slack` starts the real bot and a fake Slack on `http://127.0.0.1:3001/`
+with buttons that post, react, join, edit and delete as any fellow — and two
+that matter more: **Replay last delivery** re-sends an event with Slack's retry
+headers (the bot acks it and writes nothing), and **Send with bad signature**
+(the bot refuses it). No Slack account is involved. See
+[docs/setup/slack-bot.md](docs/setup/slack-bot.md).
+
 ## How it works
 
 ```
@@ -313,6 +325,35 @@ document: [`docs/safeguarding.md`](docs/safeguarding.md), written for CU staff
 rather than for engineers.
 
 ---
+
+## Slack: the third participation signal
+
+The Director's definition of participation has three parts: attendance at live
+lessons (Parts A and B above), **Slack activity**, and assignment submission.
+`cufa slack` covers the second.
+
+It is a bot rather than an export because Slack's free plan **hides messages
+after 90 days and deletes them after a year** — a workspace that starts on the
+free plan would lose September's record by December. The bot writes each
+message, reaction, join, edit and deletion to `slack_event` as it happens, keyed
+by the act rather than by Slack's delivery id, so a retry, a restart and a
+backfill all collide with the live row instead of duplicating it.
+
+**Message text is not stored.** The definition counts acts; it does not read
+them. Length, word count, link/file presence and thread position are kept; the
+words are not (ADR-031). Every row stores the email, and the roster join happens
+at read time, exactly as for the forms.
+
+```
+cufa slack socket                 # run it — Socket Mode, no public URL
+cufa slack backfill               # read what it missed, while Slack still has it
+cufa slack stats                  # totals, no addresses
+cufa slack report --cohort cu-2026
+```
+
+The honest cost is that a bot has to be running, and the contract ends.
+docs/setup/slack-bot.md ends with what that means and a `TODO(owner)` for the
+person who restarts it.
 
 ## Accessibility
 

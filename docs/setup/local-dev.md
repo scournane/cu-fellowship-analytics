@@ -110,6 +110,28 @@ creates the `cu-2026` and `demo` cohorts and nothing else — fellows and sessio
 through `cufa load-roster` / `cufa load-sessions`, because that is the path CU staff
 actually use).
 
+### Bringing your own Postgres
+
+Every `make` target that needs the database first checks whether
+`CUFA_DATABASE_URL` already answers. If it does, the Supabase stack is **not**
+started — so a machine without Docker, a CI runner, or a hosted Postgres all
+work by pointing that variable at them:
+
+```
+export CUFA_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/cufa_demo
+make demo-slack-batch
+```
+
+`db-reset` then (re)creates that database and applies `supabase/migrations/*`
+to it directly. The migrations reference the `authenticated` role for Row Level
+Security, which Supabase provides and plain Postgres does not; create it once:
+
+```sql
+create role authenticated nologin;
+create role anon nologin;
+create role service_role nologin bypassrls;
+```
+
 ### Supabase Studio
 
 http://localhost:64323 — the table editor and SQL editor for the local stack. Use it to
@@ -429,6 +451,58 @@ select t.label, t.summary, b.rotating_text
  where s.cohort_id = 'demo' and t.superseded_at is null
  order by t.label, b.submitted_at_utc;
 ```
+
+### Slack — acts per fellow per day
+
+The view every Slack report should build on. Roster-attached where the email
+matches, kept where it does not.
+
+```sql
+select day_utc, fellow_id, user_email, messages, thread_replies, reactions_given, channels_posted_in
+  from slack_activity_daily
+ where cohort_id = 'cu-2026'
+ order by day_utc desc, messages desc;
+```
+
+### Slack — who is not on the roster
+
+```sql
+select e.user_email, count(*) as events, min(e.event_time_utc) as first_seen
+  from slack_event e
+  join slack_workspace w on w.team_id = e.team_id
+  left join fellow f on f.cohort_id = w.cohort_id and lower(f.primary_email) = lower(e.user_email)
+ where f.fellow_id is null
+ group by e.user_email
+ order by events desc;
+```
+
+`user_email` is NULL for a profile with no email (a bot, some guests) — those
+rows are still here.
+
+### Slack — is the bot alive?
+
+```sql
+select source, status, started_at, finished_at, rows_read, rows_written
+  from load_run
+ where source in ('slack_bot', 'slack_backfill')
+ order by started_at desc
+ limit 5;
+```
+
+A `slack_bot` run still `running` with an old `started_at` and no newer run is a
+bot that died without stopping cleanly. `select max(received_at) from
+slack_event` is the last thing it heard.
+
+### Slack — retries Slack sent, and what they cost
+
+```sql
+select count(*) filter (where raw ? 'retry_num') as redeliveries_recorded
+  from slack_event;
+```
+
+That number is always small: a redelivery of something already recorded is
+dropped by the unique key before it reaches this table, so only a retry that
+was the *first* successful delivery lands here.
 
 ### The provisioning log
 

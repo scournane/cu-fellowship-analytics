@@ -20,6 +20,7 @@ dependencies = [
     "python-dotenv",
     "itsdangerous",
     "python-multipart",
+    "slack-bolt",
 ]
 
 [project.optional-dependencies]
