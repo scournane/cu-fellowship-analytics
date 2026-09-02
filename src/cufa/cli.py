@@ -763,6 +763,13 @@ def cmd_report(args: argparse.Namespace) -> int:
     from .report import cohort_report, render_report_text
 
     with connection() as conn:
+        if getattr(args, "html", None):
+            from .report_html import write_report_html
+
+            written = write_report_html(conn, args.cohort, args.html)
+            print(f"report written to {written}")
+            print("open it in a browser; it is self-contained and needs nothing else")
+            return 0
         if args.confidence and not args.json:
             print(render_trend_text(args.cohort, trend(conn, args.cohort)))
             return 0
@@ -977,6 +984,9 @@ def cmd_slack(args: argparse.Namespace) -> int:
     if action == "socket":
         slack_bot.run_socket(settings)
         return 0
+
+    if action == "doctor":
+        return slack_bot.doctor(settings)
 
     client = slack_bot.make_web_client(settings)
 
@@ -1237,6 +1247,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("report", help="attendance report")
     p.add_argument("--cohort", required=True)
+    p.add_argument("--html", metavar="PATH", help="write the self-contained HTML report here instead of printing")
     p.add_argument("--json", action="store_true")
     p.add_argument(
         "--confidence",
@@ -1304,6 +1315,7 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--host", default="127.0.0.1")
     q.add_argument("--port", type=int, default=get_settings().slack_port)
     q = sp.add_parser("socket", help="run the bot in Socket Mode (no public URL needed)")
+    q = sp.add_parser("doctor", help="check tokens, scopes, channels and the database before a first run")
     q = sp.add_parser("backfill", help="read channel history the bot did not see live")
     q.add_argument("--channel", action="append", help="channel name or id; repeatable. Default: all")
     q.add_argument("--days", type=int, help="only this many days back (default: from each channel's watermark)")

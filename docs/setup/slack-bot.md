@@ -118,6 +118,64 @@ Then:
    bot is not in produces nothing, silently. `cufa slack channels` shows what
    it can see.
 
+## First real run — the checklist
+
+Do these in order. Each one is checked by `cufa slack doctor`, which names the
+fix beside anything that fails.
+
+1. **Create the app from the manifest** above, in the workspace you are testing
+   in. A personal test workspace is fine — the bot does not care which
+   workspace it is in, and the cohort it writes to is whatever
+   `CUFA_SLACK_COHORT` says.
+2. **Install to Workspace** and copy the three values into `.env`:
+   `SLACK_BOT_TOKEN` (xoxb-…), `SLACK_APP_TOKEN` (xapp-…, for Socket Mode),
+   `SLACK_SIGNING_SECRET`. Set `CUFA_SLACK_COHORT` to something that is not
+   `demo` — `cu-2026-test` is a good name for a test run.
+3. **Make sure `SLACK_API_BASE_URL` is blank** in `.env`. The demo sets it to
+   point at the fake server; against real Slack it must be unset, or the bot
+   will talk to a server that is not there.
+4. **Invite the bot to a channel**: in Slack, `/invite @cif-participation`
+   (or whatever you named it). This is the step everyone forgets.
+5. **Start the database** (`make db-up`), then:
+
+```
+cufa slack doctor
+```
+
+It checks, in order: the three values are set; the database answers; the
+token works and which workspace it belongs to; the scopes the token actually
+carries against the ones the manifest asks for; which channels the bot is a
+member of; and whether `users.info` returns an email for real members — the
+thing that joins Slack activity to the roster. It exits 0 only when the bot
+would actually record something.
+
+6. **Run it**:
+
+```
+cufa slack socket
+```
+
+Post a message in the channel. In another terminal:
+
+```
+cufa slack stats          # events: 1, messages: 1
+cufa slack report --cohort cu-2026-test
+```
+
+If the address on your Slack profile is not on the roster, the row is still
+there — it shows as not-on-roster and the address is queued for review. Load a
+roster with your email on it (`cufa load-roster`) and the same row is
+attributed on the next report, with no re-ingest.
+
+7. **Backfill** what was in the channel before the bot arrived:
+
+```
+cufa slack backfill
+```
+
+When it is time to move to the real CIF workspace, repeat steps 1–4 there
+with the real cohort id. Nothing in the code changes.
+
 ## Running it
 
 ### Socket Mode — no public URL

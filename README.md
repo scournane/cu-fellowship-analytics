@@ -124,7 +124,15 @@ use the copy-pasteable SQL in
 ```
 make demo-slack          # the Slack bot + a fake Slack workspace you drive from a browser
 make demo-slack-batch    # the same, driven automatically and checked — what CI runs
+make report              # regenerate out/report.html — the self-contained HTML report
+make slack-bot           # preflight (cufa slack doctor), then run the bot against real Slack
 ```
+
+`make report` writes one file that opens from disk and attaches to an email:
+every fellow against every session, attendance by session, the confidence
+trend, Slack activity by week, the review queues, and where each number came
+from. No addresses, nothing from the help table, no combined score. `make
+demo` writes it as its last step, so there is always a fresh one to look at.
 
 `demo-slack` starts the real bot and a fake Slack on `http://127.0.0.1:3001/`
 with buttons that post, react, join, edit and delete as any fellow — and two

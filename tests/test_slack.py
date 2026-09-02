@@ -422,3 +422,59 @@ def test_demo_workspace_has_the_edge_cases(tmp_path):
     assert "one@example.invalid" in emails
     assert None in emails, "a profile with no email"
     assert any(u.get("deleted") for u in ws.users.values()), "a deactivated account"
+
+
+# ===========================================================================
+# doctor — the preflight for a first real run
+# ===========================================================================
+
+def test_doctor_passes_against_a_configured_workspace(db, ws, capsys):
+    """Every check green, and the next-step commands printed."""
+    from cufa.slack.bot import doctor
+    from cufa.slack.fake_server import FakeSlackHTTPServer
+
+    fake = FakeSlackHTTPServer(ws, signing_secret="s", bot_events_url="http://bot.invalid/slack/events", port=0).start_in_thread()
+    try:
+        settings = _settings(fake.api_base_url, SLACK_APP_TOKEN="xapp-test", CUFA_SLACK_COHORT="cu-test")
+        assert doctor(settings) == 0
+    finally:
+        fake.stop()
+    out = capsys.readouterr().out
+    assert "token works" in out
+    assert "bot is a member of at least one channel" in out
+    assert "users carry an email on their profile" in out
+    assert "cufa slack socket" in out, "Socket Mode is recommended when an app token is present"
+    assert "@" not in out, "the preflight never prints an address"
+
+
+def test_doctor_fails_fast_without_a_token(capsys):
+    from cufa.slack.bot import doctor
+
+    settings = _settings("", SLACK_BOT_TOKEN="", SLACK_APP_TOKEN="", SLACK_SIGNING_SECRET="")
+    assert doctor(settings) == 1
+    out = capsys.readouterr().out
+    assert "MISS  SLACK_BOT_TOKEN set" in out
+    assert "Nothing else can be checked without a token" in out
+
+
+def test_doctor_reports_an_unreachable_slack(db, capsys):
+    from cufa.slack.bot import doctor
+
+    settings = _settings("http://127.0.0.1:1/api/", SLACK_APP_TOKEN="xapp-test", CUFA_SLACK_COHORT="cu-test")
+    assert doctor(settings) == 1
+    out = capsys.readouterr().out
+    assert "could not reach Slack" in out
+
+
+def test_doctor_flags_the_demo_cohort_and_stored_text(db, ws, capsys):
+    from cufa.slack.bot import doctor
+    from cufa.slack.fake_server import FakeSlackHTTPServer
+
+    fake = FakeSlackHTTPServer(ws, signing_secret="s", bot_events_url="http://bot.invalid/slack/events", port=0).start_in_thread()
+    try:
+        settings = _settings(fake.api_base_url, SLACK_APP_TOKEN="xapp-test", CUFA_SLACK_COHORT="demo", CUFA_SLACK_STORE_TEXT="1")
+        doctor(settings)
+    finally:
+        fake.stop()
+    out = capsys.readouterr().out
+    assert "text WILL be stored" in out

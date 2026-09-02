@@ -69,7 +69,14 @@ def make_web_client(settings: Settings) -> WebClient:
         if not base.endswith("/"):
             base += "/"
         kwargs["base_url"] = base
-    return WebClient(**kwargs)
+    client = WebClient(**kwargs)
+    # Real Slack answers 429 with Retry-After when a backfill walks history
+    # faster than the method's tier allows. The SDK honours that header if
+    # asked to; without this the backfill would abort mid-channel instead.
+    from slack_sdk.http_retry.builtin_handlers import RateLimitErrorRetryHandler
+
+    client.retry_handlers.append(RateLimitErrorRetryHandler(max_retry_count=5))
+    return client
 
 
 class EventProcessor:
@@ -160,6 +167,166 @@ class EventProcessor:
             "store_text": self.settings.slack_store_text,
             "this_process": counts,
         }
+
+
+# ---------------------------------------------------------------------------
+# Preflight
+# ---------------------------------------------------------------------------
+
+#: What the manifest in docs/setup/slack-bot.md grants. `doctor` compares the
+#: token's actual scopes against this and names what is missing.
+REQUIRED_SCOPES = (
+    "channels:history", "channels:read", "users:read", "users:read.email", "reactions:read",
+)
+OPTIONAL_SCOPES = ("groups:history", "groups:read", "chat:write")
+
+
+def doctor(settings: Settings, *, out: Any = None) -> int:
+    """Everything a first real run needs, checked in order, with the fix beside
+    each failure. Exit 0 only when the bot would actually record something."""
+    import sys
+
+    from slack_sdk.errors import SlackApiError
+
+    from ..db import ping
+
+    out = out or sys.stdout
+    failures: list[str] = []
+
+    def line(ok: bool, label: str, detail: str = "", *, fix: str = "") -> None:
+        mark = "ok  " if ok else "MISS"
+        print(f"  {mark}  {label}" + (f"  — {detail}" if detail else ""), file=out)
+        if not ok:
+            failures.append(label)
+            if fix:
+                for row in fix.splitlines():
+                    print(f"          {row}", file=out)
+
+    print("Slack bot — preflight", file=out)
+    print("=" * 62, file=out)
+
+    # 1. configuration
+    line(bool(settings.slack_bot_token), "SLACK_BOT_TOKEN set",
+         fix="OAuth & Permissions → Bot User OAuth Token (xoxb-…) → .env")
+    line(bool(settings.slack_app_token), "SLACK_APP_TOKEN set (Socket Mode)",
+         "optional if you run HTTP mode" if settings.slack_signing_secret else "",
+         fix="Basic Information → App-Level Tokens → Generate, scope connections:write → .env")
+    line(bool(settings.slack_signing_secret), "SLACK_SIGNING_SECRET set (HTTP mode)",
+         "optional if you run Socket Mode" if settings.slack_app_token else "",
+         fix="Basic Information → Signing Secret → .env")
+    if settings.slack_api_base_url:
+        line(True, "SLACK_API_BASE_URL is set", f"talking to {settings.slack_api_base_url}, NOT slack.com")
+    line(settings.slack_cohort != "demo" or bool(settings.slack_api_base_url),
+         f"CUFA_SLACK_COHORT is {settings.slack_cohort!r}",
+         "" if settings.slack_cohort != "demo" else "still the demo cohort",
+         fix="set CUFA_SLACK_COHORT to the real cohort id (e.g. cu-2026) in .env")
+    line(not settings.slack_store_text, "message text not stored",
+         "" if not settings.slack_store_text else "CUFA_SLACK_STORE_TEXT=1 — text WILL be stored")
+
+    # 2. database
+    line(ping(settings), "database reachable", fix="make db-up   (Docker must be running)")
+
+    if not settings.slack_bot_token:
+        print("=" * 62, file=out)
+        print(f"{len(failures)} problem(s). Nothing else can be checked without a token.", file=out)
+        return 1
+
+    # 3. the token
+    client = make_web_client(settings)
+    try:
+        auth = client.auth_test()
+    except SlackApiError as exc:
+        error = (getattr(exc, "response", None) or {}).get("error", str(exc))
+        hint = {
+            "invalid_auth": "the token is wrong, revoked, or from a different app",
+            "account_inactive": "the app was uninstalled from the workspace",
+            "not_authed": "no token reached Slack — check .env is being read",
+        }.get(error, "")
+        line(False, "auth.test", f"{error}" + (f" — {hint}" if hint else ""),
+             fix="Reinstall the app to the workspace and copy the new xoxb- token.")
+        print("=" * 62, file=out)
+        return 1
+    except Exception as exc:  # noqa: BLE001 - network, DNS, proxy
+        line(False, "auth.test", f"could not reach Slack: {exc}",
+             fix="Check the network. If SLACK_API_BASE_URL is set, unset it for real Slack.")
+        print("=" * 62, file=out)
+        return 1
+    team = auth.get("team") or auth.get("team_id")
+    line(True, "token works", f"workspace {team} ({auth.get('team_id')}), bot user {auth.get('user_id')}")
+
+    # 4. scopes — real Slack sends them in a response header
+    headers = getattr(auth, "headers", None) or {}
+    granted_raw = ""
+    if headers:
+        granted_raw = headers.get("x-oauth-scopes") or headers.get("X-OAuth-Scopes") or ""
+        if isinstance(granted_raw, list):
+            granted_raw = ",".join(granted_raw)
+    if granted_raw:
+        granted = {s.strip() for s in granted_raw.split(",") if s.strip()}
+        missing = [s for s in REQUIRED_SCOPES if s not in granted]
+        line(not missing, "required scopes granted",
+             ", ".join(sorted(granted & set(REQUIRED_SCOPES))) if not missing else "missing: " + ", ".join(missing),
+             fix="OAuth & Permissions → add the scopes → Reinstall to Workspace → copy the NEW token")
+        extra = [s for s in OPTIONAL_SCOPES if s in granted]
+        if extra:
+            line(True, "optional scopes granted", ", ".join(extra))
+        for bad in ("im:history", "mpim:history", "im:read", "mpim:read"):
+            if bad in granted:
+                line(False, f"scope {bad} is granted", "the bot should never read direct messages",
+                     fix="Remove it from OAuth & Permissions and reinstall.")
+    else:
+        line(True, "scopes", "not reported by this endpoint (fake server?) — checked functionally below")
+
+    # 5. channels the bot is actually in
+    member: list[str] = []
+    visible: list[str] = []
+    try:
+        cursor: str | None = None
+        while True:
+            resp = client.conversations_list(types="public_channel,private_channel", cursor=cursor, limit=200)
+            for ch in resp.get("channels") or []:
+                visible.append(ch.get("name") or ch["id"])
+                if ch.get("is_member"):
+                    member.append(ch.get("name") or ch["id"])
+            cursor = ((resp.get("response_metadata") or {}).get("next_cursor") or "").strip()
+            if not cursor:
+                break
+        line(bool(member), "bot is a member of at least one channel",
+             ", ".join("#" + c for c in member[:8]) + (" …" if len(member) > 8 else "") if member else f"can see {len(visible)} channel(s), member of none",
+             fix="In each channel to count:  /invite @<bot name>\nA channel the bot is not in produces NOTHING, silently.")
+        not_in = [c for c in visible if c not in member]
+        if not_in:
+            line(True, f"{len(not_in)} visible channel(s) the bot is not in",
+                 ", ".join("#" + c for c in not_in[:8]) + (" …" if len(not_in) > 8 else ""))
+    except SlackApiError as exc:
+        error = (getattr(exc, "response", None) or {}).get("error", str(exc))
+        line(False, "conversations.list", error, fix="Grant channels:read (and groups:read) and reinstall.")
+
+    # 6. can it turn a user id into an email? This is what joins to the roster.
+    try:
+        resp = client.users_list(limit=50)
+        members = [m for m in (resp.get("members") or []) if not m.get("is_bot") and not m.get("deleted") and m.get("id") != "USLACKBOT"]
+        with_email = [m for m in members if (m.get("profile") or {}).get("email")]
+        if members:
+            line(bool(with_email), "users carry an email on their profile",
+                 f"{len(with_email)} of {len(members)} sampled" if with_email else f"none of {len(members)} — users:read.email missing, or a workspace that hides emails",
+                 fix="Grant users:read.email and reinstall. Without it every event is unattributed.")
+        else:
+            line(True, "users", "no human members yet")
+    except SlackApiError as exc:
+        error = (getattr(exc, "response", None) or {}).get("error", str(exc))
+        line(False, "users.list", error, fix="Grant users:read and users:read.email and reinstall.")
+
+    print("=" * 62, file=out)
+    if failures:
+        print(f"{len(failures)} problem(s) above. Fix them, then re-run:  cufa slack doctor", file=out)
+        return 1
+    mode = "cufa slack socket" if settings.slack_app_token else "cufa slack serve"
+    print("Ready. Next:", file=out)
+    print(f"  {mode:<28} start the bot (Ctrl+C stops it)", file=out)
+    print("  cufa slack backfill          read what is already in the channels", file=out)
+    print("  cufa slack stats             confirm rows are arriving", file=out)
+    return 0
 
 
 # ---------------------------------------------------------------------------

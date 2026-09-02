@@ -606,6 +606,7 @@ def task_demo() -> int:
     banner("14. report")
     cufa("report", "--cohort", COHORT)
     cufa("report", "--cohort", COHORT, "--confidence")
+    cufa("report", "--cohort", COHORT, "--html", REPORT_PATH)
 
     banner("15. acceptance checks")
     script("verify_demo.py", "--cohort", COHORT, "--fixtures", str(FIXTURES))
@@ -878,6 +879,7 @@ def task_demo_slack_batch() -> int:
         banner("7. what the database holds")
         cufa("slack", "stats", env=env)
         cufa("slack", "report", "--cohort", COHORT, env=env)
+        cufa("report", "--cohort", COHORT, "--html", REPORT_PATH, env=env)
 
         banner("8. acceptance checks")
         script("verify_slack_demo.py", "--cohort", COHORT)
@@ -895,8 +897,31 @@ def _ui_state() -> dict:
 
 
 def task_slack_bot() -> int:
-    """Run the bot against REAL Slack, from .env. HTTP mode; see docs for Socket Mode."""
-    cufa("slack", "serve", "--port", SLACK_BOT_PORT)
+    """Run the bot against REAL Slack, from .env — preflight first.
+
+    `doctor` refuses to start the bot when it would record nothing: a missing
+    scope, a channel it was never invited to, a token from the wrong app. Each
+    of those fails silently once the bot is running, which is why the check
+    happens before it starts rather than after nothing arrives.
+    """
+    clean = {k: v for k, v in os.environ.items()}
+    # The demo's fake-server override must never leak into a real run.
+    clean.pop("SLACK_API_BASE_URL", None)
+    result = run([venv_python(), "-m", "cufa", "slack", "doctor"], env=clean, check=False)
+    if result.returncode != 0:
+        raise TaskError("preflight failed — fix the items above, then re-run")
+    mode = "socket" if os.environ.get("SLACK_APP_TOKEN") else "serve"
+    args = ["slack", mode] + (["--port", SLACK_BOT_PORT] if mode == "serve" else [])
+    run([venv_python(), "-m", "cufa", *args], env=clean)
+    return 0
+
+
+REPORT_PATH = os.environ.get("REPORT_PATH", "out/report.html")
+
+
+def task_report() -> int:
+    """Regenerate the self-contained HTML report. This is the evergreen step."""
+    cufa("report", "--cohort", COHORT, "--html", REPORT_PATH)
     return 0
 
 
@@ -958,6 +983,7 @@ TASKS = {
     "db-down": task_db_down,
     "studio": task_studio,
     "fixtures": task_fixtures,
+    "report": task_report,
     "demo-slack": task_demo_slack,
     "demo-slack-batch": task_demo_slack_batch,
     "slack-bot": task_slack_bot,
@@ -971,9 +997,10 @@ HELP = """Civic Innovators check-in — Parts A and B
   python tasks.py demo-again    re-run over the same database, to show idempotency
   python tasks.py demo-ai       same as demo, with tier 2 live (needs GEMINI_API_KEY)
   python tasks.py demo-console  demo data plus the web console
+  python tasks.py report        regenerate out/report.html — the self-contained HTML report
   python tasks.py demo-slack    the Slack bot + a fake Slack workspace you drive from a browser
   python tasks.py demo-slack-batch  the same, driven automatically and checked (no browser)
-  python tasks.py slack-bot     run the bot against real Slack, from .env
+  python tasks.py slack-bot     preflight (cufa slack doctor), then run the bot against real Slack
   python tasks.py frontend      build the console bundle (npm ci + vite build)
   python tasks.py test          pytest, no network
   python tasks.py clean         stop Supabase, remove generated fixtures
