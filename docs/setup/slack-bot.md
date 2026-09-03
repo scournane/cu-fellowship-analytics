@@ -19,7 +19,7 @@ document: **a bot has to be running.**
 | Recorded | Not recorded |
 |---|---|
 | that a message was sent, by whom, where, when | **the message text** |
-| its length, word count, whether it had a link or a file | direct messages (the bot is never given that scope) |
+| its length, word count, whether it had a link or a file | inbound direct messages (the bot never subscribes to or stores them) |
 | whether it was a thread reply | anything from bots, including itself |
 | reactions added and removed, by whom, to whose message | reactions *received* as a ranking of anyone |
 | channel joins and leaves | |
@@ -75,6 +75,11 @@ features:
   bot_user:
     display_name: cif-participation
     always_online: true
+  slash_commands:
+    - command: /cufa-reminders
+      description: Control your fellowship reminders
+      usage_hint: all | fewer | later | none | status
+      should_escape: false
 oauth_config:
   scopes:
     bot:
@@ -85,7 +90,8 @@ oauth_config:
       - users:read            # slack_user_id → profile
       - users:read.email      # → email, which is what joins to the roster
       - reactions:read        # reactions on backfill
-      - chat:write            # posting check-in links later; unused by the collector
+      - chat:write            # outbound reminders, digests and agendas
+      - commands              # /cufa-reminders preference control
 settings:
   event_subscriptions:
     bot_events:
@@ -95,13 +101,49 @@ settings:
       - reaction_removed
       - member_joined_channel
       - member_left_channel
+      # Huddle joins and leaves. Slack sends the user, not the channel.
+      - user_huddle_changed
+      # Canvases arrive as file events; the bot asks files.info whether the
+      # file is a canvas and skips everything that is not. Needs files:read.
+      - file_created
+      - file_change
+      - file_shared
+      - file_comment_added
+  interactivity:
+    # Votes on polls the bot posts. Same URL as events in HTTP mode; nothing
+    # extra in Socket Mode.
+    is_enabled: true
   socket_mode_enabled: true   # flip to false for HTTP mode; then set request_url
   org_deploy_enabled: false
   token_rotation_enabled: false
 ```
 
-Do **not** add `im:history` or `mpim:history`. The bot has no business in
-direct messages, and the manifest is the place that decision is enforced.
+Do **not** add `im:history` or `mpim:history`. The bot can send reminders to a
+fellow, but cannot read or store replies or any other direct-message history.
+The manifest is where that boundary is enforced.
+
+Add `files:read` to the bot scopes for canvases. Without it every file event
+is looked up, found unreadable, and skipped — nothing breaks, canvases just
+do not appear.
+
+## The signals, and their limits
+
+`cufa slack insights` (and `/insights` on the bot) reads eight things off the
+same event table. Each has a rule, written down in ADR-032:
+
+| Signal | What it says | What it will not say |
+|---|---|---|
+| Who replies to whom | thread-reply edges, ordered by the person replying; and an alphabetical list of active fellows nobody has replied to *or* mentioned in the window, with whether they posted at all | who is replied to most — received recognition is recorded, never ranked |
+| Mentions | `@`-mentions **given** per fellow, and how many different people | mentions received |
+| Huddles | joins and leaves per fellow, huddle count for the cohort | which channel — Slack does not send it |
+| Canvases | created / edited / shared / commented, cohort-wide | who edited — Slack's `file_change` names no editor, so an edit is recorded with the actor empty rather than guessed. Slack also has no public event for canvas *comments*; `file_comment_added` is recorded if it arrives |
+| Emoji | which reactions the cohort uses and how that moves by week | anything per person. The query has no user column and a test keeps it that way |
+| Channel liveness | alive / quiet / silent per channel, recent message and poster *counts* | which people |
+| Rhythm | hour-of-day and day-of-week histograms, each act read in its own fellow's zone | — . It is also used, per fellow, to stand in for the *default* quiet hours when a fellow has not set their own, so a night owl gets the evening reminder and not the morning one. A stated preference always wins |
+| Polls | option totals and how many voted, latest vote per person | who voted for what |
+
+Post a poll with `cufa slack poll --channel general --question "…" --option A --option B`;
+the bot never edits the tally into the message, so a channel cannot watch it move.
 
 Then:
 
@@ -140,9 +182,70 @@ cufa slack serve --host 0.0.0.0 --port 3000
 Set the app's **Event Subscriptions → Request URL** to
 `https://<your-host>/slack/events`. Slack verifies the URL with a challenge the
 bot answers automatically. Use this when the bot lives on a server anyway.
+Set the `/cufa-reminders` command's **Request URL** to that same
+`https://<your-host>/slack/events` URL. Socket Mode does not need either public
+URL.
 
 Both modes serve nothing else. HTTP mode also exposes `/` (a status page),
 `/stats` (JSON) and `/health`. None of them shows an address.
+
+### Outbound reminders and agendas
+
+The long-lived HTTP or Socket Mode process runs one idempotent automation tick
+per minute. For a one-shot check or an external scheduler, run:
+
+```
+cufa slack reminders --json
+```
+
+Set the following data before the bot reaches a reminder window:
+
+* Add each fellow's IANA `timezone` (for example `America/Chicago`) to the
+  roster CSV. Rows without one use `CUFA_DEFAULT_FELLOW_TIMEZONE`.
+* Add `zoom_url`, `agenda`, and optionally `slack_channel_id` to the sessions
+  CSV, or edit those fields on the session form in the console. The configured
+  announcement channel is the agenda fallback.
+* Record work with a due date using `cufa assignment create`, for example:
+
+```
+cufa assignment create --cohort cu-2026 --title "Community interview notes" --due-at 2026-09-18T17:00 --timezone America/New_York --url https://classroom.example.org/interview
+cufa assignment list --cohort cu-2026
+```
+
+With the default `all` preference, session DMs go at 24 hours, 1 hour, and 10
+minutes and always include the Zoom link. Assignment DMs go at 24 hours and 1
+hour. The weekly digest goes Monday at 09:00 local time and includes this
+week's sessions, due work, and recently changed sessions or assignments.
+
+Each fellow controls all personal delivery from Slack:
+
+```
+/cufa-reminders all
+/cufa-reminders fewer
+/cufa-reminders later
+/cufa-reminders none
+/cufa-reminders timezone America/Chicago
+/cufa-reminders quiet 21:00 08:00
+/cufa-reminders status
+```
+
+`fewer` sends a 1-hour session reminder, a 24-hour assignment reminder, and at
+most one Part B nudge. `later` sends session and assignment reminders at 10
+minutes and 1 hour respectively, and delays its first Part B nudge. `none`
+stops reminders, nudges, and weekly digests. Channel agendas are operational
+session posts, not personal DMs, so an individual's preference does not remove
+them.
+
+No personal message is sent during that fellow's quiet hours, evaluated in
+their timezone. The deployment default is 21:00-08:00 and can be changed with
+`CUFA_SLACK_QUIET_START` and `CUFA_SLACK_QUIET_END`.
+
+At session start the bot posts the staff-authored agenda once. After Part B
+closes (session end plus grace), it refreshes responses before deciding who is
+missing. A non-submitter can receive no more than two personalized DMs: the
+first after 30 minutes and the second after 24 hours. The scheduler rechecks
+submission immediately before each send, and the database rejects any third
+nudge even if application code regresses.
 
 ### First connect: backfill
 

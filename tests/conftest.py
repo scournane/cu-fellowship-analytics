@@ -47,8 +47,13 @@ TEST_TZ = "America/New_York"
 
 # Order matters: children before parents, so a cascade is not relied on.
 _TABLES = (
+    "bot_delivery",
+    "fellow_reminder_preference",
+    "assignment",
     # Slack: events reference workspace, so they go first.
     "slack_event",
+    "slack_poll",
+    "slack_file",
     "slack_user",
     "slack_channel",
     "slack_workspace",
@@ -156,6 +161,9 @@ def make_session(
     cohort_id: str = TEST_COHORT,
     week_index: int | None = None,
     teacher_question: str | None = None,
+    zoom_url: str | None = None,
+    agenda: str | None = None,
+    slack_channel_id: str | None = None,
 ) -> str:
     """Create a session at a fixed local time. Never reads the clock."""
     return create_session(
@@ -170,6 +178,9 @@ def make_session(
             passphrase=passphrase,
             week_index=week_index,
             teacher_question=teacher_question,
+            zoom_url=zoom_url,
+            agenda=agenda,
+            slack_channel_id=slack_channel_id,
         ),
     )
 
@@ -177,15 +188,18 @@ def make_session(
 def make_fellow(
     conn, fellow_id: str = "CU-0001", email: str = "ada@example.invalid",
     name: str = "Ada Testcase", cohort_id: str = TEST_COHORT,
+    timezone: str | None = None,
 ) -> str:
     execute(
         conn,
         """
-        insert into fellow (fellow_id, cohort_id, full_name, primary_email)
-        values (%s, %s, %s, %s)
-        on conflict (fellow_id) do update set primary_email = excluded.primary_email
+        insert into fellow (fellow_id, cohort_id, full_name, primary_email, timezone)
+        values (%s, %s, %s, %s, %s)
+        on conflict (fellow_id) do update
+           set primary_email = excluded.primary_email,
+               timezone = excluded.timezone
         """,
-        (fellow_id, cohort_id, name, email),
+        (fellow_id, cohort_id, name, email, timezone),
     )
     return fellow_id
 

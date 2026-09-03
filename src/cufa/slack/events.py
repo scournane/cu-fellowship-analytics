@@ -24,7 +24,27 @@ EVENT_TYPES = (
     "reaction_removed",
     "member_joined_channel",
     "member_left_channel",
+    # Slack reports a huddle per user (user_huddle_changed) with no channel.
+    "huddle_joined",
+    "huddle_left",
+    # Canvases arrive as file events. file_change names no editor, so a
+    # canvas_edited row may have no actor — see the migration.
+    "canvas_created",
+    "canvas_edited",
+    "canvas_shared",
+    "canvas_comment",
+    # A vote on a poll the bot itself posted, delivered as a block_actions
+    # interaction rather than an event.
+    "poll_vote",
 )
+
+#: Slack file types that are canvases. "quip" is what older workspaces report.
+CANVAS_FILETYPES = frozenset({"canvas", "quip"})
+
+#: The action_id on every poll button the bot posts. A vote is a block_actions
+#: payload whose action carries this id and a block_id of ``cufa_poll:<uuid>``.
+POLL_ACTION_ID = "cufa_poll_vote"
+POLL_BLOCK_PREFIX = "cufa_poll:"
 
 #: Message subtypes that are system noise rather than a person saying
 #: something. ``channel_join`` is the "X has joined" line — the join itself is
@@ -46,10 +66,26 @@ _SKIP_SUBTYPES = frozenset(
         "group_leave",
         "ekm_access_denied",
         "tombstone",
+        # The "X started a huddle" line. The joins themselves arrive as
+        # user_huddle_changed, so counting the line too would double-count.
+        "huddle_thread",
     }
 )
 
 _LINK_RE = re.compile(r"<https?://|https?://", re.IGNORECASE)
+#: ``<@U0ABC>`` or ``<@U0ABC|name>``. Only user and workspace-user ids; ``<!here>``
+#: and ``<#C…>`` are not mentions of a person.
+_MENTION_RE = re.compile(r"<@([UW][A-Z0-9]+)(?:\|[^>]*)?>")
+
+
+def mentions_in(text: str | None) -> tuple[str, ...]:
+    """User ids @-mentioned in ``text``, in order, duplicates kept.
+
+    Pulled out at parse time because the text itself is not stored (ADR-031).
+    Kept as a sequence of ids, never resolved to names here: who was mentioned
+    is recorded so absence can be noticed, and it is never counted per person.
+    """
+    return tuple(_MENTION_RE.findall(text or ""))
 
 
 @dataclass(frozen=True)
@@ -76,6 +112,15 @@ class SlackObservation:
     text: str | None
     event_time_utc: datetime
     raw: dict[str, Any] = field(default_factory=dict)
+    #: The huddle a huddle_* row refers to. Slack's call id, not a channel.
+    call_id: str | None = None
+    #: The file a canvas_* row refers to.
+    file_id: str | None = None
+    #: The bot-run poll a poll_vote row refers to, and the option chosen.
+    poll_id: str | None = None
+    poll_choice: str | None = None
+    #: User ids @-mentioned in a message. ``None`` for non-message rows.
+    mentions: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -145,6 +190,12 @@ def parse_event(
         return _parse_reaction(event, team_id, retry_num=retry_num)
     if etype in ("member_joined_channel", "member_left_channel"):
         return _parse_membership(event, team_id, retry_num=retry_num)
+    if etype == "user_huddle_changed":
+        return _parse_huddle(event, team_id, retry_num=retry_num)
+    if etype in ("file_created", "file_change", "file_shared"):
+        return _parse_file(event, team_id, retry_num=retry_num)
+    if etype == "file_comment_added":
+        return _parse_file_comment(event, team_id, retry_num=retry_num)
     return Skipped("unhandled event type", event_type=etype)
 
 
@@ -195,6 +246,7 @@ def _parse_message(
         text=text if store_text else None,
         event_time_utc=ts_to_utc(ts),
         raw=_raw_subset(event, retry_num=retry_num),
+        mentions=mentions_in(text),
     )
 
 
@@ -235,6 +287,7 @@ def _parse_edit(
         text=text if store_text else None,
         event_time_utc=ts_to_utc(edited_ts),
         raw=_raw_subset(event, retry_num=retry_num, original_ts=str(original_ts)),
+        mentions=mentions_in(text),
     )
 
 
@@ -331,6 +384,160 @@ def _parse_membership(event: dict[str, Any], team_id: str, *, retry_num: int | N
         text=None,
         event_time_utc=ts_to_utc(event_ts),
         raw=_raw_subset(event, retry_num=retry_num, inviter=event.get("inviter")),
+    )
+
+
+def _blank(**overrides: Any) -> dict[str, Any]:
+    """The all-NULL observation fields, for event kinds that carry no text."""
+    base: dict[str, Any] = dict(
+        channel_type=None, message_ts=None, thread_ts=None, is_thread_reply=False,
+        reaction=None, item_user_id=None, text_length=None, word_count=None,
+        has_link=None, has_attachment=None, text=None,
+    )
+    base.update(overrides)
+    return base
+
+
+def _parse_huddle(event: dict[str, Any], team_id: str, *, retry_num: int | None) -> ParseResult:
+    """``user_huddle_changed``: one user's huddle state flipped.
+
+    Slack sends the user object with ``profile.huddle_state`` of
+    ``in_a_huddle`` or ``default`` and the call id. There is no channel on the
+    event — Slack reports the huddle, not where it was started — so
+    ``channel_id`` is NULL by design, not by omission.
+    """
+    user = event.get("user") or {}
+    user_id = user.get("id") if isinstance(user, dict) else user
+    profile = (user.get("profile") or {}) if isinstance(user, dict) else {}
+    state = profile.get("huddle_state")
+    call_id = profile.get("huddle_state_call_id")
+    event_ts = event.get("event_ts")
+    if not (user_id and event_ts):
+        return Skipped("huddle event missing user or ts", "user_huddle_changed")
+    if state == "in_a_huddle":
+        etype = "huddle_joined"
+    elif state in ("default", None):
+        etype = "huddle_left"
+    else:
+        return Skipped(f"unknown huddle state {state!r}", "user_huddle_changed")
+
+    return SlackObservation(
+        source_event_id=source_event_id(team_id, etype, user_id, str(call_id or ""), str(event_ts)),
+        team_id=team_id,
+        event_type=etype,
+        channel_id=None,
+        slack_user_id=user_id,
+        event_time_utc=ts_to_utc(event_ts),
+        raw=_raw_subset(event, retry_num=retry_num, huddle_state=state),
+        call_id=call_id,
+        **_blank(),
+    )
+
+
+def _parse_file(event: dict[str, Any], team_id: str, *, retry_num: int | None) -> ParseResult:
+    """``file_created`` / ``file_change`` / ``file_shared``, as a canvas act.
+
+    The payload says which file, not what kind of file. Whether it is a canvas
+    is decided at record time from ``files.info`` (cached in ``slack_file``);
+    a non-canvas is skipped there. ``file_change`` names no editor at all, so
+    ``canvas_edited`` is recorded with the actor honestly NULL rather than
+    attributed to the canvas owner.
+    """
+    etype = event["type"]
+    file_id = event.get("file_id") or (event.get("file") or {}).get("id")
+    event_ts = event.get("event_ts")
+    if not (file_id and event_ts):
+        return Skipped("file event missing file id or ts", etype)
+
+    if etype == "file_created":
+        kind, user, channel = "canvas_created", event.get("user_id"), None
+        if not user:
+            return Skipped("file_created without a user", etype)
+    elif etype == "file_shared":
+        kind, user, channel = "canvas_shared", event.get("user_id"), event.get("channel_id")
+        if not (user and channel):
+            return Skipped("file_shared without user or channel", etype)
+    else:
+        kind, user, channel = "canvas_edited", None, None
+
+    return SlackObservation(
+        source_event_id=source_event_id(team_id, kind, file_id, str(user or ""), str(event_ts)),
+        team_id=team_id,
+        event_type=kind,
+        channel_id=channel,
+        slack_user_id=user,
+        event_time_utc=ts_to_utc(event_ts),
+        raw=_raw_subset(event, retry_num=retry_num),
+        file_id=file_id,
+        **_blank(),
+    )
+
+
+def _parse_file_comment(event: dict[str, Any], team_id: str, *, retry_num: int | None) -> ParseResult:
+    """``file_comment_added``: a comment on a file, recorded as canvas_comment
+    when the file turns out to be a canvas (decided at record time).
+
+    Slack retired file comments for ordinary files years ago and has not
+    published a dedicated canvas-comment event; this parser records whatever
+    Slack does send in that shape, and nothing it does not.
+    """
+    comment = event.get("comment") or {}
+    user = comment.get("user")
+    file_id = event.get("file_id") or (event.get("file") or {}).get("id")
+    event_ts = event.get("event_ts") or comment.get("created")
+    if not (user and file_id and event_ts):
+        return Skipped("file comment missing user, file or ts", "file_comment_added")
+    return SlackObservation(
+        source_event_id=source_event_id(
+            team_id, "canvas_comment", file_id, user, str(comment.get("id") or event_ts)
+        ),
+        team_id=team_id,
+        event_type="canvas_comment",
+        channel_id=(event.get("file") or {}).get("channel") or None,
+        slack_user_id=user,
+        event_time_utc=ts_to_utc(event_ts),
+        raw=_raw_subset(event, retry_num=retry_num),
+        file_id=file_id,
+        **_blank(text_length=len(comment.get("comment") or "") or None),
+    )
+
+
+def parse_interaction(body: dict[str, Any], team_id: str) -> ParseResult:
+    """A ``block_actions`` payload: somebody pressed a button.
+
+    The only button this bot posts is a poll option, so the only interaction it
+    records is a vote. Changing your vote produces a NEW row — observations are
+    never rewritten — and the latest one per person counts at read time.
+    """
+    if body.get("type") != "block_actions":
+        return Skipped("not a block_actions payload", body.get("type"))
+    user = (body.get("user") or {}).get("id")
+    channel = (body.get("channel") or {}).get("id")
+    message_ts = (body.get("message") or {}).get("ts")
+    actions = body.get("actions") or []
+    action = next((a for a in actions if a.get("action_id") == POLL_ACTION_ID), None)
+    if action is None:
+        return Skipped("interaction is not a poll vote", "block_actions")
+    block_id = action.get("block_id") or ""
+    if not block_id.startswith(POLL_BLOCK_PREFIX):
+        return Skipped("poll button without a poll id", "block_actions")
+    poll_id = block_id[len(POLL_BLOCK_PREFIX):]
+    choice = action.get("value")
+    action_ts = action.get("action_ts") or body.get("trigger_id") or message_ts
+    if not (user and channel and poll_id and choice and action_ts):
+        return Skipped("vote missing user, channel, poll, choice or ts", "block_actions")
+
+    return SlackObservation(
+        source_event_id=source_event_id(team_id, channel, "poll_vote", poll_id, user, str(action_ts)),
+        team_id=team_id,
+        event_type="poll_vote",
+        channel_id=channel,
+        slack_user_id=user,
+        event_time_utc=ts_to_utc(action_ts),
+        raw={"type": "block_actions", "action_id": POLL_ACTION_ID},
+        poll_id=poll_id,
+        poll_choice=str(choice),
+        **_blank(message_ts=str(message_ts) if message_ts else None),
     )
 
 

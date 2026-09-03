@@ -72,6 +72,8 @@ class FakeSlackHTTPServer:
         self.log: deque[dict[str, Any]] = deque(maxlen=200)
         self.last_envelope: dict[str, Any] | None = None
         self.last_messages: dict[str, dict[str, Any]] = {}  # channel -> last message event
+        self.current_huddle: str | None = None
+        self.current_canvas: str | None = None
         self.rng = random.Random(seed)
         self._lock = threading.Lock()
         self._httpd: ThreadingHTTPServer | None = None
@@ -102,13 +104,25 @@ class FakeSlackHTTPServer:
 
     def _describe(self, envelope: dict[str, Any], status: int, text: str, *, retry: int | None, tamper: bool, ms: int) -> dict[str, Any]:
         ev = envelope.get("event") or {}
-        who = self._name(ev.get("user") or (ev.get("message") or {}).get("user") or (ev.get("previous_message") or {}).get("user"))
-        where = self._channel_name(ev.get("channel") or (ev.get("item") or {}).get("channel"))
+        actor = ev.get("user") or ev.get("user_id") or (ev.get("message") or {}).get("user") or (ev.get("previous_message") or {}).get("user") or (ev.get("comment") or {}).get("user")
+        if isinstance(actor, dict):  # user_huddle_changed carries the whole user object
+            actor = actor.get("id")
+        who = self._name(actor)
+        where = self._channel_name(ev.get("channel") or ev.get("channel_id") or (ev.get("item") or {}).get("channel"))
         kind = ev.get("type", "?")
         if ev.get("subtype"):
             kind += f"/{ev['subtype']}"
         if ev.get("reaction"):
             kind += f" :{ev['reaction']}:"
+        if kind == "user_huddle_changed":
+            kind += " " + ((ev.get("user") or {}).get("profile") or {}).get("huddle_state", "?")
+        if ev.get("file_id"):
+            kind += f" {ev['file_id']}"
+            record = self.ws.files.get(ev["file_id"]) or {}
+            if record.get("filetype") not in ("canvas", "quip"):
+                # The bot will look this up, find it is not a canvas, and
+                # skip it. Said here so the acceptance check can expect no row.
+                kind += " (not a canvas)"
         return {
             "at": datetime.now(timezone.utc).strftime("%H:%M:%S"),
             "kind": kind,
@@ -162,6 +176,94 @@ class FakeSlackHTTPServer:
     def act_bot_message(self, channel: str) -> dict[str, Any]:
         return self.deliver(self.ws.envelope(self.ws.bot_message_event(channel, "Reminder: check-in form opens in 5 minutes")))
 
+    # -- the newer kinds of act ------------------------------------------------
+
+    def act_mention(self, user: str, channel: str, target: str | None = None) -> dict[str, Any]:
+        others = [p for p in self.people() if p != user]
+        target = target or (self.rng.choice(others) if others else user)
+        text = f"<@{target}> {self.rng.choice(SAMPLE_MESSAGES)}"
+        return self.act_message(user, channel, text)
+
+    def act_huddle(self, user: str, *, joined: bool = True) -> dict[str, Any]:
+        with self._lock:
+            call_id = self.current_huddle if joined and self.current_huddle else self.ws.next_id("R")
+            self.current_huddle = call_id if joined else self.current_huddle
+        return self.deliver(self.ws.envelope(self.ws.huddle_event(user, joined=joined, call_id=call_id)))
+
+    def act_canvas(self, user: str, channel: str, what: str = "edit") -> dict[str, Any]:
+        with self._lock:
+            fid = self.current_canvas
+            if not fid or what == "create":
+                fid = self.ws.add_file(user, canvas=True)
+                self.current_canvas = fid
+                if what != "create":
+                    what = "create"
+        if what == "create":
+            ev = self.ws.file_created_event(fid, user)
+        elif what == "share":
+            ev = self.ws.file_shared_event(fid, user, channel)
+        elif what == "comment":
+            ev = self.ws.file_comment_event(fid, user)
+        else:
+            ev = self.ws.file_change_event(fid)
+        return self.deliver(self.ws.envelope(ev))
+
+    def act_plain_file(self, user: str) -> dict[str, Any]:
+        """A non-canvas file: the bot must look it up and then skip it."""
+        fid = self.ws.add_file(user, canvas=False)
+        return self.deliver(self.ws.envelope(self.ws.file_created_event(fid, user)))
+
+    def polls_posted(self) -> list[dict[str, Any]]:
+        """Polls the bot has posted here, read off chat.postMessage blocks."""
+        out = []
+        for msg in self.ws.posted:
+            for block in msg.get("blocks") or []:
+                bid = block.get("block_id") or ""
+                if bid.startswith("cufa_poll:"):
+                    out.append({
+                        "poll_id": bid.split(":", 1)[1],
+                        "channel": msg["channel"],
+                        "ts": msg["ts"],
+                        "options": [e.get("value") for e in block.get("elements") or []],
+                    })
+        return out
+
+    def act_vote(self, user: str, choice: str | None = None, *, poll_id: str | None = None) -> dict[str, Any]:
+        polls = self.polls_posted()
+        poll = next((p for p in polls if p["poll_id"] == poll_id), None) if poll_id else (polls[-1] if polls else None)
+        if not poll:
+            return {"error": "no poll posted yet — run `cufa slack poll` against this fake first"}
+        choice = choice or self.rng.choice(poll["options"])
+        body = self.ws.poll_vote_payload(user, poll["channel"], poll["poll_id"], choice, message_ts=poll["ts"])
+        return self.deliver_interaction(body)
+
+    def deliver_interaction(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Interactions are form-encoded: ``payload=<json>``. Signed the same way."""
+        body = urllib.parse.urlencode({"payload": json.dumps(payload)})
+        headers = sign(self.signing_secret, body)
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+        req = urllib.request.Request(self.bot_events_url, data=body.encode("utf-8"), headers=headers, method="POST")
+        started = time.time()
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                status, text = resp.status, resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            status, text = exc.code, exc.read().decode("utf-8", "replace")
+        except urllib.error.URLError as exc:
+            status, text = 0, f"bot unreachable: {exc.reason}"
+        action = (payload.get("actions") or [{}])[0]
+        entry = {
+            "at": datetime.now(timezone.utc).strftime("%H:%M:%S"),
+            "kind": f"block_actions {action.get('action_id')} = {action.get('value')}",
+            "who": self._name((payload.get("user") or {}).get("id")),
+            "where": f"#{self._channel_name((payload.get('channel') or {}).get('id'))}",
+            "status": status, "note": "", "ms": int((time.time() - started) * 1000),
+            "response": text[:120], "event_id": None,
+        }
+        with self._lock:
+            self.log.appendleft(entry)
+        return entry
+
     def act_replay(self) -> dict[str, Any]:
         with self._lock:
             env = self.last_envelope
@@ -184,14 +286,18 @@ class FakeSlackHTTPServer:
         for _ in range(n):
             roll = self.rng.random()
             channel = self.rng.choice(public)
-            if roll < 0.55 or channel not in self.last_messages:
+            if roll < 0.50 or channel not in self.last_messages:
                 user = self.rng.choice(people)
                 thread = None
                 if self.rng.random() < 0.25 and channel in self.last_messages:
                     thread = self.last_messages[channel]["ts"]
                 out.append(self.act_message(user, channel, self.rng.choice(SAMPLE_MESSAGES), thread_ts=thread))
-            elif roll < 0.92:
+            elif roll < 0.60:
+                out.append(self.act_mention(self.rng.choice(people), channel))
+            elif roll < 0.88:
                 out.append(self.act_reaction(self.rng.choice(people), channel, self.rng.choice(REACTIONS)))
+            elif roll < 0.94:
+                out.append(self.act_huddle(self.rng.choice(people), joined=self.rng.random() < 0.7))
             else:
                 out.append(self.act_join(self.rng.choice(people), channel))
         return out
@@ -217,6 +323,7 @@ class FakeSlackHTTPServer:
             ],
             "channels": [{"id": cid, "name": c["name"], "private": c["is_private"]} for cid, c in self.ws.channels.items()],
             "last_message_ts": {cid: ev.get("ts") for cid, ev in self.last_messages.items()},
+            "polls": self.polls_posted(),
             "log": log,
             "api_calls": len(self.client.calls),
         }
@@ -293,6 +400,16 @@ class FakeSlackHTTPServer:
             return self.act_delete(channel)
         if action == "bot-message":
             return self.act_bot_message(channel)
+        if action == "mention":
+            return self.act_mention(user, channel, p.get("target") or None)
+        if action == "huddle":
+            return self.act_huddle(user, joined=str(p.get("joined", "1")).lower() in ("1", "true"))
+        if action == "canvas":
+            return self.act_canvas(user, channel, p.get("what") or "edit")
+        if action == "plain-file":
+            return self.act_plain_file(user)
+        if action == "vote":
+            return self.act_vote(user, p.get("choice") or None, poll_id=p.get("poll_id") or None)
         if action == "replay":
             return self.act_replay()
         if action == "tamper":
@@ -368,6 +485,16 @@ UI_PAGE = """<!doctype html>
       <button onclick="act('edit')">Edit last</button>
       <button onclick="act('delete')">Delete last</button>
     </div>
+    <div class="row">
+      <button onclick="act('mention')">@-mention someone</button>
+      <button onclick="act('huddle',{joined:1})">Join huddle</button>
+      <button onclick="act('huddle',{joined:0})">Leave huddle</button>
+      <button onclick="act('canvas',{what:'edit'})">Edit canvas</button>
+      <button onclick="act('canvas',{what:'comment'})">Comment on canvas</button>
+      <button onclick="act('plain-file')">Upload a PDF (should skip)</button>
+      <button onclick="act('vote')">Vote in latest poll</button>
+    </div>
+    <p class="hint">Huddle events carry no channel and a canvas edit names no editor — both are recorded exactly that way. A PDF is looked up, found not to be a canvas, and skipped. Post a poll with <code>cufa slack poll --channel general --question … --option … --option …</code>, then vote here.</p>
   </div>
   <div class="card"><h2>Prove the guarantees</h2>
     <div class="row">

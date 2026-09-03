@@ -57,6 +57,18 @@ def _checkin_id(value: str) -> str:
         ) from None
 
 
+def _assignment_id(value: str) -> str:
+    import uuid as _uuid
+
+    try:
+        return str(_uuid.UUID(str(value).strip()))
+    except (ValueError, AttributeError, TypeError):
+        raise CufaError(
+            f"{value!r} is not an assignment id. Run `cufa assignment list` "
+            "to see them."
+        ) from None
+
+
 # --------------------------------------------------------------------------
 # database
 # --------------------------------------------------------------------------
@@ -402,6 +414,9 @@ def cmd_session(args: argparse.Namespace) -> int:
             passphrase=args.passphrase,
             week_index=args.week,
             teacher_question=args.teacher_question,
+            zoom_url=args.zoom_url,
+            agenda=args.agenda,
+            slack_channel_id=args.slack_channel,
         )
         with connection() as conn:
             warnings = check_reuse(conn, args.cohort, args.passphrase)
@@ -410,7 +425,10 @@ def cmd_session(args: argparse.Namespace) -> int:
                     print(f"WARNING: {warning.message()}", file=sys.stderr)
                 print("Refusing to save. Pass --allow-reuse to override.", file=sys.stderr)
                 return 1
-            session_id = create_session(conn, data)
+            try:
+                session_id = create_session(conn, data)
+            except ValueError as exc:
+                raise CufaError(str(exc)) from None
         for warning in warnings:
             print(f"WARNING: {warning.message()}", file=sys.stderr)
         print(session_id)
@@ -445,29 +463,47 @@ def cmd_session(args: argparse.Namespace) -> int:
                 print("Refusing to save. Pass --allow-reuse to override.", file=sys.stderr)
                 return 1
 
-            update_session(
-                conn,
-                _session_id(args.session),
-                SessionInput(
-                    cohort_id=cohort_id,
-                    title=args.title or existing["title"],
-                    scheduled_at_local=local,
-                    timezone=args.timezone or existing["timezone"],
-                    duration_minutes=args.duration or existing["duration_minutes"],
-                    grace_minutes=(
-                        existing["grace_minutes"] if args.grace is None else args.grace
+            try:
+                update_session(
+                    conn,
+                    _session_id(args.session),
+                    SessionInput(
+                        cohort_id=cohort_id,
+                        title=args.title or existing["title"],
+                        scheduled_at_local=local,
+                        timezone=args.timezone or existing["timezone"],
+                        duration_minutes=args.duration or existing["duration_minutes"],
+                        grace_minutes=(
+                            existing["grace_minutes"]
+                            if args.grace is None
+                            else args.grace
+                        ),
+                        passphrase=passphrase,
+                        week_index=(
+                            existing["week_index"] if args.week is None else args.week
+                        ),
+                        teacher_question=(
+                            existing["teacher_question"]
+                            if args.teacher_question is None
+                            else args.teacher_question
+                        ),
+                        zoom_url=(
+                            existing["zoom_url"]
+                            if args.zoom_url is None
+                            else args.zoom_url
+                        ),
+                        agenda=(
+                            existing["agenda"] if args.agenda is None else args.agenda
+                        ),
+                        slack_channel_id=(
+                            existing["slack_channel_id"]
+                            if args.slack_channel is None
+                            else args.slack_channel
+                        ),
                     ),
-                    passphrase=passphrase,
-                    week_index=(
-                        existing["week_index"] if args.week is None else args.week
-                    ),
-                    teacher_question=(
-                        existing["teacher_question"]
-                        if args.teacher_question is None
-                        else args.teacher_question
-                    ),
-                ),
-            )
+                )
+            except ValueError as exc:
+                raise CufaError(str(exc)) from None
         for warning in warnings:
             print(f"WARNING: {warning.message()}", file=sys.stderr)
         print(f"updated {_session_id(args.session)}")
@@ -481,6 +517,85 @@ def cmd_session(args: argparse.Namespace) -> int:
         return 0
 
     raise CufaError(f"unknown session action {args.session_action!r}")
+
+
+# --------------------------------------------------------------------------
+# assignments
+# --------------------------------------------------------------------------
+
+def cmd_assignment(args: argparse.Namespace) -> int:
+    from .assignments import (
+        AssignmentInput,
+        create_assignment,
+        get_assignment,
+        list_assignments,
+        update_assignment,
+    )
+
+    if args.assignment_action == "list":
+        with connection() as conn:
+            rows = list_assignments(
+                conn, args.cohort, include_cancelled=args.include_cancelled
+            )
+        if not rows:
+            print("(no assignments)")
+            return 0
+        for row in rows:
+            print(
+                f"{row['assignment_id']}  {row['due_at_local']}  "
+                f"{row['timezone']:<20} {row['status']:<9} {row['title']}"
+            )
+        return 0
+
+    if args.assignment_action == "create":
+        try:
+            data = AssignmentInput(
+                cohort_id=args.cohort,
+                title=args.title,
+                due_at_local=datetime.fromisoformat(args.due_at),
+                timezone=args.timezone,
+                description=args.description,
+                url=args.url,
+            )
+            with connection() as conn:
+                assignment_id = create_assignment(conn, data)
+        except ValueError as exc:
+            raise CufaError(str(exc)) from None
+        print(assignment_id)
+        return 0
+
+    if args.assignment_action == "edit":
+        assignment_id = _assignment_id(args.assignment)
+        with connection() as conn:
+            existing = get_assignment(conn, assignment_id)
+            if existing is None:
+                raise CufaError(f"No assignment with id {assignment_id}")
+            try:
+                due_at = (
+                    datetime.fromisoformat(args.due_at)
+                    if args.due_at
+                    else existing["due_at_local"]
+                )
+                data = AssignmentInput(
+                    cohort_id=existing["cohort_id"],
+                    title=args.title or existing["title"],
+                    due_at_local=due_at,
+                    timezone=args.timezone or existing["timezone"],
+                    description=(
+                        existing["description"]
+                        if args.description is None
+                        else args.description
+                    ),
+                    url=existing["url"] if args.url is None else args.url,
+                    status=args.status or existing["status"],
+                )
+                update_assignment(conn, assignment_id, data)
+            except ValueError as exc:
+                raise CufaError(str(exc)) from None
+        print(f"updated {assignment_id}")
+        return 0
+
+    raise CufaError(f"unknown assignment action {args.assignment_action!r}")
 
 
 # --------------------------------------------------------------------------
@@ -1065,7 +1180,180 @@ def cmd_slack(args: argparse.Namespace) -> int:
             print(f"  #{r['name']:<24} {kind:<8} {r['channel_id']:<14} backfilled through {mark}")
         return 0
 
+    if action == "insights":
+        from .slack.insights import all_insights
+        from .slack.store import ensure_workspace
+
+        with connection() as conn:
+            ws = ensure_workspace(conn, client, settings.slack_cohort)
+            data = all_insights(
+                conn,
+                cohort_id=args.cohort or ws.cohort_id or settings.slack_cohort,
+                team_id=ws.team_id,
+                days=args.days,
+                quiet_days=settings.slack_quiet_channel_days,
+                default_zone=settings.slack_default_fellow_timezone,
+            )
+        if args.json:
+            print(json.dumps(data, indent=2, default=str))
+            return 0
+        _print_insights(data, args.section)
+        return 0
+
+    if action == "poll":
+        from .slack.polls import create_poll
+        from .slack.store import ensure_workspace
+
+        with connection() as conn:
+            ws = ensure_workspace(conn, client, settings.slack_cohort)
+            channel_id = _slack_channel_id(conn, client, ws.team_id, args.channel)
+            poll = create_poll(
+                conn, client, team_id=ws.team_id, channel_id=channel_id,
+                question=args.question, options=args.option, created_by="cli",
+            )
+        if args.json:
+            print(json.dumps(poll, indent=2, default=str))
+        else:
+            print(f"posted poll {poll['poll_id']} to {args.channel} (ts {poll['message_ts']})")
+            print(f"  {poll['question']}")
+            for o in poll["options"]:
+                print(f"    • {o}")
+        return 0
+
+    if action == "polls":
+        from .slack.insights import list_polls, poll_results
+        from .slack.polls import close_poll
+
+        with connection() as conn:
+            if args.close:
+                print("closed" if close_poll(conn, args.close) else "no open poll with that id")
+                return 0
+            results = [poll_results(conn, str(p["poll_id"])) for p in list_polls(conn)]
+        if args.json:
+            print(json.dumps(results, indent=2, default=str))
+            return 0
+        if not results:
+            print("no polls yet — post one with `cufa slack poll`")
+        for r in results:
+            state = "closed" if r["closed_at"] else "open"
+            print(f"{r['poll_id']}  {state}  {r['question']}  ({r['voters']} voted)")
+            for row in r["results"]:
+                print(f"    {row['votes']:>4}  {row['option']}")
+        return 0
+
+    if action == "reminders":
+        from .slack.reminders import AutomationLoop
+        from .slack.store import ensure_workspace
+
+        with connection() as conn:
+            ws = ensure_workspace(conn, client, settings.slack_cohort)
+        runner = AutomationLoop(
+            settings,
+            client,
+            team_id=ws.team_id,
+            cohort_id=ws.cohort_id or settings.slack_cohort,
+        )
+        result = runner.tick()
+        print(json.dumps(result, indent=2, default=str) if args.json else result)
+        return 1 if result.get("failed") else 0
+
     raise CufaError(f"unknown slack action {action!r}")
+
+
+def _slack_channel_id(conn: Any, client: Any, team_id: str, name_or_id: str) -> str:
+    """Accept ``general``, ``#general`` or ``C0…``."""
+    from .slack.backfill import channels_for, sync_channels
+
+    wanted = name_or_id.lstrip("#")
+    if wanted.startswith(("C", "G")) and wanted[1:].isalnum() and len(wanted) > 8:
+        return wanted
+    sync_channels(conn, client, team_id)
+    for row in channels_for(conn, team_id):
+        if row["name"] == wanted or row["channel_id"] == wanted:
+            return row["channel_id"]
+    raise CufaError(f"no channel named {name_or_id!r} that the bot can see — `cufa slack channels` lists them")
+
+
+_WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+
+def _print_insights(data: dict[str, Any], section: str | None) -> None:
+    """The human layout of ``cufa slack insights``. Nothing here is a ranking."""
+    days = f"last {data['days']} days" if data.get("days") else "all time"
+    want = (lambda s: section in (None, s))
+    print(f"Slack signals — cohort {data['cohort_id']}, {days}")
+
+    if want("replies"):
+        g = data["reply_graph"]
+        print("\n== who replies to whom (ordered by the person replying) ==")
+        for e in g["edges"]:
+            print(f"  {e['replier'][:24]:<24} → {e['replied_to'][:24]:<24} {e['replies']:>3}")
+        if not g["edges"]:
+            print("  (no thread replies between people yet)")
+        print("\n== nobody has replied to or mentioned these fellows ==")
+        for r in g["not_replied_to"]:
+            note = "has posted" if r["posted"] else "has not posted either"
+            print(f"  {r['fellow_id']:<10} {r['full_name'][:26]:<26} {note}")
+        if not g["not_replied_to"]:
+            print("  (everyone on the active roster has had a reply or a mention)")
+
+    if want("mentions"):
+        print("\n== mentions given (received is recorded, never ranked) ==")
+        for m in data["mentions_given"]:
+            print(f"  {(m['fellow_id'] or '—'):<10} {m['full_name'][:26]:<26} {m['mentions_given']:>4} mentions, {m['people_mentioned']:>3} people")
+        if not data["mentions_given"]:
+            print("  (no @-mentions yet)")
+
+    if want("huddles"):
+        h = data["huddles"]
+        print(f"\n== huddles: {h.get('huddles', 0)} huddles, {h.get('joins', 0)} joins, {h.get('people', 0)} people ==")
+        for r in h["per_fellow"]:
+            print(f"  {(r['fellow_id'] or '—'):<10} {r['full_name'][:26]:<26} {r['joins']:>3} joins across {r['huddles']} huddles")
+
+    if want("canvases"):
+        c = data["canvases"]
+        print(f"\n== canvases: {c.get('canvases', 0)} touched — {c.get('created', 0)} created, {c.get('edits', 0)} edits, "
+              f"{c.get('shares', 0)} shares, {c.get('comments', 0)} comments ==")
+
+    if want("emoji"):
+        m = data["emoji_mood"]
+        print(f"\n== emoji, cohort-wide ({m['total_reactions']} reactions; never per person) ==")
+        for r in m["top"]:
+            print(f"  :{r['reaction']:<16} {r['n']:>4}  {r['share']*100:5.1f}%")
+        for week, rows in list(m["by_week"].items())[-4:]:
+            top = ", ".join(f":{r['reaction']}: {r['n']}" for r in rows[:3])
+            print(f"  week of {week}: {top}")
+
+    if want("channels"):
+        print("\n== channel liveness ==")
+        for ch in data["channel_liveness"]:
+            last = ch["last_message_at"].strftime("%Y-%m-%d") if ch.get("last_message_at") else "never"
+            print(f"  #{ch['name']:<22} {ch['status']:<7} {ch['messages_recent']:>4} recent  {ch['messages_30d']:>4} /30d  "
+                  f"{ch['posters_recent']:>3} posters  last {last}")
+
+    if want("rhythm"):
+        r = data["rhythm"]
+        print(f"\n== when the cohort is around ({r['acts']} acts, each in its fellow's own zone) ==")
+        peak = max(r["by_hour"]) or 1
+        for hour in range(24):
+            bar = "█" * int(round(r["by_hour"][hour] / peak * 30))
+            print(f"  {hour:02d}:00 {r['by_hour'][hour]:>4} {bar}")
+        print("  " + "  ".join(f"{_WEEKDAYS[d]} {n}" for d, n in enumerate(r["by_weekday"])))
+        if r["busiest_hours"]:
+            print(f"  busiest hours: {', '.join(f'{h:02d}:00' for h in r['busiest_hours'])}; "
+                  f"busiest days: {', '.join(_WEEKDAYS[d] for d in r['busiest_weekdays'])}")
+
+    if want("polls"):
+        print("\n== polls (totals only) ==")
+        for p in data["polls"]:
+            if not p:
+                continue
+            state = "closed" if p["closed_at"] else "open"
+            print(f"  {state:<6} {p['question']}  — {p['voters']} voted")
+            for row in p["results"]:
+                print(f"         {row['votes']:>4}  {row['option']}")
+        if not data["polls"]:
+            print("  (none)")
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
@@ -1163,6 +1451,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="the teacher's own question, needed on teacher-question weeks",
     )
+    q.add_argument("--zoom-url", default=None, help="HTTP(S) Zoom join link")
+    q.add_argument("--agenda", default=None, help="agenda text posted at session start")
+    q.add_argument(
+        "--slack-channel",
+        default=None,
+        help="agenda channel name/id; defaults to CUFA_SLACK_ANNOUNCEMENT_CHANNEL",
+    )
     q = sp.add_parser("edit", help="change a session; every field is optional")
     q.add_argument("--session", required=True)
     q.add_argument("--title", default=None)
@@ -1174,6 +1469,9 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--allow-reuse", action="store_true")
     q.add_argument("--week", type=int, default=None)
     q.add_argument("--teacher-question", default=None)
+    q.add_argument("--zoom-url", default=None)
+    q.add_argument("--agenda", default=None)
+    q.add_argument("--slack-channel", default=None)
 
     q = sp.add_parser("announce", help="stamp announced_at_utc — what latency is measured from")
     q.add_argument("--session", required=True)
@@ -1185,6 +1483,28 @@ def build_parser() -> argparse.ArgumentParser:
     q = sp.add_parser("suggest-passphrase")
     q.add_argument("--count", type=int, default=5)
     p.set_defaults(func=cmd_session)
+
+    p = sub.add_parser("assignment", help="cohort assignments and due dates")
+    sp = p.add_subparsers(dest="assignment_action", required=True)
+    q = sp.add_parser("list")
+    q.add_argument("--cohort", default=None)
+    q.add_argument("--include-cancelled", action="store_true")
+    q = sp.add_parser("create")
+    q.add_argument("--cohort", required=True)
+    q.add_argument("--title", required=True)
+    q.add_argument("--due-at", required=True, help="local time, e.g. 2026-09-18T17:00")
+    q.add_argument("--timezone", required=True, help="IANA name, e.g. America/New_York")
+    q.add_argument("--description", default=None)
+    q.add_argument("--url", default=None)
+    q = sp.add_parser("edit")
+    q.add_argument("--assignment", required=True)
+    q.add_argument("--title", default=None)
+    q.add_argument("--due-at", default=None)
+    q.add_argument("--timezone", default=None)
+    q.add_argument("--description", default=None)
+    q.add_argument("--url", default=None)
+    q.add_argument("--status", choices=["active", "cancelled"], default=None)
+    p.set_defaults(func=cmd_assignment)
 
     p = sub.add_parser("provision", help="create the Google Form for a session")
     p.add_argument("--session", default=None)
@@ -1317,6 +1637,27 @@ def build_parser() -> argparse.ArgumentParser:
     q = sp.add_parser("users", help="refresh the user → email cache from users.list")
     q = sp.add_parser("channels", help="list channels the bot can see, with backfill watermarks")
     q.add_argument("--public-only", action="store_true")
+    q = sp.add_parser(
+        "reminders",
+        help="run one outbound automation tick (the long-lived bot does this automatically)",
+    )
+    q.add_argument("--json", action="store_true")
+    q = sp.add_parser(
+        "insights",
+        help="reply graph, mentions given, huddles, canvases, cohort emoji, channel liveness, rhythm, polls",
+    )
+    q.add_argument("--cohort", help="default: the workspace's cohort")
+    q.add_argument("--days", type=int, default=28, help="window (default 28; 0 = all time)")
+    q.add_argument("--section", choices=["replies", "mentions", "huddles", "canvases", "emoji", "channels", "rhythm", "polls"])
+    q.add_argument("--json", action="store_true")
+    q = sp.add_parser("poll", help="post a poll the bot will collect votes for")
+    q.add_argument("--channel", required=True, help="name or id")
+    q.add_argument("--question", required=True)
+    q.add_argument("--option", action="append", required=True, help="repeatable; at least two")
+    q.add_argument("--json", action="store_true")
+    q = sp.add_parser("polls", help="list polls with option totals; --close <id> closes one")
+    q.add_argument("--close", metavar="POLL_ID")
+    q.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_slack)
 
     return parser

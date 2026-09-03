@@ -303,6 +303,7 @@ def _settings(api_base_url: str, **extra: str):
         "SLACK_SIGNING_SECRET": "test-signing-secret",
         "SLACK_API_BASE_URL": api_base_url,
         "CUFA_SLACK_COHORT": TEST_COHORT,
+        "CUFA_SLACK_AUTOMATIONS": "0",
         **extra,
     }
     return load_settings(env)

@@ -15,10 +15,12 @@ from typing import Any
 
 import psycopg
 
+from slack_sdk.errors import SlackApiError
+
 from ..db import execute, fetch_all, fetch_one
 from ..ingest.common import resolve_identity
 from ..logging_setup import get_logger
-from .events import Skipped, SlackObservation
+from .events import CANVAS_FILETYPES, Skipped, SlackObservation
 from .users import resolve_user
 
 log = get_logger(__name__)
@@ -81,12 +83,14 @@ def record(conn: psycopg.Connection, obs: SlackObservation, *, email: str | None
             source_event_id, team_id, event_type, channel_id, channel_type,
             slack_user_id, user_email, message_ts, thread_ts, is_thread_reply,
             reaction, item_user_id, text_length, word_count, has_link,
-            has_attachment, text, event_time_utc, raw, load_id
+            has_attachment, text, event_time_utc, raw, load_id,
+            call_id, file_id, poll_id, poll_choice, mentions
         ) values (
             %s, %s, %s, %s, %s,
             %s, %s, %s, %s, %s,
             %s, %s, %s, %s, %s,
-            %s, %s, %s, %s::jsonb, %s
+            %s, %s, %s, %s::jsonb, %s,
+            %s, %s, %s::uuid, %s, %s
         )
         on conflict (source_event_id) do nothing
         """,
@@ -95,9 +99,55 @@ def record(conn: psycopg.Connection, obs: SlackObservation, *, email: str | None
             obs.slack_user_id, email, obs.message_ts, obs.thread_ts, obs.is_thread_reply,
             obs.reaction, obs.item_user_id, obs.text_length, obs.word_count, obs.has_link,
             obs.has_attachment, obs.text, obs.event_time_utc, json.dumps(obs.raw), load_id,
+            obs.call_id, obs.file_id, obs.poll_id, obs.poll_choice,
+            list(obs.mentions) if obs.mentions is not None else None,
         ),
     )
     return written == 1
+
+
+def resolve_file(conn: psycopg.Connection, client: Any, team_id: str, file_id: str) -> dict[str, Any] | None:
+    """Is this file a canvas? One ``files.info`` per file, then cached.
+
+    Only the file type and owner are kept. A canvas's title is content, and
+    content is not stored (ADR-031). ``None`` means Slack would not say —
+    a file the bot cannot see, or one deleted before it asked.
+    """
+    cached = fetch_one(
+        conn,
+        "select filetype, is_canvas, owner_id from slack_file where team_id = %s and file_id = %s",
+        (team_id, file_id),
+    )
+    if cached:
+        return cached
+    try:
+        info = (client.files_info(file=file_id) or {}).get("file") or {}
+    except SlackApiError as exc:
+        log.debug("files.info failed for %s: %s", file_id, exc.response.get("error"))
+        info = {}
+    except Exception as exc:  # noqa: BLE001 - a fake client without files_info
+        log.debug("files.info unavailable: %s", type(exc).__name__)
+        info = {}
+    if not info:
+        return None
+    filetype = info.get("filetype") or info.get("mode")
+    row = {
+        "filetype": filetype,
+        "is_canvas": filetype in CANVAS_FILETYPES,
+        "owner_id": info.get("user"),
+    }
+    execute(
+        conn,
+        """
+        insert into slack_file (team_id, file_id, filetype, is_canvas, owner_id)
+        values (%s, %s, %s, %s, %s)
+        on conflict (team_id, file_id) do update
+           set filetype = excluded.filetype, is_canvas = excluded.is_canvas,
+               owner_id = excluded.owner_id, fetched_at = now()
+        """,
+        (team_id, file_id, row["filetype"], row["is_canvas"], row["owner_id"]),
+    )
+    return row
 
 
 @dataclass(frozen=True)
@@ -133,6 +183,20 @@ def resolve_and_record(
     if isinstance(result, Skipped):
         log.debug("slack event skipped: %s (%s/%s)", result.reason, result.event_type, result.subtype)
         return RecordOutcome(False, result, None, None, result.event_type)
+
+    # A file event is only interesting if the file is a canvas. Decided here,
+    # not in the parser, because it takes an API call.
+    if result.event_type.startswith("canvas_") and result.file_id:
+        info = resolve_file(conn, client, result.team_id, result.file_id)
+        if not info or not info.get("is_canvas"):
+            skipped = Skipped("file is not a canvas", result.event_type)
+            log.debug("slack file %s skipped: not a canvas", result.file_id)
+            return RecordOutcome(False, skipped, None, None, result.event_type)
+
+    if result.slack_user_id is None:
+        # canvas_edited: Slack names no editor. Recorded with the actor NULL.
+        written = record(conn, result, email=None, load_id=load_id)
+        return RecordOutcome(written, None, None, None, result.event_type)
 
     user = resolve_user(conn, client, result.team_id, result.slack_user_id)
     email = user.email if not user.is_bot else None
@@ -177,6 +241,9 @@ def stats(conn: psycopg.Connection, team_id: str | None = None) -> dict[str, Any
                count(*) filter (where event_type = 'message')        as messages,
                count(*) filter (where event_type = 'reaction_added') as reactions,
                count(*) filter (where event_type = 'member_joined_channel') as joins,
+               count(*) filter (where event_type = 'huddle_joined')  as huddle_joins,
+               count(*) filter (where event_type like 'canvas%%')    as canvas_acts,
+               count(*) filter (where event_type = 'poll_vote')      as poll_votes,
                count(distinct slack_user_id)                         as distinct_users,
                count(distinct slack_user_id) filter (where user_email is null) as unattributed_users,
                count(distinct channel_id)                            as channels,
@@ -209,7 +276,9 @@ def stats(conn: psycopg.Connection, team_id: str | None = None) -> dict[str, Any
     by_channel = fetch_all(
         conn,
         f"""
-        select coalesce(c.name, e.channel_id) as channel, count(*) as n
+        -- Huddles and canvas acts have no channel (Slack sends none); say so
+        -- rather than hand a NULL key to whoever prints this.
+        select coalesce(c.name, e.channel_id, '(no channel)') as channel, count(*) as n
           from slack_event e
           left join slack_channel c on c.team_id = e.team_id and c.channel_id = e.channel_id
           {where.replace('team_id', 'e.team_id')}

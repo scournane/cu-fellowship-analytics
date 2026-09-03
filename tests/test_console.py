@@ -158,6 +158,9 @@ def make_session(
     scheduled_at: str = "2026-09-15T13:05",
     passphrase: str = "justice",
     confirm_reuse: str = "",
+    zoom_url: str = "",
+    agenda: str = "",
+    slack_channel_id: str = "",
 ) -> str:
     response = client.post(
         "/sessions/new",
@@ -170,6 +173,9 @@ def make_session(
             "passphrase": passphrase,
             "cohort_id": cohort_id,
             "confirm_reuse": confirm_reuse,
+            "zoom_url": zoom_url,
+            "agenda": agenda,
+            "slack_channel_id": slack_channel_id,
         },
     )
     assert response.status_code == 303, response.text[:2000]
@@ -653,6 +659,49 @@ def test_creating_a_session_stores_the_local_time_and_the_zone(
     assert row["scheduled_at_utc"].strftime("%Y-%m-%dT%H:%MZ") == "2026-09-15T17:05Z"
 
 
+def test_session_delivery_fields_round_trip_through_console(
+    signed_in: TestClient, cohort: str
+) -> None:
+    session_id = make_session(
+        signed_in,
+        cohort,
+        zoom_url="https://zoom.example.invalid/j/123",
+        agenda="Welcome\nSmall groups",
+        slack_channel_id="fellowship-live",
+    )
+    with connection() as conn:
+        from cufa.sessions import get_session
+
+        row = get_session(conn, session_id)
+    assert row["zoom_url"] == "https://zoom.example.invalid/j/123"
+    assert row["agenda"] == "Welcome\nSmall groups"
+    assert row["slack_channel_id"] == "fellowship-live"
+
+    state = boot_state(signed_in.get(f"/sessions/{session_id}/edit"))
+    assert state["values"]["zoom_url"] == row["zoom_url"]
+    assert state["values"]["agenda"] == row["agenda"]
+    assert state["values"]["slack_channel_id"] == row["slack_channel_id"]
+
+
+def test_console_rejects_an_invalid_zoom_link(
+    signed_in: TestClient, cohort: str
+) -> None:
+    response = signed_in.post(
+        "/sessions/new",
+        data={
+            "title": "Week 3",
+            "scheduled_at": "2026-09-15T13:05",
+            "timezone": "America/New_York",
+            "duration_minutes": "60",
+            "grace_minutes": "15",
+            "cohort_id": cohort,
+            "zoom_url": "zoom dot example dot org",
+        },
+    )
+    assert response.status_code == 400
+    assert "complete http:// or https:// URL" in response.text
+
+
 def test_a_reused_passphrase_warns_and_refuses_to_save_until_confirmed(
     signed_in: TestClient, cohort: str
 ) -> None:
@@ -1064,3 +1113,189 @@ def _decode(modules: list[list[bool]]) -> str:
         length = ((payload[0] & 0x0F) << 12) | (payload[1] << 4) | (payload[2] >> 4)
         data = bytes(((payload[i + 2] & 0x0F) << 4) | (payload[i + 3] >> 4) for i in range(length))
     return data.decode("utf-8")
+
+
+# --------------------------------------------------------------------------
+# assignments and roster — the two things that used to be CLI-only
+# --------------------------------------------------------------------------
+
+
+def test_an_assignment_can_be_created_from_the_console(
+    signed_in: TestClient, cohort: str
+) -> None:
+    response = signed_in.post(
+        "/assignments/new",
+        data={
+            "title": "Community interview notes",
+            "due_at": "2026-09-18T17:00",
+            "timezone": "America/Chicago",
+            "cohort_id": cohort,
+            "url": "https://classroom.example.org/interview",
+            "description": "Bring two quotes you did not expect.",
+            "status": "active",
+        },
+    )
+    assert response.status_code == 303
+
+    with connection() as conn:
+        rows = fetch_all(
+            conn, "select * from assignment where cohort_id = %s", (cohort,)
+        )
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["title"] == "Community interview notes"
+    assert row["timezone"] == "America/Chicago"
+    # The wall-clock value that was typed is kept as typed; the UTC instant is
+    # derived from it and the zone, not from the browser.
+    assert row["due_at_local"].strftime("%Y-%m-%dT%H:%M") == "2026-09-18T17:00"
+    assert row["due_at_utc"].hour == 22  # 17:00 America/Chicago in September
+
+
+def test_an_assignment_with_an_unknown_zone_saves_nothing(
+    signed_in: TestClient, cohort: str
+) -> None:
+    response = signed_in.post(
+        "/assignments/new",
+        data={
+            "title": "Never saved",
+            "due_at": "2026-09-18T17:00",
+            "timezone": "Mars/Olympus_Mons",
+            "cohort_id": cohort,
+            "status": "active",
+        },
+    )
+    assert response.status_code == 400
+    state = boot_state(response)
+    assert state["errors"], "the screen has to say why"
+    # And the typing is handed back rather than thrown away.
+    assert state["values"]["title"] == "Never saved"
+
+    with connection() as conn:
+        rows = fetch_all(
+            conn, "select 1 from assignment where cohort_id = %s", (cohort,)
+        )
+    assert rows == []
+
+
+def test_editing_an_assignment_changes_it(signed_in: TestClient, cohort: str) -> None:
+    signed_in.post(
+        "/assignments/new",
+        data={
+            "title": "First title",
+            "due_at": "2026-09-18T17:00",
+            "timezone": "America/Chicago",
+            "cohort_id": cohort,
+            "status": "active",
+        },
+    )
+    with connection() as conn:
+        row = fetch_all(
+            conn, "select assignment_id from assignment where cohort_id = %s", (cohort,)
+        )[0]
+    assignment_id = str(row["assignment_id"])
+
+    # The edit screen offers back what is stored, in the shape the input wants.
+    state = boot_state(signed_in.get(f"/assignments/{assignment_id}/edit"))
+    assert state["values"]["due_at"] == "2026-09-18T17:00"
+    assert state["values"]["title"] == "First title"
+
+    response = signed_in.post(
+        f"/assignments/{assignment_id}/edit",
+        data={
+            "title": "Second title",
+            "due_at": "2026-09-19T09:30",
+            "timezone": "America/New_York",
+            "cohort_id": cohort,
+            "status": "cancelled",
+        },
+    )
+    assert response.status_code == 303
+
+    with connection() as conn:
+        updated = fetch_all(
+            conn, "select * from assignment where assignment_id = %s", (assignment_id,)
+        )[0]
+    assert updated["title"] == "Second title"
+    assert updated["status"] == "cancelled"
+    assert updated["timezone"] == "America/New_York"
+
+
+def test_a_fellows_timezone_can_be_set_from_the_roster(
+    signed_in: TestClient, cohort: str
+) -> None:
+    with connection() as conn:
+        execute(
+            conn,
+            "insert into fellow (fellow_id, cohort_id, full_name, primary_email) "
+            "values (%s, %s, %s, %s)",
+            (f"CU-{uuid.uuid4().hex[:6]}", cohort, "Ada Testcase", "ada@example.invalid"),
+        )
+        fellow_id = fetch_all(
+            conn, "select fellow_id from fellow where cohort_id = %s", (cohort,)
+        )[0]["fellow_id"]
+
+    # The screen is told who has no zone, because that is the thing worth acting on.
+    state = boot_state(signed_in.get(f"/roster?cohort={cohort}"))
+    assert [f["fellow_id"] for f in state["fellows"]] == [fellow_id]
+    assert state["fellows"][0]["timezone"] is None
+
+    response = signed_in.post(
+        f"/roster/{fellow_id}/timezone",
+        data={"timezone": "America/Chicago", "cohort": cohort},
+    )
+    assert response.status_code == 303
+
+    with connection() as conn:
+        row = fetch_all(
+            conn, "select timezone from fellow where fellow_id = %s", (fellow_id,)
+        )[0]
+    assert row["timezone"] == "America/Chicago"
+
+
+def test_an_unknown_zone_is_refused_and_the_old_one_kept(
+    signed_in: TestClient, cohort: str
+) -> None:
+    """The console must not be a way around the validation the CSV loader applies."""
+    fellow_id = f"CU-{uuid.uuid4().hex[:6]}"
+    with connection() as conn:
+        execute(
+            conn,
+            "insert into fellow (fellow_id, cohort_id, full_name, primary_email, timezone) "
+            "values (%s, %s, %s, %s, %s)",
+            (fellow_id, cohort, "Ada Testcase", "ada@example.invalid", "America/Denver"),
+        )
+
+    response = signed_in.post(
+        f"/roster/{fellow_id}/timezone",
+        data={"timezone": "Mars/Olympus_Mons", "cohort": cohort},
+    )
+    assert response.status_code == 303
+    assert "error=" in response.headers["location"]
+
+    with connection() as conn:
+        row = fetch_all(
+            conn, "select timezone from fellow where fellow_id = %s", (fellow_id,)
+        )[0]
+    assert row["timezone"] == "America/Denver", "a rejected zone must not clear the old one"
+
+
+def test_a_blank_timezone_clears_it(signed_in: TestClient, cohort: str) -> None:
+    """Legal on purpose: reminders then fall back to the session's zone."""
+    fellow_id = f"CU-{uuid.uuid4().hex[:6]}"
+    with connection() as conn:
+        execute(
+            conn,
+            "insert into fellow (fellow_id, cohort_id, full_name, primary_email, timezone) "
+            "values (%s, %s, %s, %s, %s)",
+            (fellow_id, cohort, "Ada Testcase", "ada@example.invalid", "America/Denver"),
+        )
+
+    assert signed_in.post(
+        f"/roster/{fellow_id}/timezone", data={"timezone": "  ", "cohort": cohort}
+    ).status_code == 303
+
+    with connection() as conn:
+        row = fetch_all(
+            conn, "select timezone from fellow where fellow_id = %s", (fellow_id,)
+        )[0]
+    assert row["timezone"] is None

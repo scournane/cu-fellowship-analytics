@@ -83,6 +83,31 @@ class Settings:
     #: HTTP mode: run the listener before answering Slack (deterministic for
     #: the demo and tests) rather than acking first and writing in a thread.
     slack_process_before_response: bool = True
+    #: Outbound reminders/digests/agendas run in the same long-lived bot
+    #: process. Set false when a deployment runs a separate one-shot worker.
+    slack_automations_enabled: bool = True
+    slack_automation_interval_seconds: int = 60
+    #: Name or channel id used for agendas unless a session overrides it.
+    slack_announcement_channel: str = "announcements"
+    #: Explicit fallback for roster rows that predate per-fellow timezones.
+    slack_default_fellow_timezone: str = "America/New_York"
+    slack_quiet_start: str = "21:00"
+    slack_quiet_end: str = "08:00"
+    #: Monday=0 through Sunday=6, matching datetime.weekday().
+    slack_digest_weekday: int = 0
+    slack_digest_hour: int = 9
+    #: Keep Part B current before deciding that somebody has not submitted.
+    slack_sync_part_b: bool = True
+    slack_part_b_poll_minutes: int = 10
+    #: When a fellow has set no quiet hours of their own, infer them from when
+    #: they are actually active on Slack (in their zone), so reminders land
+    #: when they are around. Never overrides a preference the fellow set.
+    slack_rhythm_enabled: bool = True
+    slack_rhythm_days: int = 28
+    #: Fewer acts than this and the deployment default quiet hours stand.
+    slack_rhythm_min_acts: int = 20
+    #: A channel with no message for this many days is reported as quiet.
+    slack_quiet_channel_days: int = 7
 
     fixtures_dir: Path = field(default_factory=lambda: _repo_root() / "fixtures")
 
@@ -128,6 +153,10 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         except ValueError as exc:
             raise ConfigError(f"{name} must be an integer, got {raw!r}") from exc
 
+    def _enabled(name: str, default: bool) -> bool:
+        raw = (env.get(name) or "").strip()
+        return default if not raw else _truthy(raw)
+
     return Settings(
         database_url=env.get("CUFA_DATABASE_URL") or DEFAULT_DSN,
         encryption_key=(env.get("CUFA_ENCRYPTION_KEY") or "").strip() or None,
@@ -157,6 +186,26 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         slack_port=_int("CUFA_SLACK_PORT", 3000),
         slack_user_cache_hours=_int("CUFA_SLACK_USER_CACHE_HOURS", 24),
         slack_process_before_response=not _truthy(env.get("CUFA_SLACK_ACK_FIRST")),
+        slack_automations_enabled=_enabled("CUFA_SLACK_AUTOMATIONS", True),
+        slack_automation_interval_seconds=_int(
+            "CUFA_SLACK_AUTOMATION_INTERVAL_SECONDS", 60
+        ),
+        slack_announcement_channel=(
+            env.get("CUFA_SLACK_ANNOUNCEMENT_CHANNEL") or "announcements"
+        ).strip(),
+        slack_default_fellow_timezone=(
+            env.get("CUFA_DEFAULT_FELLOW_TIMEZONE") or "America/New_York"
+        ).strip(),
+        slack_quiet_start=(env.get("CUFA_SLACK_QUIET_START") or "21:00").strip(),
+        slack_quiet_end=(env.get("CUFA_SLACK_QUIET_END") or "08:00").strip(),
+        slack_digest_weekday=_int("CUFA_SLACK_DIGEST_WEEKDAY", 0),
+        slack_digest_hour=_int("CUFA_SLACK_DIGEST_HOUR", 9),
+        slack_sync_part_b=_enabled("CUFA_SLACK_SYNC_PART_B", True),
+        slack_part_b_poll_minutes=_int("CUFA_SLACK_PART_B_POLL_MINUTES", 10),
+        slack_rhythm_enabled=_enabled("CUFA_SLACK_RHYTHM", True),
+        slack_rhythm_days=_int("CUFA_SLACK_RHYTHM_DAYS", 28),
+        slack_rhythm_min_acts=_int("CUFA_SLACK_RHYTHM_MIN_ACTS", 20),
+        slack_quiet_channel_days=_int("CUFA_SLACK_QUIET_CHANNEL_DAYS", 7),
     )
 
 

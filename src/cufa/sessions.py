@@ -16,6 +16,7 @@ import psycopg
 from .db import execute, fetch_all, fetch_one
 from .logging_setup import get_logger
 from .timeutil import get_zone, to_utc
+from .urls import optional_http_url
 
 log = get_logger(__name__)
 
@@ -41,6 +42,14 @@ class SessionInput:
     #: the schedule assigns to teacher_question, where provisioning refuses
     #: rather than substituting something generic.
     teacher_question: str | None = None
+    #: Included in every session reminder. Kept separate from the agenda so a
+    #: link change does not require editing prose that will be posted publicly.
+    zoom_url: str | None = None
+    #: Staff-authored text posted to Slack at the scheduled start.
+    agenda: str | None = None
+    #: Optional per-session destination. The bot's configured announcements
+    #: channel is used when this is blank.
+    slack_channel_id: str | None = None
 
     def scheduled_at_utc(self) -> datetime:
         """Convert the typed local time using the typed zone.
@@ -56,14 +65,16 @@ class SessionInput:
 
 
 def create_session(conn: psycopg.Connection, data: SessionInput) -> str:
+    zoom_url = optional_http_url(data.zoom_url, label="Zoom URL")
     row = fetch_one(
         conn,
         """
         insert into "session" (
             cohort_id, title, scheduled_at_local, timezone, scheduled_at_utc,
-            duration_minutes, grace_minutes, passphrase, week_index, teacher_question
+            duration_minutes, grace_minutes, passphrase, week_index, teacher_question,
+            zoom_url, agenda, slack_channel_id
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         returning session_id
         """,
         (
@@ -77,6 +88,9 @@ def create_session(conn: psycopg.Connection, data: SessionInput) -> str:
             (data.passphrase or "").strip() or None,
             data.week_index,
             (data.teacher_question or "").strip() or None,
+            zoom_url,
+            (data.agenda or "").strip() or None,
+            (data.slack_channel_id or "").strip() or None,
         ),
     )
     assert row is not None
@@ -86,6 +100,7 @@ def create_session(conn: psycopg.Connection, data: SessionInput) -> str:
 
 
 def update_session(conn: psycopg.Connection, session_id: str, data: SessionInput) -> None:
+    zoom_url = optional_http_url(data.zoom_url, label="Zoom URL")
     execute(
         conn,
         """
@@ -99,6 +114,9 @@ def update_session(conn: psycopg.Connection, session_id: str, data: SessionInput
                passphrase = %s,
                week_index = %s,
                teacher_question = %s,
+               zoom_url = %s,
+               agenda = %s,
+               slack_channel_id = %s,
                updated_at = now()
          where session_id = %s
         """,
@@ -112,6 +130,9 @@ def update_session(conn: psycopg.Connection, session_id: str, data: SessionInput
             (data.passphrase or "").strip() or None,
             data.week_index,
             (data.teacher_question or "").strip() or None,
+            zoom_url,
+            (data.agenda or "").strip() or None,
+            (data.slack_channel_id or "").strip() or None,
             session_id,
         ),
     )
@@ -164,6 +185,7 @@ def list_sessions(conn: psycopg.Connection, cohort_id: str | None = None) -> lis
         select s.session_id, s.cohort_id, s.title, s.scheduled_at_local, s.timezone,
                s.scheduled_at_utc, s.duration_minutes, s.grace_minutes,
                s.passphrase, s.announced_at_utc, s.week_index, s.teacher_question,
+               s.zoom_url, s.agenda, s.slack_channel_id,
                fa.form_id, fa.form_url, fa.publish_verified_at,
                fb.form_id             as b_form_id,
                fb.form_url            as b_form_url,
@@ -213,7 +235,7 @@ def sessions_for_matching(conn: psycopg.Connection, cohort_id: str) -> list[dict
         """
         select session_id, cohort_id, title, scheduled_at_utc,
                duration_minutes, grace_minutes, passphrase, announced_at_utc,
-               week_index, teacher_question
+               week_index, teacher_question, zoom_url, agenda, slack_channel_id
           from "session"
          where cohort_id = %s
          order by scheduled_at_utc

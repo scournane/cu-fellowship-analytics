@@ -50,7 +50,13 @@ def test_editing_one_field_leaves_the_others_alone(db, capsys):
     Re-typing a schedule is how a session time gets changed by accident.
     """
     session_id = make_session(
-        db, title="Original", local=datetime(2026, 9, 15, 19, 0), passphrase="justice"
+        db,
+        title="Original",
+        local=datetime(2026, 9, 15, 19, 0),
+        passphrase="justice",
+        zoom_url="https://zoom.example.invalid/j/123",
+        agenda="Opening\nWorkshop",
+        slack_channel_id="announcements",
     )
     before = get_session(db, session_id)
 
@@ -63,6 +69,9 @@ def test_editing_one_field_leaves_the_others_alone(db, capsys):
     assert after["duration_minutes"] == before["duration_minutes"]
     assert after["grace_minutes"] == before["grace_minutes"]
     assert after["passphrase"] == "justice"
+    assert after["zoom_url"] == before["zoom_url"]
+    assert after["agenda"] == before["agenda"]
+    assert after["slack_channel_id"] == before["slack_channel_id"]
 
 
 def test_editing_the_schedule_recomputes_utc(db):
@@ -113,6 +122,47 @@ def test_editing_an_unknown_session_says_so(db):
             main(["session", "edit", "--session", str(uuid.uuid4()), "--title", "x"])
         )
     assert excinfo.value.code == 1
+
+
+# --- assignments ------------------------------------------------------------
+
+def test_assignment_commands_create_and_cancel_a_due_item(db, capsys):
+    assert main(
+        [
+            "assignment",
+            "create",
+            "--cohort",
+            TEST_COHORT,
+            "--title",
+            "Community interview notes",
+            "--due-at",
+            "2026-09-18T17:00",
+            "--timezone",
+            "America/New_York",
+            "--url",
+            "https://classroom.example.invalid/interview",
+        ]
+    ) == 0
+    assignment_id = capsys.readouterr().out.strip()
+    row = fetch_one(
+        db, "select * from assignment where assignment_id = %s", (assignment_id,)
+    )
+    assert row["title"] == "Community interview notes"
+    assert row["due_at_utc"].strftime("%Y-%m-%dT%H:%MZ") == "2026-09-18T21:00Z"
+
+    assert main(
+        [
+            "assignment",
+            "edit",
+            "--assignment",
+            assignment_id,
+            "--status",
+            "cancelled",
+        ]
+    ) == 0
+    assert fetch_one(
+        db, "select status from assignment where assignment_id = %s", (assignment_id,)
+    )["status"] == "cancelled"
 
 
 # --- decide -----------------------------------------------------------------
@@ -175,7 +225,7 @@ def test_every_documented_command_is_reachable():
     )
     expected = {
         "db", "serve", "google", "template", "load-roster", "load-sessions",
-        "session", "provision", "pull", "ingest", "adjudicate", "decide",
+        "session", "assignment", "provision", "pull", "ingest", "adjudicate", "decide",
         "review", "report",
         # Part B
         "themes", "shoutouts", "help-requests", "rotation",

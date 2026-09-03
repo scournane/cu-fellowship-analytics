@@ -786,6 +786,8 @@ FELLOW_DATA_TABLES = (
     "muddiest_theme_member",
     "help_request",
     "google_credential",
+    "fellow_reminder_preference",
+    "bot_delivery",
 )
 
 

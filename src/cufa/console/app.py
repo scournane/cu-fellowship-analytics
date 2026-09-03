@@ -72,9 +72,17 @@ from ..ingest.forms_b import pull_session_b
 from ..logging_setup import configure_logging, get_logger
 from ..passphrase import ACCESSIBILITY_REMINDER, GUIDANCE, check_reuse, suggest
 from ..provenance import is_simulated_form_id
+from ..assignments import (
+    AssignmentInput,
+    create_assignment,
+    get_assignment,
+    list_assignments,
+    update_assignment,
+)
 from ..provisioning import is_ready, provision_session, resolve_rotating_slot
 from ..question_map import map_rows
 from ..report import ai_decisions, needs_review_queue, unresolved_identities
+from ..roster import list_fellows, set_fellow_timezone
 from ..rotation import RotationConfigError, TeacherQuestionMissing, get_rotation
 from ..shoutouts import candidates_for, link as link_shoutout, review_queue as shoutout_queue
 from ..themes import current_themes, generate_themes
@@ -98,6 +106,7 @@ from ..template import (
     verify_template,
 )
 from ..timeutil import TimezoneError, get_zone
+from ..urls import optional_http_url
 from .auth import (
     COOKIE_NAME,
     NotPermitted,
@@ -126,6 +135,18 @@ STATIC_DIR = _HERE / "static"
 # The account recorded when the fake client stands in for Google. It is an
 # `.invalid` domain by RFC 2606 so it can never be a real address.
 FAKE_ACCOUNT_EMAIL = "fake-google-client@example.invalid"
+
+# Offered as shortcuts on the roster screen. Any IANA name may still be
+# typed; these are only the ones a US cohort reaches for most.
+COMMON_ZONES = (
+    "America/New_York",
+    "America/Chicago",
+    "America/Denver",
+    "America/Los_Angeles",
+    "America/Anchorage",
+    "Pacific/Honolulu",
+    "UTC",
+)
 
 configure_logging(get_settings().log_level)
 
@@ -1016,6 +1037,9 @@ def _blank_form(cohorts: list[dict[str, Any]]) -> dict[str, Any]:
         "cohort_id": cohorts[0]["cohort_id"] if cohorts else "",
         "week_index": "",
         "teacher_question": "",
+        "zoom_url": "",
+        "agenda": "",
+        "slack_channel_id": "",
     }
 
 
@@ -1085,6 +1109,9 @@ def _read_session_form(
     cohort_id: str,
     week_index: str = "",
     teacher_question: str = "",
+    zoom_url: str = "",
+    agenda: str = "",
+    slack_channel_id: str = "",
 ) -> tuple[SessionInput | None, list[str], dict[str, Any]]:
     """Validate the posted form, returning the input, the errors, and the echo."""
     values = {
@@ -1097,6 +1124,9 @@ def _read_session_form(
         "cohort_id": cohort_id,
         "week_index": week_index,
         "teacher_question": teacher_question,
+        "zoom_url": zoom_url,
+        "agenda": agenda,
+        "slack_channel_id": slack_channel_id,
     }
     errors: list[str] = []
 
@@ -1147,6 +1177,12 @@ def _read_session_form(
     if not cohort_id.strip():
         errors.append("Cohort is required — everything is keyed to one.")
 
+    clean_zoom_url: str | None = None
+    try:
+        clean_zoom_url = optional_http_url(zoom_url, label="Zoom URL")
+    except ValueError as exc:
+        errors.append(str(exc))
+
     if errors or local is None or duration is None or grace is None:
         return None, errors, values
 
@@ -1164,6 +1200,9 @@ def _read_session_form(
             # schedules get edited, and a question typed once should not be lost
             # because the week it belonged to moved.
             teacher_question=teacher_question.strip() or None,
+            zoom_url=clean_zoom_url,
+            agenda=agenda.strip() or None,
+            slack_channel_id=slack_channel_id.strip() or None,
         ),
         [],
         values,
@@ -1183,6 +1222,9 @@ def session_create(
     cohort_id: str = Form(""),
     week_index: str = Form(""),
     teacher_question: str = Form(""),
+    zoom_url: str = Form(""),
+    agenda: str = Form(""),
+    slack_channel_id: str = Form(""),
     confirm_reuse: str = Form(""),
 ) -> Response:
     data, errors, values = _read_session_form(
@@ -1195,6 +1237,9 @@ def session_create(
         cohort_id=cohort_id,
         week_index=week_index,
         teacher_question=teacher_question,
+        zoom_url=zoom_url,
+        agenda=agenda,
+        slack_channel_id=slack_channel_id,
     )
 
     with connection() as conn:
@@ -1256,6 +1301,9 @@ def session_edit_form(
             "cohort_id": row["cohort_id"],
             "week_index": "" if row["week_index"] is None else str(row["week_index"]),
             "teacher_question": row["teacher_question"] or "",
+            "zoom_url": row["zoom_url"] or "",
+            "agenda": row["agenda"] or "",
+            "slack_channel_id": row["slack_channel_id"] or "",
         },
         cohorts=cohorts,
         guidance=GUIDANCE,
@@ -1283,6 +1331,9 @@ def session_edit(
     cohort_id: str = Form(""),
     week_index: str = Form(""),
     teacher_question: str = Form(""),
+    zoom_url: str = Form(""),
+    agenda: str = Form(""),
+    slack_channel_id: str = Form(""),
     confirm_reuse: str = Form(""),
 ) -> Response:
     parsed = _parse_uuid(session_id)
@@ -1299,6 +1350,9 @@ def session_edit(
         cohort_id=cohort_id,
         week_index=week_index,
         teacher_question=teacher_question,
+        zoom_url=zoom_url,
+        agenda=agenda,
+        slack_channel_id=slack_channel_id,
     )
 
     with connection() as conn:
@@ -1993,6 +2047,310 @@ def _not_found(request: Request) -> Response:
         body="That page or record does not exist. It may have been removed.",
         link="/sessions",
         link_label="Back to sessions",
+    )
+
+
+# --------------------------------------------------------------------------
+# screen 8 — assignments
+# --------------------------------------------------------------------------
+#
+# The same three fields the CLI takes, on a screen, because the people who set
+# assignments are the staff running the sessions and not the people with a
+# terminal. `cufa assignment` stays exactly as it was; this calls the same
+# functions.
+
+
+def _blank_assignment(cohorts: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "title": "",
+        "due_at": "",
+        "timezone": "",
+        "description": "",
+        "url": "",
+        "status": "active",
+        "cohort_id": cohorts[0]["cohort_id"] if cohorts else "",
+    }
+
+
+def _read_assignment_form(
+    *,
+    title: str,
+    due_at: str,
+    timezone: str,
+    cohort_id: str,
+    description: str,
+    url: str,
+    status: str,
+) -> tuple[AssignmentInput | None, list[str], dict[str, Any]]:
+    """Parse and validate, returning what to re-show when it does not."""
+    values = {
+        "title": title,
+        "due_at": due_at,
+        "timezone": timezone,
+        "cohort_id": cohort_id,
+        "description": description,
+        "url": url,
+        "status": status or "active",
+    }
+    errors: list[str] = []
+
+    local: datetime | None = None
+    try:
+        local = datetime.fromisoformat(due_at.strip())
+    except ValueError:
+        errors.append(
+            "Due date and time is required, as a local wall-clock time "
+            "(for example 2026-09-18T17:00)."
+        )
+
+    if not timezone.strip():
+        errors.append("Timezone is required — an IANA name such as America/Chicago.")
+    else:
+        try:
+            get_zone(timezone.strip())
+        except TimezoneError as exc:
+            errors.append(str(exc))
+
+    if errors or local is None:
+        return None, errors, values
+
+    data = AssignmentInput(
+        cohort_id=cohort_id,
+        title=title,
+        due_at_local=local,
+        timezone=timezone.strip(),
+        description=description.strip() or None,
+        url=url.strip() or None,
+        status=values["status"],
+    )
+    try:
+        data.validate()
+    except (ValueError, TimezoneError) as exc:
+        return None, [str(exc)], values
+    return data, [], values
+
+
+@app.get("/assignments", response_class=HTMLResponse)
+def assignments_screen(
+    request: Request,
+    user: ConsoleUser = Depends(require_user),
+    cohort: str | None = Query(default=None),
+    notice: str | None = None,
+) -> Response:
+    with connection() as conn:
+        cohorts = _cohorts(conn)
+        rows = list_assignments(conn, cohort or None, include_cancelled=True)
+    return render_spa(
+        request,
+        "assignments",
+        title="Assignments",
+        assignments=rows,
+        cohorts=cohorts,
+        selected_cohort=cohort or "",
+        notice=notice,
+    )
+
+
+@app.get("/assignments/new", response_class=HTMLResponse)
+def assignment_new_form(
+    request: Request, user: ConsoleUser = Depends(require_user)
+) -> Response:
+    with connection() as conn:
+        cohorts = _cohorts(conn)
+    return render_spa(
+        request,
+        "assignmentForm",
+        title="New assignment",
+        heading="New assignment",
+        action="/assignments/new",
+        values=_blank_assignment(cohorts),
+        cohorts=cohorts,
+        errors=[],
+    )
+
+
+@app.post("/assignments/new")
+def assignment_create(
+    request: Request,
+    user: ConsoleUser = Depends(require_user),
+    title: str = Form(""),
+    due_at: str = Form(""),
+    timezone: str = Form(""),
+    cohort_id: str = Form(""),
+    description: str = Form(""),
+    url: str = Form(""),
+    status: str = Form("active"),
+) -> Response:
+    data, errors, values = _read_assignment_form(
+        title=title, due_at=due_at, timezone=timezone, cohort_id=cohort_id,
+        description=description, url=url, status=status,
+    )
+    with connection() as conn:
+        cohorts = _cohorts(conn)
+        if data is None:
+            return render_spa(
+                request,
+                "assignmentForm",
+                status_code=400,
+                title="New assignment",
+                heading="New assignment",
+                action="/assignments/new",
+                values=values,
+                cohorts=cohorts,
+                errors=errors,
+            )
+        create_assignment(conn, data)
+    return RedirectResponse(
+        "/assignments?notice=" + quote("Assignment created."), status_code=303
+    )
+
+
+@app.get("/assignments/{assignment_id}/edit", response_class=HTMLResponse)
+def assignment_edit_form(
+    request: Request,
+    assignment_id: str,
+    user: ConsoleUser = Depends(require_user),
+) -> Response:
+    parsed = _parse_uuid(assignment_id)
+    if parsed is None:
+        return _not_found(request)
+    with connection() as conn:
+        cohorts = _cohorts(conn)
+        row = get_assignment(conn, parsed)
+    if row is None:
+        return _not_found(request)
+    return render_spa(
+        request,
+        "assignmentForm",
+        title="Edit assignment",
+        heading="Edit assignment",
+        action=f"/assignments/{parsed}/edit",
+        assignment_id=parsed,
+        values={
+            "title": row["title"],
+            # The stored local time is naive on purpose — it is the wall-clock
+            # value that was typed. Rendered back in the shape the input wants.
+            "due_at": row["due_at_local"].strftime("%Y-%m-%dT%H:%M")
+            if row.get("due_at_local")
+            else "",
+            "timezone": row["timezone"],
+            "cohort_id": row["cohort_id"],
+            "description": row.get("description") or "",
+            "url": row.get("url") or "",
+            "status": row.get("status") or "active",
+        },
+        cohorts=cohorts,
+        errors=[],
+    )
+
+
+@app.post("/assignments/{assignment_id}/edit")
+def assignment_edit(
+    request: Request,
+    assignment_id: str,
+    user: ConsoleUser = Depends(require_user),
+    title: str = Form(""),
+    due_at: str = Form(""),
+    timezone: str = Form(""),
+    cohort_id: str = Form(""),
+    description: str = Form(""),
+    url: str = Form(""),
+    status: str = Form("active"),
+) -> Response:
+    parsed = _parse_uuid(assignment_id)
+    if parsed is None:
+        return _not_found(request)
+    data, errors, values = _read_assignment_form(
+        title=title, due_at=due_at, timezone=timezone, cohort_id=cohort_id,
+        description=description, url=url, status=status,
+    )
+    with connection() as conn:
+        cohorts = _cohorts(conn)
+        if data is None:
+            return render_spa(
+                request,
+                "assignmentForm",
+                status_code=400,
+                title="Edit assignment",
+                heading="Edit assignment",
+                action=f"/assignments/{parsed}/edit",
+                assignment_id=parsed,
+                values=values,
+                cohorts=cohorts,
+                errors=errors,
+            )
+        if not update_assignment(conn, parsed, data):
+            return _not_found(request)
+    return RedirectResponse(
+        "/assignments?notice=" + quote("Assignment saved."), status_code=303
+    )
+
+
+# --------------------------------------------------------------------------
+# screen 9 — roster
+# --------------------------------------------------------------------------
+#
+# Timezone is the only field editable here. Everything else about a fellow comes
+# from the roster CSV, which stays the source of truth for who exists; a zone is
+# the one thing that gets corrected one person at a time, usually because a
+# reminder arrived at the wrong hour for them.
+
+
+@app.get("/roster", response_class=HTMLResponse)
+def roster_screen(
+    request: Request,
+    user: ConsoleUser = Depends(require_user),
+    cohort: str | None = Query(default=None),
+    notice: str | None = None,
+    error: str | None = None,
+) -> Response:
+    with connection() as conn:
+        cohorts = _cohorts(conn)
+        fellows = list_fellows(conn, cohort or None)
+    return render_spa(
+        request,
+        "roster",
+        title="Roster",
+        fellows=fellows,
+        cohorts=cohorts,
+        selected_cohort=cohort or "",
+        common_zones=COMMON_ZONES,
+        notice=notice,
+        error=error,
+    )
+
+
+@app.post("/roster/{fellow_id}/timezone")
+def roster_set_timezone(
+    request: Request,
+    fellow_id: str,
+    user: ConsoleUser = Depends(require_user),
+    timezone: str = Form(""),
+    cohort: str = Form(""),
+) -> Response:
+    destination = "/roster"
+    if cohort:
+        destination += "?cohort=" + quote(cohort)
+
+    try:
+        with connection() as conn:
+            found = set_fellow_timezone(conn, fellow_id, timezone)
+    except TimezoneError as exc:
+        joiner = "&" if "?" in destination else "?"
+        return RedirectResponse(
+            destination + joiner + "error=" + quote(str(exc)), status_code=303
+        )
+    if not found:
+        return _not_found(request)
+
+    joiner = "&" if "?" in destination else "?"
+    message = (
+        f"Timezone set to {timezone.strip()}."
+        if timezone.strip()
+        else "Timezone cleared."
+    )
+    return RedirectResponse(
+        destination + joiner + "notice=" + quote(message), status_code=303
     )
 
 

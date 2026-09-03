@@ -750,6 +750,18 @@ def _slack_stack():
     listening first.
     """
     env = _slack_demo_env()
+    # A bot that is already listening here is NOT the demo's. The fake signs
+    # every delivery with the demo secret, so a real bot on this port rejects
+    # them all as forgeries — silently, from where this script sits — and the
+    # demo then "proves" nothing while the real bot logs a wall of 401s. Refuse
+    # rather than share the port.
+    for port, what in ((SLACK_BOT_PORT, "the bot"), (FAKE_SLACK_PORT, "the fake Slack")):
+        if _port_in_use(int(port)):
+            raise TaskError(
+                f"port {port} is already in use, so {what} cannot start there.\n"
+                f"  If that is a real `cufa slack serve` or `slack socket`, stop it, or run the\n"
+                f"  demo elsewhere:  SLACK_BOT_PORT=3100 FAKE_SLACK_PORT=3101 python tasks.py demo-slack-batch"
+            )
     bot_events = f"http://127.0.0.1:{SLACK_BOT_PORT}/slack/events"
     fake = _spawn(
         [venv_python(), ROOT / "scripts" / "fake_slack_server.py",
@@ -765,6 +777,15 @@ def _slack_stack():
     )
     _wait_for_http(f"http://127.0.0.1:{SLACK_BOT_PORT}/health")
     return fake, bot
+
+
+def _port_in_use(port: int) -> bool:
+    """Whether something already answers on 127.0.0.1:port."""
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.5)
+        return sock.connect_ex(("127.0.0.1", port)) == 0
 
 
 def _stop(*procs: subprocess.Popen) -> None:
@@ -861,6 +882,30 @@ def task_demo_slack_batch() -> int:
         _ui("edit", {"channel": general, "text": "root message, edited"})
         _ui("bot-message", {"channel": general})
 
+        banner("3b. the newer signals: mentions, huddles, canvases, a poll")
+        import json  # local, like every other helper in this file
+
+        _ui("mention", {"user": people[0], "channel": general, "target": people[1]})
+        _ui("huddle", {"user": people[0], "joined": 1})
+        _ui("huddle", {"user": people[1], "joined": 1})
+        _ui("huddle", {"user": people[0], "joined": 0})
+        _ui("canvas", {"user": people[2], "channel": general, "what": "create"})
+        _ui("canvas", {"user": people[2], "channel": general, "what": "edit"})
+        _ui("canvas", {"user": people[3], "channel": general, "what": "comment"})
+        _ui("plain-file", {"user": people[3]})
+        poll_env = _slack_demo_env()
+        posted = run(
+            [venv_python(), "-m", "cufa", "slack", "poll", "--channel", "general",
+             "--question", "Which night works for the project check-in?",
+             "--option", "Tuesday", "--option", "Thursday", "--json"],
+            env=poll_env, quiet=True,
+        )
+        poll = json.loads(posted.stdout or "{}")
+        print(f"  poll {poll.get('poll_id')} posted at ts {poll.get('message_ts')}")
+        for voter, choice in ((people[0], "Tuesday"), (people[1], "Thursday"), (people[2], "Tuesday"), (people[0], "Thursday")):
+            _ui("vote", {"user": voter, "choice": choice, "poll_id": poll.get("poll_id")})
+        print("  4 votes cast, one of them a change of mind")
+
         banner("4. Slack retries a delivery — the bot must ack AND write nothing")
         replay = _ui("replay")
         print(f"  bot answered {replay['status']} to the retry")
@@ -878,9 +923,13 @@ def task_demo_slack_batch() -> int:
         banner("7. what the database holds")
         cufa("slack", "stats", env=env)
         cufa("slack", "report", "--cohort", COHORT, env=env)
+        cufa("slack", "insights", "--cohort", COHORT, env=env)
 
         banner("8. acceptance checks")
-        script("verify_slack_demo.py", "--cohort", COHORT)
+        # The verifier reads the fake's delivery log, so it has to be told
+        # where the fake is when the ports were moved off the defaults.
+        script("verify_slack_demo.py", "--cohort", COHORT,
+               "--fake-url", f"http://127.0.0.1:{FAKE_SLACK_PORT}")
     finally:
         _stop(bot, fake)
     return 0

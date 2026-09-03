@@ -13,6 +13,8 @@ export const NAV = [
   {href: '/', label: 'Connect Google', match: (p) => p === '/'},
   {href: '/template', label: 'Templates', match: (p) => p.startsWith('/template')},
   {href: '/sessions', label: 'Sessions', match: (p) => p.startsWith('/sessions')},
+  {href: '/assignments', label: 'Assignments', match: (p) => p.startsWith('/assignments')},
+  {href: '/roster', label: 'Roster', match: (p) => p.startsWith('/roster')},
   {href: '/rotation', label: 'Rotation', match: (p) => p.startsWith('/rotation')},
   {href: '/shoutouts', label: 'Shoutouts', match: (p) => p.startsWith('/shoutouts')},
   {href: '/review', label: 'Review', match: (p) => p.startsWith('/review')},

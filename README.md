@@ -102,7 +102,7 @@ the [Supabase CLI](https://supabase.com/docs/guides/local-development/cli/gettin
 python tasks.py demo-console   # demo data plus the web console, zero Google calls
 python tasks.py demo-again     # re-run over the same database, to show idempotency
 python tasks.py demo-ai        # tier 2 live; skips with a message if no GEMINI_API_KEY
-python tasks.py test           # 282 tests, no network
+python tasks.py test           # 429 tests, no network
 python tasks.py clean          # stop Supabase, remove generated fixtures
 ```
 
@@ -132,6 +132,13 @@ that matter more: **Replay last delivery** re-sends an event with Slack's retry
 headers (the bot acks it and writes nothing), and **Send with bad signature**
 (the bot refuses it). No Slack account is involved. See
 [docs/setup/slack-bot.md](docs/setup/slack-bot.md).
+
+The long-lived Slack bot also sends timezone-aware session and assignment
+reminders, a weekly fellow digest, and session-start agendas. Fellows control
+their own cadence and quiet hours with `/cufa-reminders`; Part B non-submitter
+nudges require a fresh successful form pull and are capped at two in both code
+and the database. Configuration and operating commands are in the
+[Slack bot setup guide](docs/setup/slack-bot.md#outbound-reminders-and-agendas).
 
 ## How it works
 

@@ -15,7 +15,7 @@ from typing import Any
 
 import psycopg
 
-from .db import execute, fetch_one
+from .db import execute, fetch_all, fetch_one
 from .logging_setup import get_logger, summarize
 from .sessions import SessionInput, create_session
 from .text import normalize_email
@@ -77,6 +77,14 @@ def load_roster(conn: psycopg.Connection, path: str | Path, cohort_id: str) -> L
             email = normalize_email(_pick(row, headers, "primary_email", "email"))
             name = _pick(row, headers, "full_name", "name")
             status = _pick(row, headers, "status") or "active"
+            timezone = _pick(row, headers, "timezone", "tz") or None
+
+            if timezone:
+                # Refuse a typo at the roster boundary. Quiet hours in a guessed
+                # zone are worse than an explicit fallback visible in config.
+                from .timeutil import get_zone
+
+                get_zone(timezone)
 
             if not fellow_id or not email:
                 skipped += 1
@@ -86,16 +94,19 @@ def load_roster(conn: psycopg.Connection, path: str | Path, cohort_id: str) -> L
             execute(
                 conn,
                 """
-                insert into fellow (fellow_id, cohort_id, full_name, primary_email, status)
-                values (%s, %s, %s, %s, %s)
+                insert into fellow (
+                    fellow_id, cohort_id, full_name, primary_email, status, timezone
+                )
+                values (%s, %s, %s, %s, %s, %s)
                 on conflict (fellow_id) do update
                    set cohort_id = excluded.cohort_id,
                        full_name = excluded.full_name,
                        primary_email = excluded.primary_email,
                        status = excluded.status,
+                       timezone = coalesce(excluded.timezone, fellow.timezone),
                        updated_at = now()
                 """,
-                (fellow_id, cohort_id, name or fellow_id, email, status),
+                (fellow_id, cohort_id, name or fellow_id, email, status, timezone),
             )
             written += 1
 
@@ -120,6 +131,11 @@ def load_sessions(conn: psycopg.Connection, path: str | Path) -> LoadSummary:
             passphrase = _pick(row, headers, "passphrase")
             week_raw = _pick(row, headers, "week_index", "week")
             teacher_question = _pick(row, headers, "teacher_question")
+            zoom_url = _pick(row, headers, "zoom_url", "zoom", "meeting_url")
+            agenda = _pick(row, headers, "agenda")
+            slack_channel_id = _pick(
+                row, headers, "slack_channel_id", "slack_channel"
+            )
 
             if not (cohort_id and title and local_raw and zone and duration):
                 skipped += 1
@@ -172,12 +188,55 @@ def load_sessions(conn: psycopg.Connection, path: str | Path) -> LoadSummary:
                     passphrase=passphrase or None,
                     week_index=week,
                     teacher_question=teacher_question or None,
+                    zoom_url=zoom_url or None,
+                    agenda=agenda or None,
+                    slack_channel_id=slack_channel_id or None,
                 ),
             )
             written += 1
 
     log.info("sessions loaded %s", summarize(read=read, written=written, skipped=skipped))
     return LoadSummary(read, written, skipped)
+
+
+def list_fellows(
+    conn: psycopg.Connection, cohort_id: str | None = None
+) -> list[dict[str, Any]]:
+    """The roster, for a screen to show. Ordered by name so it reads as a list."""
+    return fetch_all(
+        conn,
+        """
+        select fellow_id, cohort_id, full_name, primary_email, status, timezone
+          from fellow
+         where (%s::text is null or cohort_id = %s::text)
+         order by full_name, fellow_id
+        """,
+        (cohort_id, cohort_id),
+    )
+
+
+def set_fellow_timezone(
+    conn: psycopg.Connection, fellow_id: str, timezone: str | None
+) -> bool:
+    """Set (or clear) one fellow's IANA zone.
+
+    The same validation the CSV path applies, in the same place, so a zone typed
+    into the console cannot be one the loader would have rejected. A blank value
+    clears it — a fellow with no zone is legal, and reminders fall back to the
+    session's zone.
+    """
+    zone = (timezone or "").strip() or None
+    if zone is not None:
+        from .timeutil import get_zone
+
+        get_zone(zone)  # raises TimezoneError on an unknown name
+    return bool(
+        execute(
+            conn,
+            "update fellow set timezone = %s, updated_at = now() where fellow_id = %s",
+            (zone, fellow_id),
+        )
+    )
 
 
 def _parse_local(value: str) -> datetime:

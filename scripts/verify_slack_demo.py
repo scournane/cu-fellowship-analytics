@@ -47,7 +47,9 @@ def main() -> int:
 
         # 1. Every accepted, non-skipped delivery is in the table.
         accepted = [e for e in log if e["status"] == 200 and not e["note"]]
-        skippable = [e for e in accepted if e["kind"].startswith("message/bot_message")]
+        # Accepted deliveries that are meant to leave no row: a bot's own
+        # message, and a file that turns out not to be a canvas.
+        skippable = [e for e in accepted if e["kind"].startswith("message/bot_message") or "(not a canvas)" in e["kind"]]
         expected_min = len(accepted) - len(skippable)
         check(
             f"every accepted delivery is recorded ({n} rows, ≥{expected_min} unique deliveries)",
@@ -108,6 +110,35 @@ def main() -> int:
         # 9. Immutability trigger exists.
         trig = fetch_one(conn, "select 1 as ok from pg_trigger where tgname = 'slack_event_no_mutation'")
         check("slack_event immutability trigger installed", bool(trig))
+
+        # 10. The newer signals arrived and are shaped as designed.
+        huddle = fetch_one(conn, "select count(*) filter (where event_type = 'huddle_joined') as j, count(*) filter (where event_type = 'huddle_left') as l, count(*) filter (where event_type like 'huddle%' and channel_id is not null) as with_channel from slack_event") or {}
+        check(f"huddle joins and leaves recorded ({huddle.get('j')} joins, {huddle.get('l')} leaves)", (huddle.get("j") or 0) >= 2 and (huddle.get("l") or 0) >= 1)
+        check("huddle rows carry no channel (Slack sends none)", (huddle.get("with_channel") or 0) == 0)
+        canvas = fetch_one(conn, "select count(*) filter (where event_type = 'canvas_created') as c, count(*) filter (where event_type = 'canvas_edited') as e, count(*) filter (where event_type = 'canvas_edited' and slack_user_id is not null) as attributed_edits, count(*) filter (where event_type = 'canvas_comment') as m from slack_event") or {}
+        check(f"canvas created/edited/commented recorded ({canvas.get('c')}/{canvas.get('e')}/{canvas.get('m')})", all((canvas.get(k) or 0) >= 1 for k in ("c", "e", "m")))
+        check("a canvas edit is not attributed to anyone (Slack names no editor)", (canvas.get("attributed_edits") or 0) == 0)
+        pdf = (fetch_one(conn, "select count(*) as n from slack_file where not is_canvas") or {})["n"]
+        pdf_rows = (fetch_one(conn, "select count(*) as n from slack_event e join slack_file f on f.team_id = e.team_id and f.file_id = e.file_id where not f.is_canvas") or {})["n"]
+        check("a non-canvas file was looked up and skipped", pdf >= 1 and pdf_rows == 0)
+        mentioned = (fetch_one(conn, "select count(*) as n from slack_event where cardinality(mentions) > 0") or {})["n"]
+        check(f"@-mentions extracted before the text was dropped ({mentioned} messages)", mentioned >= 1)
+        votes = fetch_one(conn, "select count(*) as rows, count(distinct slack_user_id) as people from slack_event where event_type = 'poll_vote'") or {}
+        check(f"poll votes recorded as observations ({votes.get('rows')} votes from {votes.get('people')} people; a changed vote is a new row)", (votes.get("rows") or 0) >= 4 and (votes.get("people") or 0) >= 3)
+        latest = fetch_all(conn, """
+            select poll_choice, count(*) as n from (
+                select distinct on (slack_user_id) slack_user_id, poll_choice
+                  from slack_event where event_type = 'poll_vote'
+                 order by slack_user_id, event_time_utc desc) t group by 1""")
+        check(f"poll counts each person's latest vote once ({', '.join(f'{r['poll_choice']}={r['n']}' for r in latest)})", sum(r["n"] for r in latest) == (votes.get("people") or 0))
+
+        # 11. The insights never rank received recognition or name emoji users.
+        from cufa.slack.insights import emoji_mood, reply_graph
+        mood = emoji_mood(conn, args.cohort)
+        check("emoji mood is cohort-level (no user in the output)", not any(k in json.dumps(mood) for k in ("user", "email", "fellow")))
+        graph = reply_graph(conn, args.cohort)
+        check("reply graph reports nobody-replied-to alphabetically, never a received count",
+              "received" not in json.dumps(graph) and graph["not_replied_to"] == sorted(graph["not_replied_to"], key=lambda r: (r["full_name"], r["fellow_id"])))
 
     print("=" * 62)
     if failures:

@@ -57,6 +57,8 @@ class FakeWorkspace:
     bot_user_id: str = BOT_USER_ID
     users: dict[str, dict[str, Any]] = field(default_factory=dict)
     channels: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: file_id -> what files.info would say. Canvases and ordinary files both.
+    files: dict[str, dict[str, Any]] = field(default_factory=dict)
     #: channel_id -> messages, oldest first. What conversations.history reads.
     history: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     #: Everything chat.postMessage was asked to send.
@@ -291,6 +293,69 @@ class FakeWorkspace:
             "event_ts": self.next_ts(),
         }
 
+    # -- the newer kinds of act ------------------------------------------------
+
+    def huddle_event(self, user_id: str, *, joined: bool = True, call_id: str | None = None) -> dict[str, Any]:
+        """``user_huddle_changed`` as Slack sends it: the whole user object,
+        with the huddle state on the profile and no channel anywhere."""
+        user = dict(self.users[user_id])
+        profile = dict(user.get("profile") or {})
+        profile["huddle_state"] = "in_a_huddle" if joined else "default"
+        profile["huddle_state_call_id"] = call_id or self.next_id("R")
+        user["profile"] = profile
+        return {"type": "user_huddle_changed", "user": user, "event_ts": self.next_ts(), "team": self.team_id}
+
+    def add_file(self, owner_id: str, *, canvas: bool = True, file_id: str | None = None) -> str:
+        fid = file_id or self.next_id("F")
+        self.files[fid] = {
+            "id": fid,
+            "user": owner_id,
+            "filetype": "canvas" if canvas else "pdf",
+            "mode": "canvas" if canvas else "hosted",
+            "title": "(not returned to callers who only need the type)",
+        }
+        return fid
+
+    def file_created_event(self, file_id: str, user_id: str) -> dict[str, Any]:
+        return {"type": "file_created", "file_id": file_id, "user_id": user_id, "file": {"id": file_id}, "event_ts": self.next_ts()}
+
+    def file_change_event(self, file_id: str) -> dict[str, Any]:
+        # Slack sends no user on file_change. That absence is the point.
+        return {"type": "file_change", "file_id": file_id, "file": {"id": file_id}, "event_ts": self.next_ts()}
+
+    def file_shared_event(self, file_id: str, user_id: str, channel_id: str) -> dict[str, Any]:
+        return {"type": "file_shared", "file_id": file_id, "user_id": user_id, "channel_id": channel_id, "file": {"id": file_id}, "event_ts": self.next_ts()}
+
+    def file_comment_event(self, file_id: str, user_id: str, text: str = "nice") -> dict[str, Any]:
+        ts = self.next_ts()
+        return {
+            "type": "file_comment_added",
+            "file_id": file_id,
+            "file": {"id": file_id},
+            "comment": {"id": self.next_id("Fc"), "user": user_id, "created": int(float(ts)), "comment": text},
+            "event_ts": ts,
+        }
+
+    def poll_vote_payload(self, user_id: str, channel_id: str, poll_id: str, choice: str, *, message_ts: str) -> dict[str, Any]:
+        """The ``block_actions`` body Slack POSTs when a poll button is pressed."""
+        return {
+            "type": "block_actions",
+            "team": {"id": self.team_id},
+            "user": {"id": user_id, "team_id": self.team_id},
+            "channel": {"id": channel_id},
+            "message": {"ts": message_ts},
+            "trigger_id": f"{self.next_ts()}.trigger",
+            "actions": [
+                {
+                    "type": "button",
+                    "action_id": "cufa_poll_vote",
+                    "block_id": f"cufa_poll:{poll_id}",
+                    "value": choice,
+                    "action_ts": self.next_ts(),
+                }
+            ],
+        }
+
     def envelope(self, event: dict[str, Any], *, event_id: str | None = None) -> dict[str, Any]:
         """The Events API wrapper Slack POSTs to the request URL."""
         return {
@@ -363,8 +428,11 @@ class FakeSlackWebClient:
         wanted = set((types or "public_channel").split(","))
         rows = [
             ch for ch in self.ws.channels.values()
-            if ("private_channel" in wanted and ch["is_private"])
-            or ("public_channel" in wanted and not ch["is_private"])
+            if not ch.get("is_im")
+            and (
+                ("private_channel" in wanted and ch["is_private"])
+                or ("public_channel" in wanted and not ch["is_private"])
+            )
         ]
         return self._page(rows, "channels", cursor, limit)
 
@@ -410,10 +478,46 @@ class FakeSlackWebClient:
 
     def chat_postMessage(self, *, channel: str, text: str = "", **kwargs: Any) -> dict[str, Any]:
         self._record("chat.postMessage", channel=channel)
+        to_user: str | None = None
+        if channel in self.ws.users:
+            # Slack accepts a user id here and opens/resumes the bot's 1:1 DM.
+            # Keep that behavior in the fake so tests prove DMs are not channel
+            # posts without needing im:history or any inbound DM scope.
+            to_user = channel
+            resolved = next(
+                (
+                    cid
+                    for cid, record in self.ws.channels.items()
+                    if record.get("is_im") and record.get("user") == channel
+                ),
+                None,
+            )
+            if resolved is None:
+                resolved = self.ws.next_id("D")
+                self.ws.channels[resolved] = {
+                    "id": resolved,
+                    "name": None,
+                    "is_private": True,
+                    "is_member": True,
+                    "is_channel": False,
+                    "is_group": False,
+                    "is_im": True,
+                    "user": channel,
+                }
+                self.ws.history[resolved] = []
+            channel = resolved
         if channel not in self.ws.channels:
             raise _err("chat.postMessage", "channel_not_found")
         ts = self.ws.next_ts()
-        self.ws.posted.append({"channel": channel, "text": text, "ts": ts, **{k: v for k, v in kwargs.items() if k in ("blocks", "thread_ts")}})
+        self.ws.posted.append(
+            {
+                "channel": channel,
+                "to_user": to_user,
+                "text": text,
+                "ts": ts,
+                **{k: v for k, v in kwargs.items() if k in ("blocks", "thread_ts")},
+            }
+        )
         return {"ok": True, "channel": channel, "ts": ts, "message": {"text": text, "ts": ts}}
 
     # -- pagination -----------------------------------------------------------
@@ -434,8 +538,16 @@ class FakeSlackWebClient:
 
     # -- HTTP dispatch (used by the demo server) -------------------------------
 
+    def files_info(self, *, file: str, **kwargs: Any) -> dict[str, Any]:
+        self._record("files.info", file=file)
+        record = self.ws.files.get(file)
+        if not record:
+            raise _err("files.info", "file_not_found")
+        return {"ok": True, "file": dict(record)}
+
     METHODS = {
         "auth.test": "auth_test",
+        "files.info": "files_info",
         "users.info": "users_info",
         "users.list": "users_list",
         "conversations.list": "conversations_list",

@@ -881,3 +881,55 @@ The switch exists because the data owner may decide otherwise for a specific
 workspace — for the muddiest-point-style clustering that Part B does on form
 answers, say. That is her decision to take, and taking it should be one line in
 `.env`, not a code change.
+
+---
+
+## ADR-032 — More Slack signals, under the rules that already exist
+
+**Context.** The Director of Programs asked for a who-replies-to-whom graph to
+spot fellows nobody talks to, mentions, huddle joins and leaves, canvas edits
+and comments, emoji as a cohort mood, channel liveness, time-of-day patterns
+so reminders land when people are around, and votes on polls the bot runs.
+Several of these are one query away from a leaderboard.
+
+**Decision.** All of them go into `slack_event`, the one immutable observation
+stream, rather than into tables of their own — one idempotency key, one
+identity resolution, one provenance, one immutability trigger. Two of the
+table's invariants are relaxed, narrowly and by check constraint: a huddle row
+has no channel because Slack sends none, and a canvas edit has no actor
+because `file_change` names none. Both are recorded honestly empty rather
+than attributed by guess.
+
+The reading rules, each enforced by a test that inspects the query or its
+output:
+
+* **Received recognition is never ranked.** The reply graph and the mentions
+  array are read for *absence*: an alphabetical list of active fellows with
+  no inbound reply and no inbound mention, marked with whether they posted at
+  all. Edges are ordered by the giver. There is no "replies received" or
+  "mentions received" figure anywhere. This extends ADR-028 from shoutouts to
+  every form of recognition the bot can see.
+* **Emoji is a cohort mood, never a personal one.** `emoji_mood` takes a
+  cohort and a window; its SQL has no user column.
+* **Rhythm serves the fellow.** Time-of-day is read in each fellow's own zone.
+  Per fellow, it stands in for the deployment's *default* quiet hours when
+  there is enough activity to trust, and never overrides quiet hours the
+  fellow set themselves. It is not reported per person.
+* **Polls report totals.** Who voted for what is recorded — it is
+  participation — and never listed; the bot never edits a running tally into
+  the message.
+
+**Rejected.** A separate table per signal (four copies of the same
+guarantees). Attributing canvas edits to the canvas owner (a guess presented
+as a fact). Inferring the huddle's channel from the "started a huddle" message
+(a join is not a message; counting the line double-counts). A "most replied
+to" list, however it was labelled. Per-fellow emoji profiles. Storing canvas
+titles. Live tallies in the poll message.
+
+**Why.** The purpose named for the graph was finding the person nobody talks
+to. That is a question about absence, and it can be answered without ever
+producing a ranking of presence — so it is. The research behind ADR-028 is
+the same here: ranking received recognition builds a popularity contest and
+rewards the already-visible. Everything in this ADR is designed so that the
+worst thing an inherited copy of this database can do is count how many
+people used the fire emoji in a given week.

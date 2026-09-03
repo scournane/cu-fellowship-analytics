@@ -267,7 +267,8 @@ def pull_session_b(
             """
             update session_form
                set response_watermark = coalesce(%s, response_watermark),
-                   last_polled_at = now()
+                   last_polled_at = now(),
+                   last_successful_poll_at = now()
              where session_id = %s and part = 'b'
             """,
             (newest_seen, session_id),

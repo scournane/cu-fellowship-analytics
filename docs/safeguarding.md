@@ -166,6 +166,21 @@ stays out of them.
 
 ---
 
+## The reminder pressure boundary
+
+Part B reminders use only the absence of a submission after the form closes.
+They never use a response, attendance decision, confidence score, or help
+request. Before each DM, the bot refreshes the form and checks that the fellow
+is still missing so delayed data does not cause a false nudge.
+
+A fellow can receive at most **two** Part B nudges for a session. The second
+says it is the last. Both the scheduler and a database constraint enforce that
+limit; a third message is treated as pressure, not persistence. Fellows can
+choose fewer or later reminders, disable all personal messages, and set quiet
+hours in their own timezone with `/cufa-reminders`.
+
+---
+
 ## The open question: how long these are kept
 
 **CU has not decided a retention period, and this system has not invented one.**

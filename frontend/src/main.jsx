@@ -7,10 +7,13 @@ import {Theme} from '@astryxdesign/core/theme'
 import {createRoot} from 'react-dom/client'
 
 import {AppFrame} from './AppFrame.jsx'
+import {AssignmentForm} from './AssignmentForm.jsx'
+import {Assignments} from './Assignments.jsx'
 import {Connect} from './Connect.jsx'
 import {HelpRequests} from './HelpRequests.jsx'
 import {Responses} from './Responses.jsx'
 import {Review} from './Review.jsx'
+import {Roster} from './Roster.jsx'
 import {Rotation} from './Rotation.jsx'
 import {SessionDetail} from './SessionDetail.jsx'
 import {SessionForm} from './SessionForm.jsx'
@@ -38,6 +41,9 @@ const SCREENS = {
   connect: Connect,
   template: TemplateSetup,
   sessions: Sessions,
+  assignments: Assignments,
+  assignmentForm: AssignmentForm,
+  roster: Roster,
   sessionForm: SessionForm,
   sessionDetail: SessionDetail,
   responses: Responses,
