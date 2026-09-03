@@ -15,7 +15,7 @@
   <path d="M 106 360 C 100 250, 170 184, 256 184 C 342 184, 412 250, 406 360 L 406 380 L 106 380 Z" fill="#EF9F1E"/>
   <clipPath id="dome"><path d="M 106 360 C 100 250, 170 184, 256 184 C 342 184, 412 250, 406 360 L 406 380 L 106 380 Z"/></clipPath>
   <path d="M 106 360 C 100 250, 170 184, 256 184 C 342 184, 412 250, 406 360 L 406 380 L 106 380 Z" fill="#FFC629" clip-path="url(#dome)" transform="translate(-22,-8)"/>
-  
+  <circle cx="174" cy="318" r="20" fill="#FFA35A"/><circle cx="338" cy="318" r="20" fill="#FFA35A"/><path d="M 232.19 269.74 A 30 30 0 0 0 175.81 269.74" stroke="#0B7A66" stroke-width="34" fill="none" stroke-linecap="round"/><path d="M 336.19 269.74 A 30 30 0 0 0 279.81 269.74" stroke="#0B7A66" stroke-width="34" fill="none" stroke-linecap="round"/>
   <!-- base plate -->
   <rect x="86" y="362" width="340" height="42" rx="21" fill="#D3E8E2"/>
   <rect x="86" y="350" width="340" height="42" rx="21" fill="#FFFFFF"/>

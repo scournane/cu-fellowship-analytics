@@ -1,13 +1,12 @@
 # CU Fellowship Analytics — Slack bot icon
 
-**Mark: "Ding" — the check-in bell.**
+**Mark: "Ding" — the check-in bell, with a face.**
 
 A front-desk bell is the one everyday object that already means *"I'm here"*
 and *"someone needs a hand"* at the same time, from the staff side of the
 counter. Ringing it is a signal, not surveillance; answering it is care. The
-sound arcs give it motion, the brass dome gives it warmth, and the whole thing
-is a chunky object caught mid-gesture rather than a featureless figure or an
-abstract glyph.
+sound arcs give it motion, the brass dome gives it warmth, and two closed happy
+eyes make it a companion rather than a fixture — it's pleased you showed up.
 
 | File | Use |
 | --- | --- |
@@ -16,7 +15,7 @@ abstract glyph.
 | `cufa-icon.svg` | Master vector, 512-unit grid. Source of truth. |
 | `cufa-mark-on-dark.png/.svg` | Transparent mark, white + brass. For dark surfaces (Slack dark sidebar, dark slides). |
 | `cufa-mark-on-light.png/.svg` | Transparent mark, deep-teal + brass. For light surfaces (docs, white slides). |
-| `cufa-icon-face-512.png` | Bonus: the bell with closed happy eyes. See *Face variant* below. |
+| `cufa-icon-plain-512.png` | Alt: the same bell without the face. See *Plain variant* below. |
 | `concepts/` | The four concepts at 512 plus a contact sheet. |
 | `checks/` | Tiny-size, dark/light mode, monochrome and grayscale checks. |
 | `build_logo.py` | Regenerates everything. `pip install cairosvg pillow && python assets/logo/build_logo.py` |
@@ -28,10 +27,10 @@ abstract glyph.
 All four were rendered on the same system palette so the comparison is about
 the idea, not the colour. `concepts/concepts-sheet.png` shows them together.
 
-### 1. Ding — check-in desk bell  ✅ chosen
+### 1. Ding — check-in desk bell
 *A desk bell is the universal "I'm here / can someone help" object, and its ring is a signal you answer, not a thing you watch.*
 
-- **36 px:** brass dome + white base + two white arcs read as "bell ringing". The knob softens to a nub at 24 px and below, so the arcs carry the "signal" read; at 16–20 px it simplifies to "gold bell on a plate", which is still distinct against blue/purple bot icons.
+- **36 px:** brass dome + white base + two white arcs read as "bell ringing". Safest small-size read of the set; kept as the plain alt.
 - **Palette:** signal teal `#12C2A4` · white `#FFFFFF` · sunny brass `#FFC629` · deep teal `#0B7A66` (+ shade tones `#EF9F1E`, `#D3E8E2`).
 
 ### 2. Hey — waving hand
@@ -46,20 +45,20 @@ the idea, not the colour. `concepts/concepts-sheet.png` shows them together.
 - **36 px:** reads as a golf hole marker, and "flag" carries a "flagged for review" connotation in ops language. Dropped.
 - **Palette:** same system; alt field sky `#2F9BFF` reads more "outdoors / summit".
 
-### 4. Ding with a face
-*Same bell, two closed happy eyes — the direct Duolingo move.*
+### 4. Ding with a face  ✅ chosen
+*Same bell, two closed happy eyes and a touch of blush — the warmth the brief's "youth-centered, cared for" read needs.*
 
-- **36 px:** the eyes become 1.5 px smudges, which is exactly the "mascot face with tiny features" trap in the brief. Charming at 128 px+. Kept as a bonus asset, not the icon.
-- **Palette:** same system; eyes in deep teal `#0B7A66`.
+- **36 px:** as first drawn the eyes were 1.5 px smudges. The final version bumps them to r 30 / stroke 34 (≈ 3.3 px tall at 36 px) and pulls them closer together, so they read as two dark arcs down to 32 px. At 20 px (Slack's sidebar) they merge into a single dark band across the dome — it reads as "smiling gold bell", not as individual eyes, which is fine. The blush fades to a faint warm tint below 48 px and disappears by 24 px; it never becomes clutter.
+- **Palette:** same system + cheek blush `#FFA35A`.
 
-**Why 1 over 4:** the brief's small-size read is "clear signal / check-in / people cared for". The plain bell delivers all three at 36 px with zero features that can degrade. The face adds warmth only at sizes Slack rarely shows.
+**Why 4 over 1:** the plain bell is the safer small-size mark, but it's a fixture. The face is what makes the bot feel like a colleague on the staff side of the counter — the thing the brief calls "care, clarity, momentum". The eye sizing above is what makes that choice hold at Slack's sizes; the closed-eye shape is deliberate: no pupils, nothing that can read as watching.
 
 ---
 
 ## Final mark — construction notes
 
 Authored on a **512 × 512** grid (1 unit = 2 px in the 1024 master). All
-geometry is circles, pills, one cubic-bezier dome and three arcs — nothing
+geometry is circles, pills, one cubic-bezier dome and five arcs — nothing
 that needs a boolean or a gradient.
 
 ### Background
@@ -83,20 +82,25 @@ Minimum padding 54 units top (10.5 %), 75 units each side (15 %).
 | 4 | Knob | pill 92 × 50, rx 25 at (210, 150) | `#FFFFFF` |
 | 5 | Dome, shade layer | `M 106 360 C 100 250,170 184,256 184 C 342 184,412 250,406 360 L 406 380 L 106 380 Z` | `#EF9F1E` |
 | 6 | Dome, lit layer | same path, clipped to itself, `translate(-22,-8)` — leaves a shade crescent down the right side | `#FFC629` |
-| 7 | Plate shade | rect 340 × 42, rx 21 at (86, 362) | `#D3E8E2` |
-| 8 | Base plate | rect 340 × 42, rx 21 at (86, 350) | `#FFFFFF` |
+| 7 | Blush (×2) | circles c(174, 318) and c(338, 318), r 20 | `#FFA35A` |
+| 8 | Eyes (×2) | arcs centred (204, 280) and (308, 280), r 30, 20°→160° (a ∩) | stroke `#0B7A66`, **34**, round caps, no fill |
+| 9 | Plate shade | rect 340 × 42, rx 21 at (86, 362) | `#D3E8E2` |
+| 10 | Base plate | rect 340 × 42, rx 21 at (86, 350) | `#FFFFFF` |
 
-Two arcs on the right and one on the left: the asymmetry is what makes it
-read as a *ring* rather than a static symbol.
+Two sound arcs on the right and one on the left: the asymmetry is what makes
+it read as a *ring* rather than a static symbol. The eyes stay symmetric —
+calm, content, not glancing at anything.
 
 ### Stroke widths and minimum features
-- Arcs: 34 units (≈ 36 after scale) → **2.5 px at 36 px**, 1.4 px at 20 px.
+- Sound arcs and eyes: 34 units (≈ 36 after scale) → **2.5 px at 36 px**, 1.4 px at 20 px.
+- Eye overall height: 47 units → 3.3 px at 36 px. Gap between the eyes: 10 units.
 - Knob: 50 units tall → 3.5 px at 36 px.
 - Plate: 42 units tall → 3 px at 36 px.
-- Nothing thinner than 34 units anywhere.
+- Blush: 40 units across → 2.8 px at 36 px, but low-contrast by design (luma 182 on 197), so it reads as warmth, never as a dot.
+- Nothing structural is thinner than 34 units.
 
 ### Colour
-Four main colours plus one derived shade each for the two lit surfaces.
+Four main colours, one derived shade each for the two lit surfaces, and the blush.
 
 | Role | Hex | Grayscale luma |
 | --- | --- | --- |
@@ -105,18 +109,25 @@ Four main colours plus one derived shade each for the two lit surfaces.
 | White shade | `#D3E8E2` | 225 |
 | Sunny brass (dome) | `#FFC629` | 197 |
 | Brass shade | `#EF9F1E` | 168 |
-| Deep teal (shadow) | `#0B7A66` | 86 |
+| Cheek blush | `#FFA35A` | 182 |
+| Deep teal (shadow, eyes) | `#0B7A66` | 86 |
 
 Lumas are spread 86 / 139 / 197 / 255 across the four main colours, which is
-why `checks/grayscale.png` still reads. Nothing in here is Slack's aubergine
-(`#4A154B`) or its four hash colours (`#36C5F0 #2EB67D #ECB22E #E01E5A`), and
-the teal is well away from Duolingo green (`#58CC02`).
+why `checks/grayscale.png` still reads — including the eyes, at 86 on 197.
+Nothing in here is Slack's aubergine (`#4A154B`) or its four hash colours
+(`#36C5F0 #2EB67D #ECB22E #E01E5A`), and the teal is well away from Duolingo
+green (`#58CC02`).
 
 ### Transparent variants
 The mark is mostly white, so a single transparent PNG can't work on both
 surfaces. Two are provided, both without the ground shadow:
-- **on-dark:** white + brass, as in the icon.
-- **on-light:** the white parts swapped to deep teal `#0B7A66` (shade `#075C4C`), brass unchanged.
+- **on-dark:** white + brass, eyes deep teal, as in the icon.
+- **on-light:** the white parts swapped to deep teal `#0B7A66` (shade `#075C4C`), brass and eyes unchanged.
+
+### Monochrome
+In a single colour the eyes would vanish into the dome, so the mono renders
+knock them out in the background colour — negative space — and drop the blush.
+The silhouette still reads as the smiling bell.
 
 ---
 
@@ -124,12 +135,11 @@ surfaces. Two are provided, both without the ground shadow:
 
 - `checks/tiny-16-to-64.png` — 16 / 20 / 24 / 32 / 36 / 48 / 64 px, Lanczos-downsampled, shown at 3×.
 - `checks/dark-light-modes.png` — Slack-style sidebar rows at 20 px (light `#F8F8F8`, dark `#19171D`) and 36–192 px tiles with the ~22 % mask applied.
-- `checks/mono-white-on-deep.png`, `checks/mono-ink-on-white.png` — single-colour silhouette. The bell + arcs outline holds without any interior shading.
+- `checks/mono-white-on-deep.png`, `checks/mono-ink-on-white.png` — single-colour silhouette with knocked-out eyes.
 - `checks/grayscale.png` — desaturated icon.
 
-## Face variant
+## Plain variant
 
-`cufa-icon-face-512.png` is the same construction plus two eye arcs
-(centres (212, 290) and (300, 290), r 26, 20°→160°, stroke 28, `#0B7A66`).
-Use it for larger-format moments — a welcome message header, a custom emoji
-(`:ding:`), a bot "reaction" — not as the app icon.
+`cufa-icon-plain-512.png` is the same construction without rows 7–8. Use it
+where a face would be out of place — a favicon for an admin dashboard, a
+print mark, a tiny 16 px context where the eyes are just a band anyway.

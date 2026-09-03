@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reproducible builder for the CU Fellowship Analytics Slack bot icon ("Ding").
+"""Reproducible builder for the CU Fellowship Analytics Slack bot icon ("Ding" — the check-in bell, with a face).
 
     pip install cairosvg pillow
     python assets/logo/build_logo.py
@@ -22,7 +22,8 @@ P = dict(
     wsh="#D3E8E2",     # white shade      (underside of button / plate)
     sun="#FFC629",     # sunny brass      (bell dome)
     sunsh="#EF9F1E",   # brass shade      (dome crescent)
-    deep="#0B7A66",    # deep teal        (ground shadow, eyes on face variant)
+    deep="#0B7A66",    # deep teal        (ground shadow, eyes)
+    blush="#FFA35A",   # cheek blush      (two soft circles on the dome)
 )
 
 # ---------------------------------------------------------------- geometry helpers
@@ -56,14 +57,19 @@ def render(svg_text, path, px, keep_svg=False):
 # shade crescent never forms a visible band at the dome's foot
 DOME = "M 106 360 C 100 250, 170 184, 256 184 C 342 184, 412 250, 406 360 L 406 380 L 106 380 Z"
 
-def ding(p=P, face=False, bg=None, mono=None, shadow=True):
-    """The bell mark.  mono=<hex> renders a single-colour silhouette."""
+def ding(p=P, face=True, bg=None, mono=None, shadow=True, blush=True):
+    """The bell mark.  mono=<hex> renders a single-colour silhouette (eyes are
+    knocked out in the background colour so the face survives in one colour)."""
     if mono:
-        p = dict(field=p["field"], white=mono, wsh=mono, sun=mono, sunsh=mono, deep=mono)
+        p = dict(p, white=mono, wsh=mono, sun=mono, sunsh=mono, deep=mono)
     eyes = ""
     if face:
-        eyes = (f'<path d="{arc(212,290,26,20,160)}" stroke="{p["deep"]}" stroke-width="28" fill="none" stroke-linecap="round"/>'
-                f'<path d="{arc(300,290,26,20,160)}" stroke="{p["deep"]}" stroke-width="28" fill="none" stroke-linecap="round"/>')
+        eye_col = (bg or p["field"]) if mono else p["deep"]
+        if blush and not mono:
+            eyes += (f'<circle cx="174" cy="318" r="20" fill="{p["blush"]}"/>'
+                     f'<circle cx="338" cy="318" r="20" fill="{p["blush"]}"/>')
+        eyes += "".join(f'<path d="{arc(x,280,30,20,160)}" stroke="{eye_col}" stroke-width="34" '
+                        f'fill="none" stroke-linecap="round"/>' for x in (204, 308))
     ground = f'<ellipse cx="256" cy="404" rx="160" ry="18" fill="{p["deep"]}"/>' if shadow else ""
     body = f'''
 <g transform="translate(256,256) scale(1.05) translate(-256,-250)">
@@ -195,11 +201,11 @@ def main():
     render(ding(bg=None, shadow=False), os.path.join(HERE, "cufa-mark-on-dark.png"), 1024, keep_svg=True)
     p_light = dict(P, white=P["deep"], wsh="#075C4C")
     render(ding(p=p_light, bg=None, shadow=False), os.path.join(HERE, "cufa-mark-on-light.png"), 1024, keep_svg=True)
-    # bonus: face variant (see README — not the Slack icon)
-    render(ding(face=True, bg=P["field"]), os.path.join(HERE, "cufa-icon-face-512.png"), 512)
+    # alt: the same bell without the face (see README)
+    render(ding(face=False, bg=P["field"]), os.path.join(HERE, "cufa-icon-plain-512.png"), 512)
 
     # concepts
-    cs = [("1-ding-bell", ding(bg=P["field"])), ("2-hey-hand", hand()),
+    cs = [("1-ding-bell", ding(face=False, bg=P["field"])), ("2-hey-hand", hand()),
           ("3-here-flag", flag()), ("4-ding-face", ding(face=True, bg=P["field"]))]
     cpaths = [render(s, os.path.join(CONCEPTS, f"concept-{n}-512.png"), 512) for n, s in cs]
     sheet(cpaths, os.path.join(CONCEPTS, "concepts-sheet.png"))
