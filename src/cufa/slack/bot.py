@@ -39,14 +39,17 @@ from ..errors import ConfigError
 from ..ingest.common import IngestResult, finish_load_run, start_load_run
 from ..logging_setup import configure_logging, get_logger
 from .events import Skipped, parse_event
+from .qa import QaService, build_qa_service
 from .store import RecordOutcome, WorkspaceInfo, ensure_workspace, resolve_and_record, stats, touch_load_run
 
 log = get_logger(__name__)
 
 #: One listener, matched on event type alone. Bolt's string form is
 #: subtype-agnostic too, but a pattern makes the set explicit in one place.
+#: ``app_mention`` is the only one that is not a participation event: it is
+#: how a teacher asks for a Q&A summary, and it is routed to the Q&A service.
 EVENT_PATTERN = re.compile(
-    r"^(message|reaction_added|reaction_removed|member_joined_channel|member_left_channel)$"
+    r"^(message|reaction_added|reaction_removed|member_joined_channel|member_left_channel|app_mention)$"
 )
 
 
@@ -89,7 +92,7 @@ class EventProcessor:
     a collector that matters most, and the one nobody notices otherwise.
     """
 
-    def __init__(self, settings: Settings, client: Any) -> None:
+    def __init__(self, settings: Settings, client: Any, *, qa: QaService | None = None) -> None:
         self.settings = settings
         self.client = client
         self.workspace: WorkspaceInfo | None = None
@@ -97,6 +100,9 @@ class EventProcessor:
         self.started_at: float | None = None
         self.counts: Counter[str] = Counter()
         self._lock = threading.Lock()
+        #: The Q&A service, when CUFA_SLACK_QA_CHANNELS names any channel.
+        #: Injectable so a test can hand in one with a stub matcher.
+        self.qa: QaService | None = qa
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -109,11 +115,14 @@ class EventProcessor:
                 origin=self.workspace.team_id,
                 cohort_id=self.workspace.cohort_id,
             )
+            if self.qa is None:
+                self.qa = build_qa_service(self.settings, self.client, self.workspace)
+            qa_ids = self.qa.resolve_channels(conn) if self.qa is not None else set()
         self.started_at = time.time()
         log.info(
-            "slack bot connected team=%s (%s) cohort=%s store_text=%s load=%s",
+            "slack bot connected team=%s (%s) cohort=%s store_text=%s qa_channels=%d load=%s",
             self.workspace.team_id, self.workspace.team_name,
-            self.workspace.cohort_id, self.settings.slack_store_text, self.load_id,
+            self.workspace.cohort_id, self.settings.slack_store_text, len(qa_ids), self.load_id,
         )
         return self.workspace
 
@@ -149,11 +158,52 @@ class EventProcessor:
                         written=1 if outcome.status == "written" else 0,
                         skipped=0 if outcome.status == "written" else 1,
                     )
+            # Q&A runs AFTER the participation row is committed and on its own
+            # connection: a failure here must never cost the observation. Only a
+            # newly written act is considered, so a retried delivery cannot post
+            # a second pointer.
+            if self.qa is not None and outcome.status == "written":
+                self._observe_qa(event, team_id)
         with self._lock:
             self.counts[outcome.status] += 1
             if retry_num:
                 self.counts["retries_seen"] += 1
         return outcome
+
+    def _observe_qa(self, event: dict[str, Any], team_id: str) -> None:
+        assert self.qa is not None
+        label: str | None
+        try:
+            with connection(self.settings) as conn:
+                label = self.qa.observe(conn, event, team_id)
+        except Exception as exc:  # noqa: BLE001 - never into the event path
+            log.exception("qa observe failed: %s", exc)
+            label = "error"
+        if label:
+            with self._lock:
+                self.counts["qa_events"] += 1
+                if label.endswith("+pointer"):
+                    self.counts["qa_pointers"] += 1
+                if label == "error":
+                    self.counts["qa_errors"] += 1
+
+    def handle_mention(self, event: dict[str, Any], team_id: str, *, retry_num: int | None = None) -> dict[str, Any]:
+        """``@bot …``. A retried delivery is ignored: the first one is being
+        handled (a summary can take longer than Slack's 3 s), and answering it
+        twice would post the summary twice."""
+        if self.qa is None:
+            return {"intent": "ignored", "reason": "no Q&A channels configured"}
+        if retry_num:
+            return {"intent": "ignored", "reason": "retry"}
+        try:
+            with connection(self.settings) as conn:
+                result = self.qa.handle_mention(conn, event)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("mention handling failed: %s", exc)
+            result = {"intent": "error", "error": str(exc)}
+        with self._lock:
+            self.counts["mentions"] += 1
+        return result
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -165,6 +215,7 @@ class EventProcessor:
             "load_id": self.load_id,
             "uptime_seconds": int(time.time() - self.started_at) if self.started_at else None,
             "store_text": self.settings.slack_store_text,
+            "qa_channels": self.qa.channel_ids if self.qa is not None else [],
             "this_process": counts,
         }
 
@@ -178,7 +229,10 @@ class EventProcessor:
 REQUIRED_SCOPES = (
     "channels:history", "channels:read", "users:read", "users:read.email", "reactions:read",
 )
-OPTIONAL_SCOPES = ("groups:history", "groups:read", "chat:write")
+OPTIONAL_SCOPES = ("groups:history", "groups:read", "chat:write", "app_mentions:read")
+#: What the Q&A features need on top: posting a pointer or a summary is chat:write;
+#: "@bot summary" needs the mention event, which is app_mentions:read.
+QA_SCOPES = ("chat:write",)
 
 
 def doctor(settings: Settings, *, out: Any = None) -> int:
@@ -222,6 +276,14 @@ def doctor(settings: Settings, *, out: Any = None) -> int:
          fix="set CUFA_SLACK_COHORT to the real cohort id (e.g. cu-2026) in .env")
     line(not settings.slack_store_text, "message text not stored",
          "" if not settings.slack_store_text else "CUFA_SLACK_STORE_TEXT=1 — text WILL be stored")
+    if settings.slack_qa_channels:
+        line(True, "Q&A channels configured",
+             ", ".join("#" + c.lstrip("#") for c in settings.slack_qa_channels)
+             + " — their text IS stored (ADR-032); the bot points repeats at earlier answers")
+        line(True, "GEMINI_API_KEY",
+             "set — paraphrases are matched by the model and summaries are written by it"
+             if settings.gemini_api_key else
+             "not set — matching is by word overlap only and the summary is the plain digest")
 
     # 2. database
     line(ping(settings), "database reachable", fix="make db-up   (Docker must be running)")
@@ -270,6 +332,14 @@ def doctor(settings: Settings, *, out: Any = None) -> int:
         extra = [s for s in OPTIONAL_SCOPES if s in granted]
         if extra:
             line(True, "optional scopes granted", ", ".join(extra))
+        if settings.slack_qa_channels:
+            qa_missing = [s for s in QA_SCOPES if s not in granted]
+            line(not qa_missing, "Q&A scopes granted",
+                 ", ".join(QA_SCOPES) if not qa_missing else "missing: " + ", ".join(qa_missing) + " — pointers and summaries cannot be posted",
+                 fix="OAuth & Permissions → add chat:write → Reinstall to Workspace → copy the NEW token")
+            line(True, "app_mentions:read",
+                 "granted — `@bot summary` works in Slack" if "app_mentions:read" in granted
+                 else "not granted — `@bot summary` will not work; `cufa slack qa summary` still does")
         for bad in ("im:history", "mpim:history", "im:read", "mpim:read"):
             if bad in granted:
                 line(False, f"scope {bad} is granted", "the bot should never read direct messages",
@@ -280,11 +350,13 @@ def doctor(settings: Settings, *, out: Any = None) -> int:
     # 5. channels the bot is actually in
     member: list[str] = []
     visible: list[str] = []
+    seen: list[dict[str, Any]] = []
     try:
         cursor: str | None = None
         while True:
             resp = client.conversations_list(types="public_channel,private_channel", cursor=cursor, limit=200)
             for ch in resp.get("channels") or []:
+                seen.append(ch)
                 visible.append(ch.get("name") or ch["id"])
                 if ch.get("is_member"):
                     member.append(ch.get("name") or ch["id"])
@@ -298,6 +370,17 @@ def doctor(settings: Settings, *, out: Any = None) -> int:
         if not_in:
             line(True, f"{len(not_in)} visible channel(s) the bot is not in",
                  ", ".join("#" + c for c in not_in[:8]) + (" …" if len(not_in) > 8 else ""))
+        # 5b. each Q&A channel: it has to exist, and the bot has to be in it.
+        for wanted in settings.slack_qa_channels:
+            key = wanted.lstrip("#").strip().lower()
+            found = next((ch for ch in seen if (ch.get("name") or "").lower() == key or ch["id"] == wanted), None)
+            if found is None:
+                line(False, f"Q&A channel #{key}", "not found in this workspace",
+                     fix="Create it, or fix CUFA_SLACK_QA_CHANNELS in .env (names, comma-separated).")
+            else:
+                line(bool(found.get("is_member")), f"Q&A channel #{key}",
+                     "bot is a member" if found.get("is_member") else "bot is NOT a member — nothing from it is recorded",
+                     fix=f"In Slack:  /invite @<bot name>  in #{key}")
     except SlackApiError as exc:
         error = (getattr(exc, "response", None) or {}).get("error", str(exc))
         line(False, "conversations.list", error, fix="Grant channels:read (and groups:read) and reinstall.")
@@ -377,6 +460,9 @@ def build_bolt_app(settings: Settings, client: WebClient, processor: EventProces
     @app.event(EVENT_PATTERN)
     def on_event(event: dict[str, Any], context: Any, req: BoltRequest) -> None:
         team_id = getattr(context, "team_id", None) or (req.body or {}).get("team_id") or ""
+        if event.get("type") == "app_mention":
+            processor.handle_mention(event, team_id, retry_num=_retry_num(req))
+            return
         processor.process(event, team_id, retry_num=_retry_num(req))
 
     return app
@@ -494,16 +580,18 @@ STATUS_PAGE = """<!doctype html>
 <div class="grid" id="tiles"></div>
 <h3>By type</h3><table id="types"><tr><th>event</th><th>count</th></tr></table>
 <h3 style="margin-top:1.25rem">By channel</h3><table id="channels"><tr><th>channel</th><th>count</th></tr></table>
-<p class="sub" style="margin-top:1.5rem">Refreshes every 3 s. Raw numbers at <code>/stats</code>. No addresses are shown here or logged.</p>
+<p class="sub" style="margin-top:1.5rem">Refreshes every 3 s. Raw numbers at <code>/stats</code>. No addresses are shown here or logged. Q&amp;A tiles count only the channels named in <code>CUFA_SLACK_QA_CHANNELS</code>.</p>
 <script>
 fetch('/stats').then(r=>r.json()).then(s=>{
   const p=s.process, d=s.database;
   document.getElementById('sub').textContent=
     `${p.team_name||'not connected'} · cohort ${p.cohort_id||'—'} · up ${p.uptime_seconds??0}s · text stored: ${p.store_text?'YES':'no'}`;
+  const q=d.qa||{};
   const tiles=[['events recorded',d.events||0],['messages',d.messages||0],['reactions',d.reactions||0],
     ['distinct people',d.distinct_users||0],['on roster',d.users_on_roster||0],['unattributed',d.unattributed_users||0],
     ['written (this process)',(p.this_process||{}).written||0],['duplicates dropped',(p.this_process||{}).duplicate||0],
-    ['retries seen',(p.this_process||{}).retries_seen||0],['awaiting review',d.identity_unresolved_open||0]];
+    ['retries seen',(p.this_process||{}).retries_seen||0],['awaiting review',d.identity_unresolved_open||0],
+    ['Q&A questions',q.questions||0],['Q&A replies',q.answers||0],['"asked before" pointers',q.pointers_posted||0],['Q&A summaries',q.summaries||0]];
   document.getElementById('tiles').innerHTML=tiles.map(([k,v])=>`<div class="tile"><b>${v}</b><span>${k}</span></div>`).join('');
   const fill=(id,obj)=>{const t=document.getElementById(id);Object.entries(obj||{}).forEach(([k,v])=>{const r=t.insertRow();r.insertCell().textContent=k;r.insertCell().textContent=v;});};
   fill('types',d.by_type); fill('channels',d.by_channel);

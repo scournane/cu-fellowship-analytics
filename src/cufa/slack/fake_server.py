@@ -50,6 +50,21 @@ SAMPLE_MESSAGES = (
 )
 REACTIONS = ("thumbsup", "heart", "raised_hands", "fire", "eyes", "tada", "100")
 
+#: What the Q&A buttons post when the text box is empty. The last one is a
+#: paraphrase of the first, so "ask it again" has something to match.
+SAMPLE_QUESTIONS = (
+    "does anyone have the slides from tuesday?",
+    "what does 'quorum' mean in this context?",
+    "is the reading due before or after thursday's session?",
+    "can someone share tuesday's slides?",
+)
+SAMPLE_ANSWERS = (
+    "yes — they're pinned in #announcements",
+    "the minimum number of members who have to be present for a vote to count",
+    "before: it's the basis for the discussion",
+)
+QA_CHANNEL = "q-and-a"
+
 
 class FakeSlackHTTPServer:
     def __init__(
@@ -72,6 +87,8 @@ class FakeSlackHTTPServer:
         self.log: deque[dict[str, Any]] = deque(maxlen=200)
         self.last_envelope: dict[str, Any] | None = None
         self.last_messages: dict[str, dict[str, Any]] = {}  # channel -> last message event
+        self.questions: list[dict[str, Any]] = []  # Q&A questions asked, in order
+        self.last_answer: dict[str, Any] | None = None
         self.rng = random.Random(seed)
         self._lock = threading.Lock()
         self._httpd: ThreadingHTTPServer | None = None
@@ -176,10 +193,62 @@ class FakeSlackHTTPServer:
             return {"error": "nothing to replay yet"}
         return self.deliver(env, tamper=True)
 
+    # -- Q&A ------------------------------------------------------------------
+
+    @property
+    def qa_channel(self) -> str:
+        return self.ws.channel_id(QA_CHANNEL)
+
+    def act_qa_ask(self, user: str, text: str = "") -> dict[str, Any]:
+        """A top-level question in #q-and-a."""
+        text = text or SAMPLE_QUESTIONS[len(self.questions) % len(SAMPLE_QUESTIONS)]
+        event = self.ws.message_event(user, self.qa_channel, text)
+        self.questions.append(event)
+        self.last_messages[self.qa_channel] = event
+        return self.deliver(self.ws.envelope(event))
+
+    def act_qa_answer(self, user: str, text: str = "") -> dict[str, Any]:
+        """A reply in the thread of the LAST question."""
+        if not self.questions:
+            return {"error": "ask a question first"}
+        question = self.questions[-1]
+        text = text or SAMPLE_ANSWERS[(len(self.questions) - 1) % len(SAMPLE_ANSWERS)]
+        event = self.ws.message_event(user, self.qa_channel, text, thread_ts=question["ts"])
+        self.last_answer = event
+        return self.deliver(self.ws.envelope(event))
+
+    def act_qa_accept(self, user: str) -> dict[str, Any]:
+        """✅ on the last answer — "this is the answer"."""
+        if not self.last_answer:
+            return {"error": "answer a question first"}
+        return self.deliver(self.ws.envelope(
+            self.ws.reaction_event(user, self.qa_channel, self.last_answer["ts"], "white_check_mark")
+        ))
+
+    def act_qa_again(self, user: str, text: str = "") -> dict[str, Any]:
+        """Ask the FIRST question again, reworded. If it was answered, the bot
+        should reply in this new thread with a link to that answer."""
+        if not self.questions:
+            return {"error": "ask a question first"}
+        first = self.questions[0]["text"]
+        text = text or f"sorry if this was covered already — {first}"
+        return self.act_qa_ask(user, text)
+
+    def act_mention(self, user: str, channel: str, text: str = "summary") -> dict[str, Any]:
+        """``@bot …``. Slack delivers a message event AND an app_mention event
+        for the same post; so does this."""
+        channel = channel or self.qa_channel
+        mention = self.ws.mention_event(user, channel, text)
+        as_message = self.ws.message_event(user, channel, mention["text"], ts=mention["ts"])
+        self.deliver(self.ws.envelope(as_message))
+        return self.deliver(self.ws.envelope(mention))
+
     def act_busy_day(self, n: int = 40, *, quiet_user: str | None = None) -> list[dict[str, Any]]:
         """A plausible day: messages across channels, some threads, reactions, a join."""
         people = [p for p in self.people() if p != quiet_user]
-        public = [cid for cid, ch in self.ws.channels.items() if not ch["is_private"]]
+        # Not the Q&A channel: chatter there would read as questions in the
+        # summary, and the Q&A buttons script that channel deliberately.
+        public = [cid for cid, ch in self.ws.channels.items() if not ch["is_private"] and ch["name"] != QA_CHANNEL]
         out: list[dict[str, Any]] = []
         for _ in range(n):
             roll = self.rng.random()
@@ -219,6 +288,13 @@ class FakeSlackHTTPServer:
             "last_message_ts": {cid: ev.get("ts") for cid, ev in self.last_messages.items()},
             "log": log,
             "api_calls": len(self.client.calls),
+            "qa_channel": self.qa_channel,
+            "questions_asked": len(self.questions),
+            # What the bot said back — the pointers and the summaries.
+            "posted": [
+                {"channel": self._channel_name(p["channel"]), "thread_ts": p.get("thread_ts"), "text": p["text"]}
+                for p in self.ws.posted[-10:]
+            ],
         }
 
     # -- server ---------------------------------------------------------------
@@ -299,6 +375,16 @@ class FakeSlackHTTPServer:
             return self.act_tamper()
         if action == "busy-day":
             return {"delivered": len(self.act_busy_day(int(p.get("n") or 40), quiet_user=p.get("quiet_user") or None))}
+        if action == "qa-ask":
+            return self.act_qa_ask(user, text)
+        if action == "qa-answer":
+            return self.act_qa_answer(user, text)
+        if action == "qa-accept":
+            return self.act_qa_accept(user)
+        if action == "qa-again":
+            return self.act_qa_again(user, text)
+        if action == "mention":
+            return self.act_mention(user, channel, text or "summary")
         return {"error": f"unknown action {action}"}
 
     def start_in_thread(self) -> "FakeSlackHTTPServer":
@@ -381,10 +467,25 @@ UI_PAGE = """<!doctype html>
     <div class="row"><button class="primary" onclick="busy(40)">40 events</button><button onclick="busy(150)">150 events</button></div>
     <p class="hint">Random messages, thread replies, reactions and joins across the public channels. Re-run it and the counts keep rising; replay any of it and they do not.</p>
   </div>
+  <div class="card"><h2>Q&amp;A in #q-and-a</h2>
+    <label>Question or answer text (blank = a sample)</label><textarea id="qatext" rows="2"></textarea>
+    <div class="row">
+      <button class="primary" onclick="qa('qa-ask')">Ask a question</button>
+      <button onclick="qa('qa-answer')">Answer it (in thread)</button>
+      <button onclick="qa('qa-accept')">Mark the answer ✅</button>
+      <button class="warn" onclick="qa('qa-again')">Ask the first question again</button>
+      <button onclick="qa('mention')">@bot summary</button>
+    </div>
+    <p class="hint">Ask, answer, then <b>ask the first question again</b>: the bot replies in the new thread pointing at the earlier answer. <b>@bot summary</b> posts the session's Q&amp;A digest for the teacher. Both appear under "What the bot posted". The person selected above is the one acting.</p>
+  </div>
 </div>
 <div>
   <div class="card"><h2>Deliveries to the bot <span class="tag" id="calls"></span></h2>
     <table id="log"><tr><th>time</th><th>event</th><th>who</th><th>where</th><th>bot</th><th>ms</th><th>note</th></tr></table>
+  </div>
+  <div class="card"><h2>What the bot posted</h2>
+    <table id="posted"><tr><th>where</th><th>text</th></tr></table>
+    <p class="hint">Pointers and summaries, exactly as the bot sent them to chat.postMessage. Names and addresses never appear here.</p>
   </div>
   <div class="card"><h2>Bot status (live)</h2><iframe id="frame" src="about:blank"></iframe></div>
 </div>
@@ -406,6 +507,16 @@ async function refresh(){
   const t=document.getElementById('log'); while(t.rows.length>1)t.deleteRow(1);
   S.log.forEach(e=>{const r=t.insertRow();[e.at,e.kind,e.who,e.where].forEach(v=>r.insertCell().textContent=v);
     const c=r.insertCell();c.textContent=e.status;c.className=e.status===200?'s200':'bad';r.insertCell().textContent=e.ms;r.insertCell().textContent=e.note||'';});
+  const pt=document.getElementById('posted'); while(pt.rows.length>1)pt.deleteRow(1);
+  (S.posted||[]).slice().reverse().forEach(p=>{const r=pt.insertRow();r.insertCell().textContent='#'+p.channel+(p.thread_ts?' (thread)':'');
+    const c=r.insertCell();c.textContent=p.text;c.style.whiteSpace='pre-wrap';});
+}
+async function qa(a){
+  const user=document.getElementById('user').value, text=document.getElementById('qatext').value;
+  const r=await (await fetch('/ui/'+a,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user,text,channel:S.qa_channel})})).json();
+  if(r.error) alert(r.error);
+  document.getElementById('qatext').value='';
+  refresh();
 }
 async function act(a,opt={}){
   const user=document.getElementById('user').value, channel=document.getElementById('channel').value, text=document.getElementById('text').value;

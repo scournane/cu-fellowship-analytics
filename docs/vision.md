@@ -134,7 +134,7 @@ received recognition build popularity contests. So:
 
 - ✅ Muddiest-point answers clustered into themes for the teacher — about content, never about a person
 - "One question I still have" collected after each session and digested for the teacher
-- Q&A during a session captured to a thread and summarised
+- ✅ Q&A in a designated channel captured, with replies, and summarised per session for the teacher
 - Resource tracker: links shared, which got reactions, which got reshared
 - A per-session feedback loop closed back to fellows: "here is what you said was unclear, and what we are changing" — the single highest-leverage trust move in the research
 
@@ -188,9 +188,9 @@ received recognition build popularity contests. So:
 
 - ✅ Passphrase adjudication for answers edit distance cannot read
 - ✅ Muddiest-point clustering, text only, no names in the payload
-- Summarise a session's Q&A thread for the teacher
+- ✅ Summarise a session's Q&A thread for the teacher — from anonymous strings; a plain digest without a key
 - Draft an outreach message for a staff member to edit — never send one
-- Detect a question that has been asked before and point at the earlier answer
+- ✅ Detect a question that has been asked before and point at the earlier answer — word overlap first, the model only among candidates, answered questions only
 - ⚠️ Sentiment analysis of individuals — no
 - ⚠️ Attention or engagement scoring from video — no (see the Zoom research: scientifically contested, banned in education under the EU AI Act, and Zoom itself removed its version)
 

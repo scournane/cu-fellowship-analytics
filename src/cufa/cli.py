@@ -990,18 +990,26 @@ def cmd_slack(args: argparse.Namespace) -> int:
 
     client = slack_bot.make_web_client(settings)
 
+    if action == "qa":
+        return _cmd_slack_qa(args, settings, client)
+
     if action == "backfill":
         from .slack.backfill import backfill_workspace
+        from .slack.qa import build_qa_service
         from .slack.store import ensure_workspace
 
         with connection() as conn:
             ws = ensure_workspace(conn, client, settings.slack_cohort)
+            qa = build_qa_service(settings, client, ws)
+            if qa is not None:
+                qa.resolve_channels(conn)
             result = backfill_workspace(
                 conn, client, ws.team_id,
                 channels=args.channel or None,
                 days=args.days,
                 store_text=settings.slack_store_text,
                 include_private=not args.public_only,
+                qa=qa,
             )
         print(f"backfill team={ws.team_id} {result}")
         for err in result.errors:
@@ -1076,6 +1084,110 @@ def cmd_slack(args: argparse.Namespace) -> int:
         return 0
 
     raise CufaError(f"unknown slack action {action!r}")
+
+
+def _cmd_slack_qa(args: argparse.Namespace, settings: Any, client: Any) -> int:
+    """``cufa slack qa list|summary`` — one session's Q&A, for the teacher.
+
+    The session is named one of three ways: ``--session ID``, ``--date`` (the
+    session on that local date), or ``--latest`` (the session in effect now).
+    Text from the Q&A channels IS shown here — that is what those channels are
+    for (ADR-032). Nobody is named: the rows carry no name and no address.
+    """
+    from datetime import date as _date
+
+    from .slack.qa import (
+        channel_id_for,
+        generate_summary,
+        post_summary,
+        questions_for_session,
+        resolve_session,
+        snippet,
+    )
+    from .slack.store import ensure_workspace
+
+    day = None
+    if args.date:
+        try:
+            day = _date.fromisoformat(args.date)
+        except ValueError:
+            raise CufaError(f"--date must be YYYY-MM-DD, got {args.date!r}") from None
+    if not (args.session or day or args.latest):
+        raise CufaError("name the session: --session ID, --date YYYY-MM-DD, or --latest (the one in effect now)")
+
+    with connection() as conn:
+        ws = ensure_workspace(conn, client, settings.slack_cohort)
+        if not ws.cohort_id:
+            raise CufaError("this workspace is not attached to a cohort — set CUFA_SLACK_COHORT in .env")
+        session = resolve_session(
+            conn, ws.cohort_id,
+            session_id=_session_id(args.session) if args.session else None, day=day, latest=args.latest,
+        )
+        if session is None:
+            raise CufaError(
+                "no session matched. `cufa session list --cohort "
+                f"{ws.cohort_id}` shows them; --latest needs a session whose window has opened."
+            )
+
+        if args.qa_action == "list":
+            items = questions_for_session(conn, session.session_id)
+            if args.json:
+                print(json.dumps(items, indent=2, default=str))
+                return 0
+            print(f"Q&A for {session.label} — {len(items)} question(s), {sum(1 for i in items if i['answered'])} answered")
+            for number, item in enumerate(items, start=1):
+                mark = "answered" if item["answered"] else "OPEN"
+                print(f"  Q{number:<3} {mark:<9} {snippet(item['text'], 90)}")
+                for answer in item["answers"]:
+                    flag = " ✅" if answer["accepted"] else ""
+                    print(f"        ↳{flag} {snippet(answer['text'], 84)}")
+            if not items:
+                print("  (nothing asked in the Q&A channel(s) in this session's window)")
+            return 0
+
+        # summary
+        result = generate_summary(
+            conn, client, session.session_id, team_id=ws.team_id, workspace_url=ws.url,
+            use_model=not args.no_model, regenerate=args.regenerate,
+        )
+        posted_to: str | None = None
+        if args.post and result.summary_id:
+            target = args.channel or settings.slack_qa_summary_channel or (
+                settings.slack_qa_channels[0] if settings.slack_qa_channels else None
+            )
+            if not target:
+                raise CufaError("nowhere to post: pass --channel, or set CUFA_SLACK_QA_SUMMARY_CHANNEL / CUFA_SLACK_QA_CHANNELS")
+            found = channel_id_for(conn, client, ws.team_id, target)
+            if found is None:
+                raise CufaError(f"channel {target!r} not found — is the bot invited to it?")
+            channel_id, name = found
+            ts = post_summary(conn, client, result.summary_id, channel_id)
+            result.posted_ts = ts
+            posted_to = name
+
+    if args.json:
+        payload = {
+            "session_id": session.session_id, "session": session.label, "summary_id": result.summary_id,
+            "generated": result.generated, "superseded": result.superseded, "model": result.model,
+            "questions_considered": result.questions_considered, "answered_count": result.answered_count,
+            "message": result.message, "text": result.text, "posted_to": posted_to, "posted_ts": result.posted_ts,
+        }
+        print(json.dumps(payload, indent=2, default=str))
+        return 0
+    if result.message:
+        print(result.message)
+    if result.superseded:
+        print(f"  superseded {result.superseded} earlier summary")
+    if result.text:
+        print()
+        print(result.text)
+    if posted_to:
+        print()
+        print(f"posted to #{posted_to} (ts {result.posted_ts})")
+    elif result.text and not args.post:
+        print()
+        print("Not posted. Add --post to send it to Slack, or mention the bot in the channel: `@bot summary`.")
+    return 0
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
@@ -1329,6 +1441,22 @@ def build_parser() -> argparse.ArgumentParser:
     q = sp.add_parser("users", help="refresh the user → email cache from users.list")
     q = sp.add_parser("channels", help="list channels the bot can see, with backfill watermarks")
     q.add_argument("--public-only", action="store_true")
+    q = sp.add_parser("qa", help="Q&A channels: a session's questions, and a summary for the teacher")
+    qq = q.add_subparsers(dest="qa_action", required=True)
+    for name, text in (
+        ("list", "the questions asked around one session, with their replies"),
+        ("summary", "summarise one session's Q&A for the teacher (and --post it to Slack)"),
+    ):
+        r = qq.add_parser(name, help=text)
+        r.add_argument("--session", help="session id (UUID)")
+        r.add_argument("--date", help="local date of the session, YYYY-MM-DD")
+        r.add_argument("--latest", action="store_true", help="the session in effect right now")
+        r.add_argument("--json", action="store_true")
+        if name == "summary":
+            r.add_argument("--regenerate", action="store_true", help="redo it; the previous summary is superseded, not overwritten")
+            r.add_argument("--no-model", action="store_true", help="the plain digest, even when GEMINI_API_KEY is set")
+            r.add_argument("--post", action="store_true", help="post the summary to Slack")
+            r.add_argument("--channel", help="where to post (default: CUFA_SLACK_QA_SUMMARY_CHANNEL, else the first Q&A channel)")
     p.set_defaults(func=cmd_slack)
 
     return parser

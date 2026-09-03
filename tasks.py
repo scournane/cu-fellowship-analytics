@@ -709,6 +709,9 @@ def _slack_demo_env() -> dict[str, str]:
         "SLACK_API_BASE_URL": f"http://127.0.0.1:{FAKE_SLACK_PORT}/api/",
         "CUFA_SLACK_COHORT": COHORT,
         "CUFA_SLACK_PORT": SLACK_BOT_PORT,
+        # #q-and-a is a Q&A channel: its text is stored, repeats get a pointer
+        # to the earlier answer, and "@bot summary" works there.
+        "CUFA_SLACK_QA_CHANNELS": "q-and-a",
         "CUFA_LOG_LEVEL": os.environ.get("CUFA_LOG_LEVEL", "INFO"),
     }
 
@@ -794,10 +797,24 @@ def _ui(action: str, payload: dict | None = None) -> dict:
 
 
 def _slack_prereqs() -> None:
-    """Roster in place, database migrated. Reuses the demo's own steps."""
+    """Roster in place, database migrated. Reuses the demo's own steps.
+
+    Also one session dated today, so the Q&A asked during the demo belongs
+    to a session — that is what "@bot summary" and `cufa slack qa summary
+    --latest` summarise. The fixture sessions are all in the future.
+    """
     task_db_reset()
     task_fixtures()
     cufa("load-roster", "--csv", str(FIXTURES / "roster.csv"), "--cohort", COHORT)
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    today = datetime.now(ZoneInfo(SHEET_TZ)).date()
+    cufa(
+        "session", "create", "--cohort", COHORT, "--title", "Demo session (today)",
+        "--scheduled-at", f"{today.isoformat()}T00:05", "--timezone", SHEET_TZ, "--duration", "90",
+        quiet=True,
+    )
 
 
 def task_demo_slack() -> int:
@@ -861,6 +878,30 @@ def task_demo_slack_batch() -> int:
         _ui("join", {"user": people[3], "channel": general})
         _ui("edit", {"channel": general, "text": "root message, edited"})
         _ui("bot-message", {"channel": general})
+        # Somebody with an address that is on no roster — recorded, and queued
+        # for a human rather than dropped. Explicit, so the check below does not
+        # depend on the random day having picked them.
+        guest = next(u["id"] for u in state["users"] if (u["email"] or "").startswith("guest."))
+        _ui("message", {"user": guest, "channel": general, "text": "thanks for having me tonight!"})
+
+        banner("3b. Q&A: a question answered, a question open, and one asked AGAIN")
+        _ui("qa-ask", {"user": people[0], "text": "does anyone have the slides from tuesday?"})
+        _ui("qa-answer", {"user": people[1], "text": "yes — they're pinned in #announcements"})
+        _ui("qa-accept", {"user": people[0]})
+        _ui("qa-ask", {"user": people[2], "text": "what does 'quorum' mean in this context?"})
+        _ui("qa-again", {"user": people[3], "text": "can someone share tuesday's slides?"})
+        posted = _ui_state()["posted"]
+        pointers = [p for p in posted if "came up before" in p["text"]]
+        print(f"  bot replied in the repeat's thread: {'yes' if pointers else 'NO'}")
+        if pointers:
+            print("    " + pointers[-1]["text"].splitlines()[0])
+        banner("3c. the teacher asks for the session's Q&A summary")
+        _ui("mention", {"user": people[0], "channel": general, "text": "summary"})
+        posted = _ui_state()["posted"]
+        summaries = [p for p in posted if p["text"].startswith("*Q&A summary")]
+        print(f"  bot posted a summary in the thread: {'yes' if summaries else 'NO'}")
+        for row in (summaries[-1]["text"].splitlines()[:2] if summaries else []):
+            print("    " + row)
 
         banner("4. Slack retries a delivery — the bot must ack AND write nothing")
         replay = _ui("replay")
@@ -874,11 +915,13 @@ def task_demo_slack_batch() -> int:
 
         env = _slack_demo_env()
         banner("6. the bot was down for a while — backfill what it missed")
-        cufa("slack", "backfill", "--channel", "general", "--channel", "announcements", env=env)
+        cufa("slack", "backfill", "--channel", "general", "--channel", "announcements", "--channel", "q-and-a", env=env)
 
         banner("7. what the database holds")
         cufa("slack", "stats", env=env)
         cufa("slack", "report", "--cohort", COHORT, env=env)
+        cufa("slack", "qa", "list", "--latest", env=env)
+        cufa("slack", "qa", "summary", "--latest", env=env)
         cufa("report", "--cohort", COHORT, "--html", REPORT_PATH, env=env)
 
         banner("8. acceptance checks")

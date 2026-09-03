@@ -83,6 +83,14 @@ class Settings:
     #: HTTP mode: run the listener before answering Slack (deterministic for
     #: the demo and tests) rather than acking first and writing in a thread.
     slack_process_before_response: bool = True
+    #: Channels (names or ids) treated as Q&A: their message text IS stored,
+    #: the bot points a repeated question at the earlier answer, and a
+    #: per-session summary can be generated. Empty means none of that runs.
+    #: See ADR-032.
+    slack_qa_channels: tuple[str, ...] = ()
+    #: Where `cufa slack qa summary --post` goes when no --channel is given.
+    #: Blank means the first Q&A channel.
+    slack_qa_summary_channel: str | None = None
 
     fixtures_dir: Path = field(default_factory=lambda: _repo_root() / "fixtures")
 
@@ -157,6 +165,10 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         slack_port=_int("CUFA_SLACK_PORT", 3000),
         slack_user_cache_hours=_int("CUFA_SLACK_USER_CACHE_HOURS", 24),
         slack_process_before_response=not _truthy(env.get("CUFA_SLACK_ACK_FIRST")),
+        slack_qa_channels=tuple(
+            item.strip() for item in (env.get("CUFA_SLACK_QA_CHANNELS") or "").split(",") if item.strip()
+        ),
+        slack_qa_summary_channel=(env.get("CUFA_SLACK_QA_SUMMARY_CHANNEL") or "").strip().lstrip("#") or None,
     )
 
 

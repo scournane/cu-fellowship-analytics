@@ -15,6 +15,11 @@ not as events; they are expanded into reaction_added observations so the
 Director's definition ("reacting to messages") is honoured on the backfill
 path too. The event_ts of a backfilled reaction is unknown, so the message ts
 is used as the best lower bound — it is recorded as such in ``raw``.
+
+Thread replies are NOT in ``conversations.history``; each thread has to be
+walked with ``conversations.replies``. That is done for the Q&A channels only,
+where the replies are the answers and the whole point — one call per thread is
+cheap there and unbounded everywhere else.
 """
 
 from __future__ import annotations
@@ -39,6 +44,7 @@ log = get_logger(__name__)
 class BackfillResult:
     channels: int = 0
     messages_read: int = 0
+    replies_read: int = 0
     events_written: int = 0
     events_duplicate: int = 0
     events_skipped: int = 0
@@ -46,7 +52,7 @@ class BackfillResult:
 
     def __str__(self) -> str:  # pragma: no cover - display only
         return summarize(
-            channels=self.channels, messages_read=self.messages_read,
+            channels=self.channels, messages_read=self.messages_read, replies_read=self.replies_read,
             written=self.events_written, duplicate=self.events_duplicate,
             skipped=self.events_skipped, errors=len(self.errors),
         )
@@ -114,6 +120,7 @@ def backfill_channel(
     store_text: bool = False,
     load_id: str | None = None,
     result: BackfillResult | None = None,
+    qa: Any = None,
 ) -> BackfillResult:
     """Read one channel's history forward from the watermark (or ``since``).
 
@@ -121,9 +128,24 @@ def backfill_channel(
     mid-channel leaves the next run starting from the last complete page,
     never past rows it has not seen. Re-reading a page is free — every row is
     keyed by the act.
+
+    ``qa`` is the ``QaService``; when this is one of its channels, every message
+    also feeds the Q&A tables and each thread is walked for its replies.
     """
     result = result or BackfillResult()
     cohort_id = cohort_for_team(conn, team_id)
+    is_qa = qa is not None and qa.is_qa_channel(channel_id)
+
+    def record_raw(message: dict[str, Any]) -> None:
+        for raw in [history_message_to_event(message, channel_id), *history_reactions_to_events(message, channel_id)]:
+            parsed = parse_event(raw, team_id, store_text=store_text)
+            outcome = resolve_and_record(conn, client, parsed, cohort_id=cohort_id, load_id=load_id)
+            if outcome.status == "written":
+                result.events_written += 1
+            elif outcome.status == "duplicate":
+                result.events_duplicate += 1
+            else:
+                result.events_skipped += 1
 
     oldest: str | None = None
     if since is not None:
@@ -150,15 +172,14 @@ def backfill_channel(
         messages = response.get("messages") or []
         for message in messages:
             result.messages_read += 1
-            for raw in [history_message_to_event(message, channel_id), *history_reactions_to_events(message, channel_id)]:
-                parsed = parse_event(raw, team_id, store_text=store_text)
-                outcome = resolve_and_record(conn, client, parsed, cohort_id=cohort_id, load_id=load_id)
-                if outcome.status == "written":
-                    result.events_written += 1
-                elif outcome.status == "duplicate":
-                    result.events_duplicate += 1
-                else:
-                    result.events_skipped += 1
+            record_raw(message)
+            if is_qa:
+                qa.observe_history(conn, message, channel_id)
+                if int(message.get("reply_count") or 0) > 0 and message.get("ts"):
+                    for reply in _thread_replies(client, channel_id, str(message["ts"]), result):
+                        result.replies_read += 1
+                        record_raw(reply)
+                        qa.observe_history(conn, reply, channel_id)
             ts = message.get("ts")
             if ts:
                 newest_seen = max(newest_seen, float(ts))
@@ -177,6 +198,27 @@ def backfill_channel(
     return result
 
 
+def _thread_replies(client: Any, channel_id: str, thread_ts: str, result: BackfillResult) -> list[dict[str, Any]]:
+    """Every reply in one thread, oldest first. The parent comes back as the
+    first message and is dropped; the caller already has it."""
+    replies: list[dict[str, Any]] = []
+    cursor: str | None = None
+    while True:
+        try:
+            response = client.conversations_replies(channel=channel_id, ts=thread_ts, cursor=cursor, limit=200)
+        except SlackApiError as exc:
+            error = (getattr(exc, "response", None) or {}).get("error", str(exc))
+            result.errors.append(f"{channel_id}/{thread_ts}: {error}")
+            log.warning("replies failed channel=%s thread=%s error=%s", channel_id, thread_ts, error)
+            return replies
+        for message in response.get("messages") or []:
+            if str(message.get("ts")) != thread_ts:
+                replies.append(message)
+        cursor = ((response.get("response_metadata") or {}).get("next_cursor") or "").strip()
+        if not response.get("has_more") or not cursor:
+            return replies
+
+
 def backfill_workspace(
     conn: psycopg.Connection,
     client: Any,
@@ -186,6 +228,7 @@ def backfill_workspace(
     days: int | None = None,
     store_text: bool = False,
     include_private: bool = True,
+    qa: Any = None,
 ) -> BackfillResult:
     """Backfill every channel the bot can read, or the ones named."""
     since = datetime.now(timezone.utc) - timedelta(days=days) if days else None
@@ -199,7 +242,7 @@ def backfill_workspace(
         for channel_id in targets:
             backfill_channel(
                 conn, client, team_id, channel_id,
-                since=since, store_text=store_text, load_id=load_id, result=result,
+                since=since, store_text=store_text, load_id=load_id, result=result, qa=qa,
             )
     except Exception as exc:  # pragma: no cover - defensive
         error = f"{type(exc).__name__}: {exc}"

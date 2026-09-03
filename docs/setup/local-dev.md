@@ -493,6 +493,23 @@ A `slack_bot` run still `running` with an old `started_at` and no newer run is a
 bot that died without stopping cleanly. `select max(received_at) from
 slack_event` is the last thing it heard.
 
+### Slack — Q&A questions still open
+
+```sql
+select q.asked_at_utc, left(q.text, 80) as question,
+       (select count(*) from slack_qa_answer a where a.question_id = q.question_id and a.deleted_at_utc is null) as replies
+  from slack_qa_question q
+ where q.deleted_at_utc is null
+   and not q.resolved
+   and not exists (select 1 from slack_qa_answer a
+                    where a.question_id = q.question_id and a.deleted_at_utc is null
+                      and (a.accepted or a.slack_user_id <> q.slack_user_id))
+ order by q.asked_at_utc desc;
+```
+
+Only the channels named in `CUFA_SLACK_QA_CHANNELS` are here. The rows carry a
+Slack user id and no address; nothing joins them to the roster.
+
 ### Slack — retries Slack sent, and what they cost
 
 ```sql

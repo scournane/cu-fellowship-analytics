@@ -30,6 +30,11 @@ class WorkspaceInfo:
     team_name: str
     bot_user_id: str
     cohort_id: str | None
+    #: The workspace's URL from auth.test, for building permalinks when
+    #: chat.getPermalink is refused. Optional so older callers still construct.
+    url: str | None = None
+    #: The bot user's handle, for "try `@cif-participation summary`" replies.
+    bot_name: str | None = None
 
 
 def ensure_workspace(conn: psycopg.Connection, client: Any, cohort_id: str | None) -> WorkspaceInfo:
@@ -44,6 +49,8 @@ def ensure_workspace(conn: psycopg.Connection, client: Any, cohort_id: str | Non
         team_name=response.get("team") or response["team_id"],
         bot_user_id=response.get("user_id") or "",
         cohort_id=cohort_id,
+        url=response.get("url") or None,
+        bot_name=response.get("user") or None,
     )
     if cohort_id:
         execute(
@@ -221,6 +228,20 @@ def stats(conn: psycopg.Connection, team_id: str | None = None) -> dict[str, Any
         conn,
         "select count(*) as n from identity_unresolved where resolved_at is null",
     ) or {}
+    qa = fetch_one(
+        conn,
+        """
+        select (select count(*) from slack_qa_question q
+                 where q.deleted_at_utc is null and (%(t)s::text is null or q.team_id = %(t)s::text)) as questions,
+               (select count(*) from slack_qa_answer a
+                 where a.deleted_at_utc is null and (%(t)s::text is null or a.team_id = %(t)s::text)) as answers,
+               (select count(*) from slack_qa_pointer p join slack_qa_question q on q.question_id = p.question_id
+                 where p.posted_ts is not null and (%(t)s::text is null or q.team_id = %(t)s::text)) as pointers_posted,
+               (select count(*) from slack_qa_summary s
+                 where s.superseded_at is null and (%(t)s::text is null or s.team_id = %(t)s::text)) as summaries
+        """,
+        {"t": team_id},
+    ) or {}
 
     return {
         **{k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in totals.items()},
@@ -228,6 +249,7 @@ def stats(conn: psycopg.Connection, team_id: str | None = None) -> dict[str, Any
         "by_type": {r["event_type"]: r["n"] for r in by_type},
         "by_channel": {r["channel"]: r["n"] for r in by_channel},
         "identity_unresolved_open": unresolved.get("n", 0),
+        "qa": {k: int(v or 0) for k, v in qa.items()},
     }
 
 

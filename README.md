@@ -357,7 +357,19 @@ cufa slack socket                 # run it — Socket Mode, no public URL
 cufa slack backfill               # read what it missed, while Slack still has it
 cufa slack stats                  # totals, no addresses
 cufa slack report --cohort cu-2026
+cufa slack qa summary --latest    # a session's Q&A, summarised for the teacher
 ```
+
+**Q&A channels** are the one exception to no-text. Name them in
+`CUFA_SLACK_QA_CHANNELS` and the bot keeps their questions and replies in their
+own tables (ADR-032), so it can do two things there: when a question resembles
+an earlier one that was *answered*, it replies in the new thread with a link
+to that answer and the session it came from — *"came up before, during Sep 2 ·
+Voting systems"* — and `cufa slack qa summary` (or `@bot summary` in Slack)
+writes the session's Q&A up for the teacher: what was asked, what got settled,
+what is still open, each with a link. With a `GEMINI_API_KEY` the model matches
+paraphrases and writes the paragraph, from anonymous strings only; without one,
+word overlap and a plain digest. Nobody is named in either.
 
 The honest cost is that a bot has to be running, and the contract ends.
 docs/setup/slack-bot.md ends with what that means and a `TODO(owner)` for the

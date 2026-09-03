@@ -40,8 +40,11 @@ DEFAULT_CHANNELS = (
     ("announcements", False),
     ("help-desk", False),
     ("project-teams", False),
+    ("q-and-a", False),
     ("cohort-private", True),
 )
+
+WORKSPACE_URL = "https://demo.slack.invalid/"
 
 
 def _err(method: str, error: str) -> SlackApiError:
@@ -57,8 +60,12 @@ class FakeWorkspace:
     bot_user_id: str = BOT_USER_ID
     users: dict[str, dict[str, Any]] = field(default_factory=dict)
     channels: dict[str, dict[str, Any]] = field(default_factory=dict)
-    #: channel_id -> messages, oldest first. What conversations.history reads.
+    #: channel_id -> TOP-LEVEL messages, oldest first. What conversations.history
+    #: reads. Thread replies are not here — as on Slack, they only come back
+    #: through conversations.replies.
     history: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    #: channel_id -> thread ts -> replies, oldest first.
+    replies: dict[str, dict[str, list[dict[str, Any]]]] = field(default_factory=dict)
     #: Everything chat.postMessage was asked to send.
     posted: list[dict[str, Any]] = field(default_factory=list)
     _counter: itertools.count = field(default_factory=lambda: itertools.count(1), repr=False)
@@ -124,7 +131,19 @@ class FakeWorkspace:
             "is_group": private,
         }
         self.history.setdefault(cid, [])
+        self.replies.setdefault(cid, {})
         return cid
+
+    def find_message(self, channel_id: str, ts: str) -> tuple[dict[str, Any] | None, list[dict[str, Any]] | None]:
+        """A stored message and the list it lives in — top level or a thread."""
+        for msg in self.history.get(channel_id, []):
+            if msg.get("ts") == ts:
+                return msg, self.history[channel_id]
+        for thread in self.replies.get(channel_id, {}).values():
+            for msg in thread:
+                if msg.get("ts") == ts:
+                    return msg, thread
+        return None, None
 
     def channel_id(self, name: str) -> str:
         for cid, ch in self.channels.items():
@@ -192,7 +211,20 @@ class FakeWorkspace:
         if files:
             event["files"] = files
         if record:
-            self.history[channel_id].append({k: v for k, v in event.items() if k not in ("channel", "channel_type", "event_ts")})
+            stored = {k: v for k, v in event.items() if k not in ("channel", "channel_type", "event_ts")}
+            if thread_ts and thread_ts != ts:
+                self.replies.setdefault(channel_id, {}).setdefault(thread_ts, []).append(stored)
+                parent, _ = self.find_message(channel_id, thread_ts)
+                if parent is not None:
+                    # What Slack puts on a parent once it has replies.
+                    parent["thread_ts"] = parent["ts"]
+                    parent["reply_count"] = len(self.replies[channel_id][thread_ts])
+                    parent["latest_reply"] = ts
+                    users = parent.setdefault("reply_users", [])
+                    if user_id not in users:
+                        users.append(user_id)
+            else:
+                self.history[channel_id].append(stored)
         return event
 
     def bot_message_event(self, channel_id: str, text: str) -> dict[str, Any]:
@@ -213,10 +245,10 @@ class FakeWorkspace:
         inner = {k: v for k, v in original.items() if k not in ("channel", "channel_type", "event_ts")}
         inner["text"] = new_text
         inner["edited"] = {"user": original["user"], "ts": edited_ts}
-        for msg in self.history.get(original["channel"], []):
-            if msg.get("ts") == original["ts"]:
-                msg["text"] = new_text
-                msg["edited"] = inner["edited"]
+        msg, _ = self.find_message(original["channel"], original["ts"])
+        if msg is not None:
+            msg["text"] = new_text
+            msg["edited"] = inner["edited"]
         return {
             "type": "message",
             "subtype": "message_changed",
@@ -230,9 +262,9 @@ class FakeWorkspace:
 
     def delete_event(self, original: dict[str, Any]) -> dict[str, Any]:
         ts = self.next_ts()
-        self.history[original["channel"]] = [
-            m for m in self.history.get(original["channel"], []) if m.get("ts") != original["ts"]
-        ]
+        msg, container = self.find_message(original["channel"], original["ts"])
+        if msg is not None and container is not None:
+            container.remove(msg)
         return {
             "type": "message",
             "subtype": "message_deleted",
@@ -255,22 +287,23 @@ class FakeWorkspace:
         item_user: str | None = None,
         record: bool = True,
     ) -> dict[str, Any]:
-        if item_user is None:
-            for msg in self.history.get(channel_id, []):
-                if msg.get("ts") == item_ts:
-                    item_user = msg.get("user")
-        if record and not removed:
-            for msg in self.history.get(channel_id, []):
-                if msg.get("ts") == item_ts:
-                    blocks = msg.setdefault("reactions", [])
-                    for block in blocks:
-                        if block["name"] == reaction:
-                            if user_id not in block["users"]:
-                                block["users"].append(user_id)
-                                block["count"] = len(block["users"])
-                            break
-                    else:
-                        blocks.append({"name": reaction, "users": [user_id], "count": 1})
+        target, _ = self.find_message(channel_id, item_ts)
+        if item_user is None and target is not None:
+            item_user = target.get("user")
+        if record and target is not None:
+            blocks = target.setdefault("reactions", [])
+            for block in blocks:
+                if block["name"] == reaction:
+                    if removed and user_id in block["users"]:
+                        block["users"].remove(user_id)
+                    elif not removed and user_id not in block["users"]:
+                        block["users"].append(user_id)
+                    block["count"] = len(block["users"])
+                    break
+            else:
+                if not removed:
+                    blocks.append({"name": reaction, "users": [user_id], "count": 1})
+            target["reactions"] = [b for b in blocks if b["users"]]
         return {
             "type": "reaction_removed" if removed else "reaction_added",
             "user": user_id,
@@ -279,6 +312,23 @@ class FakeWorkspace:
             "item_user": item_user,
             "event_ts": self.next_ts(),
         }
+
+    def mention_event(self, user_id: str, channel_id: str, text: str, *, thread_ts: str | None = None) -> dict[str, Any]:
+        """An ``app_mention`` event. Slack sends this IN ADDITION to the
+        ``message`` event for the same post; the fake server delivers both."""
+        ts = self.next_ts()
+        event = {
+            "type": "app_mention",
+            "user": user_id,
+            "text": f"<@{self.bot_user_id}> {text}",
+            "ts": ts,
+            "channel": channel_id,
+            "event_ts": ts,
+            "team": self.team_id,
+        }
+        if thread_ts:
+            event["thread_ts"] = thread_ts
+        return event
 
     def join_event(self, user_id: str, channel_id: str, *, left: bool = False) -> dict[str, Any]:
         channel = self.channels[channel_id]
@@ -335,7 +385,7 @@ class FakeSlackWebClient:
         self._record("auth.test")
         return {
             "ok": True,
-            "url": "https://demo.slack.invalid/",
+            "url": WORKSPACE_URL,
             "team": self.ws.team_name,
             "team_id": self.ws.team_id,
             "user": "cufa-bot",
@@ -400,6 +450,25 @@ class FakeSlackWebClient:
         rows.sort(key=lambda m: float(m["ts"]), reverse=True)
         return self._page(rows, "messages", cursor, limit)
 
+    def conversations_replies(
+        self,
+        *,
+        channel: str,
+        ts: str,
+        cursor: str | None = None,
+        limit: int | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """The parent first, then its replies oldest first — Slack's order."""
+        self._record("conversations.replies", channel=channel, ts=ts, cursor=cursor)
+        if channel not in self.ws.channels:
+            raise _err("conversations.replies", "channel_not_found")
+        parent, _ = self.ws.find_message(channel, ts)
+        if parent is None:
+            raise _err("conversations.replies", "thread_not_found")
+        rows = [parent, *self.ws.replies.get(channel, {}).get(ts, [])]
+        return self._page(rows, "messages", cursor, limit)
+
     def conversations_members(self, *, channel: str, cursor: str | None = None, limit: int | None = None, **kwargs: Any) -> dict[str, Any]:
         self._record("conversations.members", channel=channel)
         if channel not in self.ws.channels:
@@ -415,6 +484,19 @@ class FakeSlackWebClient:
         ts = self.ws.next_ts()
         self.ws.posted.append({"channel": channel, "text": text, "ts": ts, **{k: v for k, v in kwargs.items() if k in ("blocks", "thread_ts")}})
         return {"ok": True, "channel": channel, "ts": ts, "message": {"text": text, "ts": ts}}
+
+    def chat_getPermalink(self, *, channel: str, message_ts: str, **kwargs: Any) -> dict[str, Any]:
+        self._record("chat.getPermalink", channel=channel, message_ts=message_ts)
+        if channel not in self.ws.channels:
+            raise _err("chat.getPermalink", "channel_not_found")
+        msg, _ = self.ws.find_message(channel, message_ts)
+        if msg is None:
+            raise _err("chat.getPermalink", "message_not_found")
+        link = f"{WORKSPACE_URL}archives/{channel}/p{message_ts.replace('.', '')}"
+        thread = msg.get("thread_ts")
+        if thread and thread != message_ts:
+            link += f"?thread_ts={thread}&cid={channel}"
+        return {"ok": True, "channel": channel, "permalink": link}
 
     # -- pagination -----------------------------------------------------------
 
@@ -441,8 +523,10 @@ class FakeSlackWebClient:
         "conversations.list": "conversations_list",
         "conversations.info": "conversations_info",
         "conversations.history": "conversations_history",
+        "conversations.replies": "conversations_replies",
         "conversations.members": "conversations_members",
         "chat.postMessage": "chat_postMessage",
+        "chat.getPermalink": "chat_getPermalink",
     }
 
     def dispatch(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
