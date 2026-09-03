@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+<g transform="translate(256,256) scale(1.05) translate(-256,-250)">
+  
+  <!-- sound arcs: two right, one left (asymmetry = motion) -->
+  <g fill="none" stroke="#FFFFFF" stroke-width="34" stroke-linecap="round">
+    <path d="M 341.16 170.03 A 86 86 0 0 0 293.70 104.70"/>
+    <path d="M 378.26 151.52 A 126 126 0 0 0 322.77 75.15"/>
+    <path d="M 213.00 107.52 A 86 86 0 0 0 172.55 161.19"/>
+  </g>
+  <!-- knob (shade pill first, white pill 12px above it) -->
+  <rect x="210" y="162" width="92" height="50" rx="25" fill="#D3E8E2"/>
+  <rect x="210" y="150" width="92" height="50" rx="25" fill="#FFFFFF"/>
+  <!-- dome: shade colour, then the bright colour shifted up-left and clipped ->
+       leaves a crescent of shade along the lower-right -->
+  <path d="M 106 360 C 100 250, 170 184, 256 184 C 342 184, 412 250, 406 360 L 406 380 L 106 380 Z" fill="#EF9F1E"/>
+  <clipPath id="dome"><path d="M 106 360 C 100 250, 170 184, 256 184 C 342 184, 412 250, 406 360 L 406 380 L 106 380 Z"/></clipPath>
+  <path d="M 106 360 C 100 250, 170 184, 256 184 C 342 184, 412 250, 406 360 L 406 380 L 106 380 Z" fill="#FFC629" clip-path="url(#dome)" transform="translate(-22,-8)"/>
+  
+  <!-- base plate -->
+  <rect x="86" y="362" width="340" height="42" rx="21" fill="#D3E8E2"/>
+  <rect x="86" y="350" width="340" height="42" rx="21" fill="#FFFFFF"/>
+</g></svg>
