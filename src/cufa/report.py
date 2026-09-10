@@ -467,6 +467,9 @@ EXPORT_PATHS: tuple[str, ...] = (
     "cufa.report_html.fellow_grid",
     "cufa.report_html.slack_summary",
     "cufa.report_html.provenance",
+    "cufa.report_html.engagement_block",
+    "cufa.report_html.assignments_block",
+    "cufa.report_html.funnel_block",
     # The Q&A digest for the teacher, and what it is built from.
     "cufa.slack.qa.questions_for_session",
     "cufa.slack.qa.current_summary",

@@ -34,8 +34,26 @@ def get_zone(name: str) -> ZoneInfo:
     except (ZoneInfoNotFoundError, ValueError, KeyError) as exc:
         raise TimezoneError(
             f"{name!r} is not a known IANA timezone. Use a name like "
-            f"'America/New_York' or 'UTC' (see --sheet-timezone)."
+            f"'America/New_York' or 'UTC' (see --sheet-timezone).\n"
+            "If this is Windows and every zone fails, the timezone database is "
+            "missing rather than the name being wrong: pip install tzdata."
         ) from exc
+
+
+def short_date(value: datetime) -> str:
+    """``Sep 15``.
+
+    Built by hand because ``%-d`` (strip the leading zero) is a glibc extension:
+    it works on macOS and Linux and raises ``ValueError`` on Windows. Every
+    human-facing short date in the bot goes through here, so there is one format
+    and one place it can be wrong.
+    """
+    return f"{value:%b} {value.day}"
+
+
+def short_datetime(value: datetime) -> str:
+    """``Sep 15 13:05``. Portable, for the same reason as :func:`short_date`."""
+    return f"{value:%b} {value.day} {value:%H:%M}"
 
 
 def to_utc(value: datetime) -> datetime:

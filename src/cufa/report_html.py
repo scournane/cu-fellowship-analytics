@@ -208,6 +208,57 @@ def slack_summary(conn: psycopg.Connection, cohort_id: str) -> dict[str, Any]:
     return {"weekly": weekly, "totals": totals, "workspace": workspace}
 
 
+def engagement_block(conn: psycopg.Connection, cohort_id: str) -> dict[str, Any]:
+    """The triage ordering, from the one definition the bot and the console use.
+
+    A thin wrapper on ``cufa.engagement.cohort_engagement`` on purpose: the
+    number a staff member reads in Slack, on the dashboard and in this report
+    has to be one number computed once, or the three disagree and nobody trusts
+    any of them.
+    """
+    from .engagement import LOW_SHARE, WEIGHTS, cohort_engagement
+
+    rows = cohort_engagement(conn, cohort_id)
+    return {
+        "rows": [r.to_dict() for r in rows],
+        "weights": dict(WEIGHTS),
+        "low_share": LOW_SHARE,
+        "flagged": sum(1 for r in rows if r.flags and r.flags != ["no data yet"]),
+        "not_reached": sum(1 for r in rows if r.attention_index >= 60 and not r.reached_out),
+        "reached": sum(1 for r in rows if r.reached_out),
+    }
+
+
+def assignments_block(conn: psycopg.Connection, cohort_id: str) -> dict[str, Any]:
+    """Assignments, what came in, and the scores staff typed in by hand."""
+    from .assignments import KIND_LABELS, list_assignments, submissions_for_assignment
+
+    out = []
+    for assignment in list_assignments(conn, cohort_id):
+        rows = submissions_for_assignment(conn, str(assignment["assignment_id"]))
+        scores = [float(r["score"]) for r in rows if r["score"] is not None]
+        out.append({
+            "title": assignment["title"],
+            "kind": KIND_LABELS.get(assignment["kind"], assignment["kind"]),
+            "due_at_utc": assignment["due_at_utc"],
+            "max_score": assignment["max_score"],
+            "submitted": int(assignment["submitted"] or 0),
+            "scored": int(assignment["scored"] or 0),
+            "of": len(rows),
+            "median_score": sorted(scores)[len(scores) // 2] if scores else None,
+            "rows": rows,
+        })
+    return {"assignments": out}
+
+
+def funnel_block(conn: psycopg.Connection, cohort_id: str) -> dict[str, Any]:
+    """Accepted, joined Slack, first message, first check-in, completed."""
+    from .funnel import STAGE_LABELS, cohort_summary
+
+    summary = cohort_summary(conn, cohort_id)
+    return {**summary, "labels": dict(STAGE_LABELS)}
+
+
 def provenance(conn: psycopg.Connection, cohort_id: str) -> dict[str, Any]:
     """When each source last delivered, and whether that run finished cleanly.
 
@@ -450,6 +501,9 @@ def render_report_html(conn: psycopg.Connection, cohort_id: str) -> str:
     grid = fellow_grid(conn, cohort_id)
     slack = slack_summary(conn, cohort_id)
     prov = provenance(conn, cohort_id)
+    eng = engagement_block(conn, cohort_id)
+    assignments = assignments_block(conn, cohort_id)["assignments"]
+    funnel = funnel_block(conn, cohort_id)
     label = (fetch_one(conn, "select label from cohort where cohort_id = %s", (cohort_id,)) or {}).get("label") or cohort_id
     generated = datetime.now(timezone.utc)
 
@@ -463,7 +517,22 @@ def render_report_html(conn: psycopg.Connection, cohort_id: str) -> str:
     b_cells = sum(1 for f in fellows for c in f["part_b"] if c)
     st = slack["totals"] or {}
     rv = prov["review"] or {}
-    awaiting = int(rv.get("needs_review") or 0) + int(rv.get("unresolved_identities") or 0) + int(rv.get("unresolved_shoutouts") or 0)
+    open_requests = int((fetch_one(
+        conn,
+        "select count(*) as n from intervention i join fellow f on f.fellow_id = i.fellow_id "
+        "where i.kind = 'check_in_request' and i.resolved_at is null and f.cohort_id = %s",
+        (cohort_id,),
+    ) or {}).get("n") or 0)
+    open_alerts = int((fetch_one(
+        conn, "select count(*) as n from roster_alert where resolved_at is null"
+    ) or {}).get("n") or 0)
+    awaiting = (
+        int(rv.get("needs_review") or 0)
+        + int(rv.get("unresolved_identities") or 0)
+        + int(rv.get("unresolved_shoutouts") or 0)
+        + open_requests
+        + open_alerts
+    )
 
     # -- sessions block -----------------------------------------------------
     session_rows = []
@@ -490,6 +559,58 @@ def render_report_html(conn: psycopg.Connection, cohort_id: str) -> str:
         ["Week", "Session", "Date", "Attended", "Needs review", "Not attended", "No decision", "No check-in", "Part B responses"],
         [[r["week"] if r["week"] is not None else "—", r["title"], _date(r["date"]), r["attended"], r["needs_review"],
           r["not_attended"], r["undecided"], r["none"], r["part_b"]] for r in session_rows],
+    )
+
+    # -- triage, assignments, funnel ----------------------------------------
+    # The attention index is rendered with its own components beside it, always.
+    # A number a staff member cannot take apart is a number they either over-trust
+    # or ignore, and both are worse than no number.
+    attention_rows = [
+        [
+            r["full_name"],
+            r["attention_index"],
+            "; ".join(r["flags"]) or "—",
+            f"{r['attended']}/{r['sessions_held']}" + (f" (+{r['needs_review']} review)" if r["needs_review"] else ""),
+            f"{r['forms_submitted']}" + (f" · {round(100 * r['form_completeness'])}% complete" if r["form_completeness"] is not None else ""),
+            f"{r['messages']} ({r['messages_7d']} in 7d)",
+            "yes" if r["reached_out"] else ("—" if r["attention_index"] < 60 else "not yet"),
+        ]
+        for r in eng["rows"]
+    ]
+    attention_table = _table(
+        ["Fellow", "Index", "Why", "Attendance", "End-of-session", "Slack messages", "Reached out?"],
+        attention_rows,
+    )
+    weights = " · ".join(f"{k} {int(100 * v)}%" for k, v in eng["weights"].items())
+
+    assignment_blocks = []
+    for a in assignments:
+        rows = [
+            [
+                r["full_name"],
+                _date(r["submitted_at_utc"]) if r["submitted_at_utc"] else "—",
+                (f"{r['score']}" + (f" / {a['max_score']}" if a["max_score"] is not None else "")) if r["score"] is not None else "—",
+            ]
+            for r in a["rows"]
+        ]
+        assignment_blocks.append(
+            f'<figure><figcaption><b>{_e(a["title"])}</b> · {_e(a["kind"])} · due {_e(_dt(a["due_at_utc"]))} · '
+            f'{_n(a["submitted"])} of {_n(a["of"])} submitted · {_n(a["scored"])} scored'
+            + (f' · median {_e(a["median_score"])}' if a["median_score"] is not None else "")
+            + "</figcaption>"
+            + f'<details><summary>Per fellow</summary>{_table(["Fellow", "Submitted", "Score"], rows)}</details></figure>'
+        )
+    assignments_html = "".join(assignment_blocks) or '<p class="note">No assignments have been created for this cohort yet.</p>'
+
+    funnel_rows = [
+        [funnel["labels"][stage], funnel["counts"][stage], _pct(funnel["counts"][stage], funnel["fellows"])]
+        for stage in funnel["labels"]
+    ]
+    funnel_table = _table(["Stage", "Fellows who reached it", "Share of cohort"], funnel_rows)
+    gaps = " · ".join(
+        f'{funnel["labels"][k.split("->")[0]]} → {funnel["labels"][k.split("->")[1]]}: '
+        + (f"{v} days" if v is not None else "—")
+        for k, v in funnel["median_days"].items()
     )
 
     # -- fellow grid ---------------------------------------------------------
@@ -682,7 +803,41 @@ footer p {{ margin:.35rem 0 }}
   <figcaption>The intervention view. A blank cell is a fellow who did not check in for that session. A small number is how many Part B responses they submitted. Click a column heading to sort.</figcaption>
   {grid_html}
   {_legend([("att-3", "Attended"), ("att-2", "Needs review"), ("att-1", "Not attended"), ("att-u", "No decision yet"), ("att-0", "No check-in")])}
-  <p class="note">Attendance, the end-of-session check-in and Slack are shown side by side and are not combined into a score. Weighting them is a decision the Director of Programs owns and has not yet taken.</p>
+  <p class="note">Attendance, the end-of-session check-in and Slack are shown side by side and are not combined into a
+     participation score. Weighting them into a measure of a fellow's standing is a decision the Director of Programs
+     owns and has not yet taken. The attention index in the next section is not that: it ranks who a person should
+     look at first, it is never shown to a fellow, and it is never a mark.</p>
+</figure>
+
+<h2>Who might need a word</h2>
+<figure>
+  <figcaption>Ordered by an attention index from 0 to 100, highest first. Higher means more reason for a person to look, not a worse fellow.</figcaption>
+  {attention_table}
+  <p class="note"><b>This is a triage order, not a grade and not a participation score.</b> It exists so that a staff member
+     with twenty minutes on a Monday starts with the right name. It is built from three things, weighted
+     {_e(weights)}, each shown beside it: Slack activity against the cohort mean, attendance with sessions still
+     under review removed from the denominator, and how many fields of the end-of-session form were filled in.
+     Free text is counted, never graded. A session awaiting a human decision counts neither for nor against anybody.</p>
+  <p class="note">Two things are deliberately absent and are enforced by test: the help checkbox, and assignment scores.
+     Asking for help never lowers any signal, and a mark on the Solvathon is not participation. The weights are a
+     starting point the Director of Programs owns; changing them changes one dictionary, and this report follows.
+     <b>{_n(eng["not_reached"])}</b> fellows are at 60 or above with nobody recorded as having reached out yet.</p>
+</figure>
+
+<h2>Assignments</h2>
+<figure>
+  <figcaption>What came in, and the score a staff member entered against CU's own rubric.</figcaption>
+  {assignments_html}
+  <p class="note">Nothing here is graded by the system. Every score was typed in by a named person, who and when is
+     recorded on the row, and no score feeds any participation figure above.</p>
+</figure>
+
+<h2>From accepted to finished</h2>
+<figure>
+  <figcaption>Where the cohort has got to. Every stage but the first and last is derived from something observed, so it needs no upkeep.</figcaption>
+  {funnel_table}
+  <p class="note">Median time between stages: {_e(gaps)}. Acceptance is the date on the roster record when one is set,
+     and otherwise the date the roster was loaded — so a negative gap here means acceptance dates have not been filled in.</p>
 </figure>
 
 <h2>Confidence by week</h2>
@@ -708,6 +863,8 @@ footer p {{ margin:.35rem 0 }}
       ["Check-ins needing a decision", int(rv.get("needs_review") or 0), "cufa review --status needs_review, or the console's Review screen"],
       ["Addresses not on the roster", int(rv.get("unresolved_identities") or 0), "cufa review --status unresolved-identity"],
       ["Shoutout names to link", int(rv.get("unresolved_shoutouts") or 0), "cufa shoutouts review"],
+      ["Fellows who asked to be checked in with", open_requests, "the staff dashboard, or /outreach <name> in Slack"],
+      ["Slack accounts not on the roster", open_alerts, "/alerts in Slack, or cufa slack alerts"],
   ])}
   <p class="note">Addresses are not shown in this report. It goes to the whole team; the review queues show them to the people doing the reviewing.</p>
 </figure>
@@ -720,6 +877,9 @@ footer p {{ margin:.35rem 0 }}
 
 <footer>
   <p><b>What is counted.</b> Attendance is the current decision on each mid-session check-in: a rule, the AI tier for ambiguous passphrases, or a person, in that order of precedence, with a person's decision never overridden. Part B counts responses that arrived; free text is counted, never graded. Slack counts messages sent and reactions given; message text is not stored.</p>
+  <p><b>The attention index.</b> A triage order for staff, not a grade, not a prediction, and not a label that follows
+     anybody. Its three components are printed beside it so it can be taken apart, its weights are named above, and a
+     fellow never sees it. The help checkbox and assignment scores are excluded from it by test.</p>
   <p><b>What is not here.</b> The help checkbox appears nowhere in this report. It is excluded from every count, rate and aggregate, permanently. No email address appears here. Latency between announcement and check-in is recorded but not interpreted: no thresholds, no flags.</p>
   <p>Regenerate with <code>cufa report --cohort {_e(cohort_id)} --html</code>. Every number is computed from the database at that moment; nothing is cached.</p>
 </footer>

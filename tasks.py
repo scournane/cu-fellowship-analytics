@@ -35,6 +35,10 @@ FRONTEND = ROOT / "frontend"
 BUNDLE = ROOT / "src" / "cufa" / "console" / "static" / "app" / "console.js"
 
 COHORT = os.environ.get("COHORT", "demo")
+#: The demo's staff address. Defined in cufa.slack.fake, which tasks.py cannot
+#: import before `setup` has run, so it is repeated here and asserted equal by
+#: the acceptance checks.
+DEMO_STAFF_EMAIL = "staff.demo@example.invalid"
 SHEET_TZ = os.environ.get("SHEET_TZ", "America/New_York")
 PORT = os.environ.get("PORT", "8000")
 SLACK_BOT_PORT = os.environ.get("SLACK_BOT_PORT", "3000")
@@ -712,6 +716,13 @@ def _slack_demo_env() -> dict[str, str]:
         # #q-and-a is a Q&A channel: its text is stored, repeats get a pointer
         # to the earlier answer, and "@bot summary" works there.
         "CUFA_SLACK_QA_CHANNELS": "q-and-a",
+        # The reminder / badge / slash-command half. The staff channel is given
+        # by NAME, which is how a person would write it; the bot resolves it.
+        "CUFA_SLACK_STAFF_CHANNEL": "cohort-private",
+        "CUFA_SLACK_ADMINS": DEMO_STAFF_EMAIL,
+        # Not the default, so `/dashboard` links are signed with something real.
+        "CUFA_CONSOLE_SECRET": "demo-only-console-secret-not-a-real-one",
+        "CUFA_PUBLIC_BASE_URL": "http://127.0.0.1:8000",
         "CUFA_LOG_LEVEL": os.environ.get("CUFA_LOG_LEVEL", "INFO"),
     }
 
@@ -924,8 +935,51 @@ def task_demo_slack_batch() -> int:
         cufa("slack", "qa", "summary", "--latest", env=env)
         cufa("report", "--cohort", COHORT, "--html", REPORT_PATH, env=env)
 
-        banner("8. acceptance checks")
-        script("verify_slack_demo.py", "--cohort", COHORT)
+        banner("8. the other half of the bot: reminders, welcomes, the digest")
+        # Everything below goes through the SAME client the production bot uses
+        # (slack_sdk, pointed at the fake server), so this exercises the adapter
+        # and the HTTP wire, not just the in-memory logic the unit tests cover.
+        from datetime import datetime, timedelta, timezone
+
+        # Fixed instants in UTC, so the arithmetic does not depend on when CI
+        # runs or on a daylight-saving boundary. The tick is told what time it
+        # is, and both windows open at exactly that moment.
+        tick_at = (datetime.now(timezone.utc) + timedelta(days=1)).replace(
+            hour=13, minute=0, second=0, microsecond=0
+        )
+        session_at = tick_at + timedelta(hours=1)    # the 1-hour reminder
+        due_at = tick_at + timedelta(days=1)         # the 24-hour reminder
+        stamp = "%Y-%m-%dT%H:%M"
+
+        cufa("slack", "sync", env=env)
+        admin = next(u["id"] for u in _ui_state()["users"] if u["email"] == DEMO_STAFF_EMAIL)
+        cufa(
+            "session", "create", "--cohort", COHORT, "--title", "Lesson 2 — deliberation",
+            "--scheduled-at", session_at.strftime(stamp), "--timezone", "UTC", "--duration", "90",
+            quiet=True, env=env,
+        )
+        cufa(
+            "assignment", "create", "--cohort", COHORT, "--title", "Solvathon deck",
+            "--due", due_at.strftime("%Y-%m-%d %H:%M"), "--timezone", "UTC", "--kind", "solvathon",
+            "--link", "https://forms.example.invalid/solvathon", "--max-score", "100",
+            "--by", DEMO_STAFF_EMAIL, quiet=True, env=env,
+        )
+        print("  a staff member puts the Zoom link on the session, from Slack:")
+        cufa("slack", "cmd", "--as", admin, "/zoom", "deliberation", "https://zoom.us/j/demo", env=env)
+        print(f"  one tick, as if it were {tick_at:%Y-%m-%d %H:%M} UTC:")
+        cufa("slack", "tick", "--now", tick_at.strftime("%Y-%m-%dT%H:%M:%SZ"), env=env)
+        print("  the weekly digest, posted on demand:")
+        cufa("slack", "digest", "--post", env=env)
+        print("  a staff member asks about one fellow, and about the cohort:")
+        cufa("slack", "cmd", "--as", admin, "/report", env=env)
+        cufa("slack", "cmd", "--as", admin, "/fellow", "Ardith", env=env)
+        state = _ui_state()
+        print(f"  direct messages the bot sent: {len(state['dms'])}")
+        for dm in state["dms"][:3]:
+            print(f"    → {dm['name']}: {dm['text'].splitlines()[0]}")
+
+        banner("9. acceptance checks")
+        script("verify_slack_demo.py", "--cohort", COHORT, "--staff-email", DEMO_STAFF_EMAIL)
     finally:
         _stop(bot, fake)
     return 0

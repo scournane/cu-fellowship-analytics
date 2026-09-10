@@ -114,7 +114,7 @@ the [Supabase CLI](https://supabase.com/docs/guides/local-development/cli/gettin
 python tasks.py demo-console   # demo data plus the web console, zero Google calls
 python tasks.py demo-again     # re-run over the same database, to show idempotency
 python tasks.py demo-ai        # tier 2 live; skips with a message if no GEMINI_API_KEY
-python tasks.py test           # 535 tests, no network
+python tasks.py test           # 556 tests, no network
 python tasks.py clean          # stop Supabase, remove generated fixtures
 ```
 
@@ -141,9 +141,11 @@ make slack-bot           # preflight (cufa slack doctor), then run the bot again
 ```
 
 `make report` writes one file that opens from disk and attaches to an email:
-every fellow against every session, attendance by session, the confidence
-trend, Slack activity by week, the review queues, and where each number came
-from. No addresses, nothing from the help table, no combined score. `make
+every fellow against every session, attendance by session, who might need a word
+and why, assignments and their hand-entered scores, the accepted-to-finished
+funnel, the confidence trend, Slack activity by week, the review queues, and
+where each number came from. No addresses, nothing from the help table, and no
+combined participation score. `make
 demo` writes it as its last step, so there is always a fresh one to look at.
 
 `demo-slack` starts the real bot and a fake Slack on `http://127.0.0.1:3001/`
@@ -396,8 +398,10 @@ unrostered joins, aliases for fellows on two addresses, an attention index for
 who might be falling behind, a per-fellow funnel, hand-entered Solvathon and
 case-brief scores, a staff dashboard at `/dashboard` and a fellow-only page
 behind a signed link. It reads the same `slack_event` rows the capture writes —
-one event store — and its every query is held to the same rule about the help
-table. Details in the second half of
+one event store, one identity path, one Bolt app, one HTTP client (ADR-033) — and
+its every query is held to the same rule about the help table. `cufa slack doctor`
+checks both halves; `make demo-slack-batch` drives both against a fake Slack over
+real HTTP and asserts what each sent. Details in the second half of
 [`docs/setup/slack-bot.md`](docs/setup/slack-bot.md).
 
 **Q&A channels** are the one exception to no-text. Name them in

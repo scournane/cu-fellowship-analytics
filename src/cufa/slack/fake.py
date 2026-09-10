@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import csv
 import itertools
+import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -46,6 +47,10 @@ DEFAULT_CHANNELS = (
 
 WORKSPACE_URL = "https://demo.slack.invalid/"
 
+#: The demo's staff member. Not on the roster — staff are not fellows — so the
+#: bot treats them as an admin only because the configured admin list says so.
+DEMO_STAFF_EMAIL = "staff.demo@example.invalid"
+
 
 def _err(method: str, error: str) -> SlackApiError:
     return SlackApiError(f"{method}: {error}", {"ok": False, "error": error})
@@ -68,6 +73,10 @@ class FakeWorkspace:
     replies: dict[str, dict[str, list[dict[str, Any]]]] = field(default_factory=dict)
     #: Everything chat.postMessage was asked to send.
     posted: list[dict[str, Any]] = field(default_factory=list)
+    #: user_id -> DM channel id, as conversations.open hands them out. Kept
+    #: apart from `channels` on purpose: a DM is not in conversations.list, and
+    #: the bot must never be able to read one back. Only posting to it works.
+    dms: dict[str, str] = field(default_factory=dict)
     _counter: itertools.count = field(default_factory=lambda: itertools.count(1), repr=False)
     _ts_base: float = field(default_factory=lambda: float(int(time.time())), repr=False)
     _ts_seq: itertools.count = field(default_factory=lambda: itertools.count(1), repr=False)
@@ -119,6 +128,19 @@ class FakeWorkspace:
             },
         }
         return uid
+
+    def dm_channel(self, user_id: str) -> str:
+        """The DM channel for one user, created on first ask, as Slack does."""
+        if user_id not in self.dms:
+            self.dms[user_id] = f"D0DEMO{next(self._counter):04d}"
+        return self.dms[user_id]
+
+    def dm_recipient(self, channel_id: str) -> str | None:
+        """Whose DM a channel id is, if it is one. Lets a test read the outbox."""
+        for user_id, cid in self.dms.items():
+            if cid == channel_id:
+                return user_id
+        return None
 
     def add_channel(self, name: str, *, private: bool = False, channel_id: str | None = None) -> str:
         cid = channel_id or self.next_id("G" if private else "C")
@@ -477,13 +499,46 @@ class FakeSlackWebClient:
 
     # -- chat -----------------------------------------------------------------
 
+    def conversations_open(self, *, users: str, **kwargs: Any) -> dict[str, Any]:
+        """Open a DM. What a reminder, a welcome and a badge message need."""
+        self._record("conversations.open", users=users)
+        user_id = users.split(",")[0].strip()
+        if user_id not in self.ws.users:
+            raise _err("conversations.open", "user_not_found")
+        return {"ok": True, "channel": {"id": self.ws.dm_channel(user_id)}}
+
     def chat_postMessage(self, *, channel: str, text: str = "", **kwargs: Any) -> dict[str, Any]:
         self._record("chat.postMessage", channel=channel)
-        if channel not in self.ws.channels:
+        recipient = self.ws.dm_recipient(channel)
+        if channel not in self.ws.channels and recipient is None:
             raise _err("chat.postMessage", "channel_not_found")
         ts = self.ws.next_ts()
-        self.ws.posted.append({"channel": channel, "text": text, "ts": ts, **{k: v for k, v in kwargs.items() if k in ("blocks", "thread_ts")}})
+        entry: dict[str, Any] = {"channel": channel, "text": text, "ts": ts}
+        if recipient is not None:
+            # So a test and the demo UI can say WHO was DM'd, not just that a
+            # D-channel was posted to.
+            entry["to"] = recipient
+        blocks = kwargs.get("blocks")
+        if isinstance(blocks, str):
+            # Over HTTP, structured arguments arrive as a JSON string. Decoded
+            # here so both transports leave the same shape in the outbox.
+            try:
+                blocks = json.loads(blocks)
+            except json.JSONDecodeError:
+                pass
+        if blocks is not None:
+            entry["blocks"] = blocks
+        if kwargs.get("thread_ts"):
+            entry["thread_ts"] = kwargs["thread_ts"]
+        self.ws.posted.append(entry)
         return {"ok": True, "channel": channel, "ts": ts, "message": {"text": text, "ts": ts}}
+
+    def chat_postEphemeral(self, *, channel: str, user: str, text: str = "", **kwargs: Any) -> dict[str, Any]:
+        """A message only one person sees. Recorded, so a test can assert on it."""
+        self._record("chat.postEphemeral", channel=channel, user=user)
+        ts = self.ws.next_ts()
+        self.ws.posted.append({"channel": channel, "text": text, "ts": ts, "ephemeral_to": user})
+        return {"ok": True, "message_ts": ts}
 
     def chat_getPermalink(self, *, channel: str, message_ts: str, **kwargs: Any) -> dict[str, Any]:
         self._record("chat.getPermalink", channel=channel, message_ts=message_ts)
@@ -525,7 +580,9 @@ class FakeSlackWebClient:
         "conversations.history": "conversations_history",
         "conversations.replies": "conversations_replies",
         "conversations.members": "conversations_members",
+        "conversations.open": "conversations_open",
         "chat.postMessage": "chat_postMessage",
+        "chat.postEphemeral": "chat_postEphemeral",
         "chat.getPermalink": "chat_getPermalink",
     }
 
@@ -561,6 +618,9 @@ def demo_workspace(roster_path: str | Path | None = None, *, extra_users: Iterab
     ws = FakeWorkspace()
     if roster_path and Path(roster_path).exists():
         ws.seed_from_roster(roster_path)
+    # A staff account, so the demo can run the staff-only slash commands as
+    # somebody. Its address is what CUFA_SLACK_ADMINS is set to in the demo.
+    ws.add_user(email=DEMO_STAFF_EMAIL, real_name="CU Staff (demo)", display_name="cu-staff")
     ws.add_user(email="guest.speaker@example.invalid", real_name="Guest Speaker", display_name="guest")
     ws.add_user(email=None, real_name="No Email On Profile", display_name="noemail")
     ws.add_user(email="former.fellow@example.invalid", real_name="Former Fellow", display_name="former", deleted=True)

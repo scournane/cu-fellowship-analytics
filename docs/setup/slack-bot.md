@@ -416,6 +416,47 @@ database keeps looking fine, and the gap is found in March. So:
   survivable.
 * Name the person who restarts it. Put their name here: **TODO(owner)**.
 
+### What a dead bot costs on the sending side
+
+The capture side loses history. The sending side loses something fellows notice,
+and it fails just as silently, so it is worth knowing what stops:
+
+| Stops | Noticed by | Recoverable? |
+|---|---|---|
+| Reminders (24 h / 1 h / 10 min) | fellows, when nobody shows up | **No.** A reminder for a session that has started is worse than none, so nothing is sent late. |
+| The welcome DM to a new fellow | nobody, which is the problem | Yes. Sent on the next tick, once each, forever. |
+| Badge DMs | nobody | Yes. Awards are still computed; the announcement catches up. |
+| The session summary and the Monday digest | staff | Yes. Both are posted once per key, so a late tick posts the ones that were missed. |
+| Roster alerts for unrostered joins | staff | Yes, on the next tick. |
+| Slash commands and the check-in button | a fellow pressing a button and getting nothing | **No.** These need the process up. |
+
+Two practical consequences. First, **a fellow who pressed *check in with me* and
+got no answer is the worst failure in this system**, worse than any lost count:
+the request is recorded in the database either way, so check the staff dashboard
+for open requests after any outage. Second, the scheduled half does not need the
+bot at all — `cufa slack tick` from cron or a scheduled task does everything on
+that list except slash commands and the button. If keeping a long-running process
+alive is the hard part for whoever inherits this, run the tick from a scheduler
+and accept that the commands are unavailable.
+
+### What the second half needs that the first does not
+
+`cufa slack doctor` checks all of it, but for the person reading this cold:
+
+* `CUFA_SLACK_STAFF_CHANNEL` — a **private** channel, bot invited. This is the
+  switch: with it unset, the whole sending half except reminders and badge DMs is
+  off, and the preflight says so and still passes. The channel may be named by
+  name (`staff`) or by id. It must be private, because the weekly digest names
+  fellows who are falling behind.
+* `CUFA_SLACK_ADMINS` — who may run the staff commands, beyond Slack's own
+  workspace admins.
+* `CUFA_CONSOLE_SECRET` — **not the default**. The `/dashboard` link the bot
+  hands a fellow is signed with this, so on the example value in `.env.example`
+  anyone who reads the repository can mint a link to any fellow's page.
+* `CUFA_PUBLIC_BASE_URL` — where the console is reachable *from a fellow's own
+  machine*. On `127.0.0.1` the links the bot sends will not open for them.
+* Scopes beyond the capture set: `chat:write`, `im:write`, `commands`.
+
 ---
 
 ## Part two: reminders, badges, staff commands, dashboards

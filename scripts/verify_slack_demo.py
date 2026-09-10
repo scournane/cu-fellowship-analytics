@@ -17,6 +17,7 @@ import urllib.request
 sys.path.insert(0, __import__("pathlib").Path(__file__).resolve().parent.parent.joinpath("src").as_posix())
 
 from cufa.db import connection, fetch_all, fetch_one  # noqa: E402
+from cufa.slack.fake import DEMO_STAFF_EMAIL  # noqa: E402
 
 PASS = "  ok   "
 FAIL = "  FAIL "
@@ -26,6 +27,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cohort", default="demo")
     parser.add_argument("--fake-url", default="http://127.0.0.1:3001")
+    parser.add_argument("--staff-email", default="", help="the demo's staff address, to check nothing was DM'd to it")
     args = parser.parse_args()
 
     failures: list[str] = []
@@ -134,6 +136,115 @@ def main() -> int:
         check("what the bot posted names no address", all("@example.invalid" not in p["text"] and "<@U" not in p["text"] for p in posted))
         qa_text_in_events = (fetch_one(conn, "select count(*) as n from slack_event where text is not null") or {})["n"]
         check("Q&A text lives in the Q&A tables, not on slack_event", qa_text_in_events == 0)
+
+        # ------------------------------------------------------------------
+        # The other half of the bot: what it SENDS. Everything below went out
+        # through the production client (slack_sdk over HTTP to the fake
+        # server), so these checks cover the adapter and the wire as well as
+        # the logic the unit tests cover against the in-memory fake.
+        # ------------------------------------------------------------------
+        if args.staff_email:
+            check(
+                "the demo's staff address matches the one the fake workspace creates",
+                args.staff_email == DEMO_STAFF_EMAIL,
+                f"{args.staff_email} vs {DEMO_STAFF_EMAIL}",
+            )
+        dms = state.get("dms") or []
+        check(f"the bot sent direct messages ({len(dms)})", bool(dms))
+
+        # 11. One welcome per fellow, once, with the check-in button on it.
+        welcomes = [d for d in dms if "I'm the fellowship bot" in d["text"]]
+        recipients = [d["to"] for d in welcomes]
+        rostered_on_slack = (fetch_one(
+            conn,
+            "select count(*) as n from v_slack_user_resolved "
+            "where cohort_id = %s and fellow_id is not null and not is_bot and not deleted",
+            (args.cohort,),
+        ) or {})["n"]
+        check(
+            f"every fellow on Slack was welcomed exactly once ({len(welcomes)} of {rostered_on_slack})",
+            len(welcomes) == rostered_on_slack and len(set(recipients)) == len(recipients),
+        )
+        check(
+            "the welcome carries the 'check in with me' button",
+            all(d["blocks"] for d in welcomes),
+            f"{sum(1 for d in welcomes if d['blocks'])} of {len(welcomes)} had blocks",
+        )
+        welcomed_in_db = (fetch_one(conn, "select count(*) as n from slack_user where welcomed_at is not null") or {})["n"]
+        check("each welcome is recorded, so a re-run sends none", welcomed_in_db == len(welcomes))
+
+        # 12. Reminders: the right interval, the link in the message, once each.
+        session_reminders = [d for d in dms if "starts in 1 hour" in d["text"]]
+        check(f"the one-hour session reminder went out ({len(session_reminders)})", bool(session_reminders))
+        check(
+            "the session reminder carries the Zoom link a staff member set from Slack",
+            all("https://zoom.us/j/demo" in d["text"] for d in session_reminders),
+        )
+        assignment_reminders = [d for d in dms if "is due in 24 hours" in d["text"]]
+        check(f"the 24-hour assignment reminder went out ({len(assignment_reminders)})", bool(assignment_reminders))
+        check(
+            "the assignment reminder carries the submission link",
+            all("forms.example.invalid" in d["text"] for d in assignment_reminders),
+        )
+        sent_rows = (fetch_one(conn, "select count(*) as n from reminder_sent") or {})["n"]
+        check(
+            f"one reminder_sent row per reminder delivered ({sent_rows} rows, "
+            f"{len(session_reminders) + len(assignment_reminders)} messages)",
+            sent_rows == len(session_reminders) + len(assignment_reminders),
+        )
+
+        # 13. Nobody who is not a fellow was DM'd, and no address leaked into one.
+        staff_ids = {u["id"] for u in state["users"] if (u["email"] or "") == DEMO_STAFF_EMAIL}
+        check("no direct message went to the staff account", not (staff_ids & {d["to"] for d in dms}))
+        check(
+            "no direct message names an email address",
+            all("@example.invalid" not in d["text"] for d in dms),
+        )
+
+        # 14. The staff-facing posts went to the private channel, and only there.
+        staff_channel = fetch_one(
+            conn, "select channel_id, name, is_private from slack_channel where lower(name) = 'cohort-private'"
+        )
+        check("the staff channel is private", bool(staff_channel) and bool(staff_channel["is_private"]))
+        flagged = fetch_all(conn, "select name from slack_channel where is_staff")
+        check(
+            "the staff channel is flagged as staff, so its messages are not fellow participation",
+            [r["name"] for r in flagged] == ["cohort-private"],
+            f"flagged: {[r['name'] for r in flagged]}",
+        )
+        digests = fetch_all(conn, "select kind, channel_id, body from digest_log order by posted_at")
+        check(
+            "no staff-channel post names an email address",
+            all("@example.invalid" not in (d["body"] or "") for d in digests),
+            "; ".join(d["kind"] for d in digests if "@example.invalid" in (d["body"] or "")),
+        )
+        kinds = {d["kind"] for d in digests}
+        check(
+            f"the session summary and the weekly digest were posted ({sorted(kinds)})",
+            {"session_summary", "weekly"} <= kinds,
+        )
+        if staff_channel:
+            check(
+                "every staff-facing post went to the private staff channel",
+                all(d["channel_id"] == staff_channel["channel_id"] for d in digests),
+                f"{sorted({d['channel_id'] for d in digests})}",
+            )
+
+
+        # 15. A badge award is either announced or waiting on a Slack account.
+        unannounced = fetch_all(
+            conn,
+            "select a.badge_key from badge_award a "
+            "left join v_slack_user_resolved u on u.fellow_id = a.fellow_id and not u.is_bot and not u.deleted "
+            "where a.notified_at is null and u.slack_user_id is not null",
+        )
+        awarded = (fetch_one(conn, "select count(*) as n from badge_award") or {})["n"]
+        check(
+            f"every badge award reachable on Slack was announced ({awarded} awarded)",
+            not unannounced,
+            f"{len(unannounced)} unannounced",
+        )
+
 
     print("=" * 62)
     if failures:
