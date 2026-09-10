@@ -1,5 +1,17 @@
 """Idempotent outbound Slack reminders, digests, nudges, and agendas.
 
+This is the one engine that DMs fellows about sessions and assignments. The
+reminder/badge half of the bot (``digest.tick``, ``cufa slack tick`` from
+cron, the ``/reminders`` command) reaches it through :func:`run_reminders`
+at the bottom of this module, so there is one dedupe table, one quiet-hours
+rule and one timezone rule however a reminder is triggered.
+
+Two preference commands, both honoured: ``/cufa-reminders`` sets the cadence
+(all / fewer / later / none), the timezone and the quiet hours;
+``/reminders session 10m off`` switches a single interval off. An interval
+goes out only when the cadence includes it *and* the fellow has not switched
+it off.
+
 The scheduler polls; the database decides whether a message may be sent. That
 is important operationally: restarting the bot, running a manual tick, or
 briefly running two bot processes must not duplicate a DM. Part B nudges have a
@@ -16,10 +28,14 @@ from zoneinfo import ZoneInfo
 
 import psycopg
 
-from ..config import Settings
+from dataclasses import dataclass, field
+
+from ..config import Settings, get_settings
 from ..db import connection, execute, fetch_all, fetch_one
+from ..errors import CufaError
 from ..logging_setup import get_logger
 from ..timeutil import get_zone, to_utc
+from .preferences import Preferences, get_preferences
 from .users import resolve_user, sync_users
 
 log = get_logger(__name__)
@@ -31,7 +47,7 @@ SESSION_OFFSETS: dict[str, tuple[int, ...]] = {
     "none": (),
 }
 ASSIGNMENT_OFFSETS: dict[str, tuple[int, ...]] = {
-    "all": (24 * 60, 60),
+    "all": (24 * 60, 60, 10),
     "fewer": (24 * 60,),
     "later": (60,),
     "none": (),
@@ -132,13 +148,19 @@ def _offset_label(minutes: int) -> str:
     return f"{minutes} minutes"
 
 
+def _zoom_line(session: dict[str, Any]) -> str:
+    if session.get("zoom_url"):
+        return _slack_link(session["zoom_url"], "Join Zoom")
+    return "_No Zoom link has been added yet; check the channel._"
+
+
 def session_reminder_text(
     fellow_name: str, session: dict[str, Any], minutes: int, zone: ZoneInfo
 ) -> str:
     return (
         f"Hi {_first_name(fellow_name)}, reminder: *{_slack_text(session['title'])}* "
         f"starts in {_offset_label(minutes)} ({_local_when(session['scheduled_at_utc'], zone)}). "
-        f"{_slack_link(session['zoom_url'], 'Join Zoom')}"
+        f"{_zoom_line(session)}"
     )
 
 
@@ -201,12 +223,15 @@ class ReminderEngine:
         #: actually around. Filled per run; consulted only for fellows who set
         #: no quiet hours of their own.
         self._observed_quiet: dict[str, tuple[time, time]] = {}
+        #: slack_user_id -> the per-interval switches from ``/reminders``.
+        self._interval_prefs: dict[str, Preferences] = {}
 
     def run_once(
         self, conn: psycopg.Connection, *, now: datetime | None = None
     ) -> dict[str, int]:
         instant = to_utc(now or datetime.now(timezone.utc))
         counts: Counter[str] = Counter()
+        self._interval_prefs = {}
         self._dispatch_agendas(conn, instant, counts)
         fellows = self._fellows(conn)
         self._learn_quiet_hours(conn, fellows, counts)
@@ -216,13 +241,30 @@ class ReminderEngine:
         self._dispatch_weekly_digests(conn, fellows, instant, counts)
         return dict(counts)
 
+    def run_reminders_only(
+        self, conn: psycopg.Connection, *, now: datetime | None = None
+    ) -> dict[str, int]:
+        """Session and assignment reminders only — what ``digest.tick`` asks for.
+
+        Nudges, agendas and the fellow digests stay with :meth:`run_once`,
+        which the automation loop runs.
+        """
+        instant = to_utc(now or datetime.now(timezone.utc))
+        counts: Counter[str] = Counter()
+        self._interval_prefs = {}
+        fellows = self._fellows(conn)
+        self._learn_quiet_hours(conn, fellows, counts)
+        self._dispatch_session_reminders(conn, fellows, instant, counts)
+        self._dispatch_assignment_reminders(conn, fellows, instant, counts)
+        return dict(counts)
+
     def _fellows(self, conn: psycopg.Connection) -> list[dict[str, Any]]:
         return fetch_all(
             conn,
             """
             select f.fellow_id, f.full_name, f.primary_email, f.cohort_id,
                    coalesce(p.mode, 'all') as reminder_mode,
-                   coalesce(p.timezone, f.timezone, %s::text) as reminder_timezone,
+                   coalesce(p.timezone, f.timezone, su.tz, %s::text) as reminder_timezone,
                    coalesce(p.quiet_start_local, %s::time) as quiet_start_local,
                    coalesce(p.quiet_end_local, %s::time) as quiet_end_local,
                    (p.quiet_start_local is not null) as has_quiet_preference,
@@ -230,12 +272,15 @@ class ReminderEngine:
               from fellow f
               left join fellow_reminder_preference p on p.fellow_id = f.fellow_id
               left join lateral (
-                  select u.slack_user_id
-                    from slack_user u
-                   where u.team_id = %s
-                     and lower(u.email) = lower(f.primary_email)
-                     and not u.is_bot and not u.is_deleted
-                   order by u.fetched_at desc
+                  -- The same resolution the staff commands use: a manual
+                  -- link, then any address on the roster record (aliases
+                  -- included), never a guess.
+                  select r.slack_user_id, r.tz
+                    from v_slack_user_resolved r
+                   where r.team_id = %s
+                     and r.fellow_id = f.fellow_id
+                     and not r.is_bot and not r.deleted
+                   order by r.last_seen_at desc nulls last
                    limit 1
               ) su on true
              where f.cohort_id = %s and f.status = 'active'
@@ -313,6 +358,49 @@ class ReminderEngine:
             return False
         return True
 
+    def _interval_wanted(
+        self,
+        conn: psycopg.Connection,
+        fellow: dict[str, Any],
+        kind: str,
+        minutes: int,
+        counts: Counter[str],
+    ) -> bool:
+        """The per-interval switches from ``/reminders`` (``slack_preference``)."""
+        user_id = fellow.get("slack_user_id")
+        if not user_id:
+            return True  # _dm_allowed reports the missing account
+        prefs = self._interval_prefs.get(user_id)
+        if prefs is None:
+            prefs = get_preferences(conn, user_id)
+            self._interval_prefs[user_id] = prefs
+        wanted = prefs.session_reminders if kind == "session" else prefs.assignment_reminders
+        if minutes not in wanted:
+            counts["suppressed_interval_pref"] += 1
+            return False
+        return True
+
+    def _post(self, target: str, text: str) -> tuple[str, str | None]:
+        """Send one message; return ``(channel, ts)``.
+
+        The automation loop hands this a ``slack_sdk.WebClient`` (or the
+        fake's duck-typed one). ``digest.tick`` and the tests for that half
+        of the bot hand it a ``SlackClient`` — the protocol in
+        :mod:`cufa.slack.client`, whose DMs go through ``open_dm``.
+        """
+        client = self.client
+        if hasattr(client, "chat_postMessage"):
+            response = client.chat_postMessage(
+                channel=target,
+                text=text,
+                unfurl_links=False,
+                unfurl_media=False,
+            )
+            return response.get("channel") or target, response.get("ts")
+        channel = client.open_dm(target) if target[:1] in ("U", "W") else target
+        posted = client.post_message(channel, text)
+        return posted.channel_id, posted.ts
+
     def _claim_and_send(
         self,
         conn: psycopg.Connection,
@@ -368,13 +456,7 @@ class ReminderEngine:
 
         counts["attempted"] += 1
         try:
-            response = self.client.chat_postMessage(
-                channel=target,
-                text=text,
-                unfurl_links=False,
-                unfurl_media=False,
-            )
-            slack_channel = response.get("channel") or target
+            slack_channel, slack_ts = self._post(target, text)
             execute(
                 conn,
                 """
@@ -383,7 +465,7 @@ class ReminderEngine:
                        target_channel = %s, error = null
                  where delivery_id = %s
                 """,
-                (now, response.get("ts"), slack_channel, claimed["delivery_id"]),
+                (now, slack_ts, slack_channel, claimed["delivery_id"]),
             )
         except Exception as exc:  # Slack SDK and test doubles share no base error
             execute(
@@ -432,8 +514,7 @@ class ReminderEngine:
                     continue
                 counts["candidates"] += 1
                 minutes, scheduled_for = due
-                if not session.get("zoom_url"):
-                    counts["skipped_missing_zoom_url"] += 1
+                if not self._interval_wanted(conn, fellow, "session", minutes, counts):
                     continue
                 if not self._dm_allowed(fellow, now, counts):
                     continue
@@ -466,7 +547,7 @@ class ReminderEngine:
         assignments = fetch_all(
             conn,
             """
-            select assignment_id, cohort_id, title, description, url, due_at_utc
+            select assignment_id, cohort_id, title, description, link as url, due_at_utc
               from assignment
              where cohort_id = %s and status = 'active'
                and due_at_utc > %s and due_at_utc <= %s
@@ -484,6 +565,8 @@ class ReminderEngine:
                     continue
                 counts["candidates"] += 1
                 minutes, scheduled_for = due
+                if not self._interval_wanted(conn, fellow, "assignment", minutes, counts):
+                    continue
                 if not self._dm_allowed(fellow, now, counts):
                     continue
                 self._claim_and_send(
@@ -595,6 +678,13 @@ class ReminderEngine:
         if wanted.startswith(("C", "G")):
             self._channel_cache[wanted] = wanted
             return wanted
+
+        if not hasattr(self.client, "conversations_list") and hasattr(self.client, "list_channels"):
+            for known in self.client.list_channels():
+                if known.name == wanted:
+                    self._channel_cache[wanted] = known.id
+                    return known.id
+            return None
 
         cursor: str | None = None
         while True:
@@ -713,7 +803,7 @@ class ReminderEngine:
             assignments = fetch_all(
                 conn,
                 """
-                select title, due_at_utc, url
+                select title, due_at_utc, link as url
                   from assignment
                  where cohort_id = %s and status = 'active'
                    and due_at_utc >= %s and due_at_utc < %s
@@ -1082,3 +1172,106 @@ class AutomationLoop:
             "last_tick_at": self.last_tick_at.isoformat() if self.last_tick_at else None,
             "counts": dict(self.counts),
         }
+
+
+# ---------------------------------------------------------------------------
+# The reminder/badge bot's API, over the same engine
+# ---------------------------------------------------------------------------
+#
+# ``digest.tick``, ``cufa slack tick`` and the staff commands were written
+# against these names. They stay, so that half of the bot needs no scheduler
+# of its own — and so a reminder can never go out twice because two engines
+# both thought it was due.
+
+
+@dataclass
+class ReminderRun:
+    considered: int = 0
+    sent: int = 0
+    skipped_pref: int = 0
+    skipped_quiet: int = 0
+    skipped_dup: int = 0
+    failed: int = 0
+    counts: dict[str, int] = field(default_factory=dict)
+
+
+def run_reminders(
+    conn: psycopg.Connection,
+    client: Any,
+    *,
+    cohort_id: str,
+    now: datetime | None = None,
+    settings: Settings | None = None,
+    team_id: str | None = None,
+) -> ReminderRun:
+    """Send every session and assignment reminder that is due. Safe to repeat."""
+    settings = settings or get_settings()
+    team = team_id or getattr(client, "team_id", None)
+    if not team:
+        raise CufaError("run_reminders needs a team id: the client has none and none was given")
+    engine = ReminderEngine(settings, client, team_id=str(team), cohort_id=cohort_id)
+    counts = engine.run_reminders_only(conn, now=now)
+    return ReminderRun(
+        considered=counts.get("candidates", 0),
+        sent=counts.get("sent", 0),
+        skipped_pref=counts.get("suppressed_none", 0) + counts.get("suppressed_interval_pref", 0),
+        skipped_quiet=counts.get("suppressed_quiet_hours", 0),
+        skipped_dup=counts.get("deduplicated", 0),
+        failed=counts.get("failed", 0),
+        counts=counts,
+    )
+
+
+def _zone_or_utc(tz: str | None) -> ZoneInfo:
+    try:
+        return get_zone(tz or "UTC")
+    except ValueError:
+        return get_zone("UTC")
+
+
+def format_when(at: datetime, tz: str | None) -> str:
+    """``Tue Sep 15, 7:00 PM EDT``. Built by hand: ``%-d`` is not portable to Windows."""
+    local = to_utc(at).astimezone(_zone_or_utc(tz))
+    hour12 = local.hour % 12 or 12
+    ampm = "AM" if local.hour < 12 else "PM"
+    return f"{local:%a %b} {local.day}, {hour12}:{local:%M} {ampm} {local.tzname() or (tz or 'UTC')}"
+
+
+def in_quiet_hours(now: datetime, tz: str | None, settings: Settings | None = None) -> bool:
+    """The deployment's default quiet window, in ``tz``. Per-fellow windows live in the engine."""
+    settings = settings or get_settings()
+    return is_quiet_time(
+        now,
+        _zone_or_utc(tz).key,
+        parse_clock(settings.slack_quiet_start),
+        parse_clock(settings.slack_quiet_end),
+    )
+
+
+def set_zoom_link(conn: psycopg.Connection, session_id: str, link: str | None) -> None:
+    """``/zoom`` — the same column the console and the reminders read."""
+    execute(
+        conn,
+        'update "session" set zoom_url = %s, updated_at = now() where session_id = %s',
+        ((link or "").strip() or None, session_id),
+    )
+
+
+__all__ = [
+    "ASSIGNMENT_OFFSETS",
+    "AutomationLoop",
+    "NUDGE_OFFSETS",
+    "ReminderEngine",
+    "ReminderRun",
+    "SESSION_OFFSETS",
+    "assignment_reminder_text",
+    "format_when",
+    "in_quiet_hours",
+    "is_quiet_time",
+    "nudge_text",
+    "parse_clock",
+    "preference_command",
+    "run_reminders",
+    "session_reminder_text",
+    "set_zoom_link",
+]

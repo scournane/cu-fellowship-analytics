@@ -116,6 +116,16 @@ class Settings:
     #: Where `cufa slack qa summary --post` goes when no --channel is given.
     #: Blank means the first Q&A channel.
     slack_qa_summary_channel: str | None = None
+    #: Run the bot's own tools against the in-memory fake client (tests, dry runs).
+    fake_slack: bool = False
+    #: The private staff-only channel: session summaries, roster alerts,
+    #: check-in pings and the Monday digest go here.
+    slack_staff_channel: str | None = None
+    #: Staff addresses allowed to run admin commands, on top of anyone Slack
+    #: itself marks as a workspace admin.
+    slack_admins: tuple[str, ...] = ()
+    #: Where the console is reachable, for the fellow dashboard links the bot hands out.
+    public_base_url: str = "http://127.0.0.1:8000"
 
     fixtures_dir: Path = field(default_factory=lambda: _repo_root() / "fixtures")
 
@@ -218,6 +228,10 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
             item.strip() for item in (env.get("CUFA_SLACK_QA_CHANNELS") or "").split(",") if item.strip()
         ),
         slack_qa_summary_channel=(env.get("CUFA_SLACK_QA_SUMMARY_CHANNEL") or "").strip().lstrip("#") or None,
+        fake_slack=_truthy(env.get("CUFA_FAKE_SLACK")),
+        slack_staff_channel=(env.get("CUFA_SLACK_STAFF_CHANNEL") or "").strip() or None,
+        slack_admins=_addresses("CUFA_SLACK_ADMINS"),
+        public_base_url=(env.get("CUFA_PUBLIC_BASE_URL") or "http://127.0.0.1:8000").rstrip("/"),
     )
 
 

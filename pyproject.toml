@@ -33,7 +33,7 @@ cufa = "cufa.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-cufa = ["console/templates/*.html", "console/static/*", "data/*.txt"]
+cufa = ["console/templates/*.html", "console/templates/*.css", "console/static/*", "data/*.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

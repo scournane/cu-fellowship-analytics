@@ -525,6 +525,13 @@ def build_bolt_app(settings: Settings, client: WebClient, processor: EventProces
             )
         respond(text=message, response_type="ephemeral")
 
+    # The reminder / badge / staff-command half of the bot: slash commands,
+    # the check-in button, and the team_join roster alert. Registered after
+    # /cufa-reminders above, so Bolt's first-match rule leaves that one here.
+    from .app import register_handlers
+
+    register_handlers(app, settings, client)
+
     return app
 
 
@@ -631,7 +638,20 @@ def run_http(settings: Settings | None = None, *, host: str = "127.0.0.1", port:
     settings = settings or get_settings()
     configure_logging(settings.log_level)
     app = build_http_app(settings)
-    uvicorn.run(app, host=host, port=port or settings.slack_port, log_level="warning")
+    from .app import start_tick_thread
+    from .client import WebClientAdapter
+
+    # The automation loop starts with the app (see build_http_app) and owns
+    # reminders while it runs; the tick does the rest.
+    stop_tick = start_tick_thread(
+        settings,
+        WebClientAdapter(make_web_client(settings)),
+        reminders=not settings.slack_automations_enabled,
+    )
+    try:
+        uvicorn.run(app, host=host, port=port or settings.slack_port, log_level="warning")
+    finally:
+        stop_tick.set()
 
 
 def run_socket(settings: Settings | None = None) -> None:
@@ -667,6 +687,12 @@ def run_socket(settings: Settings | None = None) -> None:
             cohort_id=processor.workspace.cohort_id or settings.slack_cohort,
         )
         automation.start()
+    # The other half's tick: sync, welcomes, badges, alerts, summaries and the
+    # staff digest. Reminders are the automation loop's while it runs.
+    from .app import start_tick_thread
+    from .client import WebClientAdapter
+
+    stop_tick = start_tick_thread(settings, WebClientAdapter(client), reminders=automation is None)
     handler = SocketModeHandler(bolt, settings.slack_app_token)
     try:
         log.info("socket mode: connected, waiting for events (Ctrl+C to stop)")
@@ -674,6 +700,7 @@ def run_socket(settings: Settings | None = None) -> None:
     finally:
         if automation is not None:
             automation.stop()
+        stop_tick.set()
         processor.stop()
 
 

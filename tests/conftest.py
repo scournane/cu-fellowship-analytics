@@ -47,10 +47,26 @@ TEST_TZ = "America/New_York"
 
 # Order matters: children before parents, so a cascade is not relied on.
 _TABLES = (
+    # The bots' own tables first: several reference slack_user, session or
+    # assignment.
     "bot_delivery",
     "fellow_reminder_preference",
+    "digest_log",
+    "badge_award",
+    "reminder_sent",
+    "zoom_transcript_turn",
+    "intervention",
+    "assignment_submission",
     "assignment",
+    "slack_preference",
+    "roster_alert",
+    "slack_event_log",
+    "fellow_alias",
     # Slack: events reference workspace, so they go first.
+    "slack_qa_pointer",
+    "slack_qa_answer",
+    "slack_qa_question",
+    "slack_qa_summary",
     "slack_event",
     "slack_poll",
     "slack_file",

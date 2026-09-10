@@ -1,0 +1,29 @@
+{
+  "_comment": "Concepts taught early in the fellowship and the terms that signal a fellow is still using them later. Deterministic keyword matching only — no model reads a fellow's words. Edit freely; taught_week is the week_index of the session that introduced the concept.",
+  "concepts": [
+    {
+      "key": "accuracy",
+      "label": "Accuracy",
+      "taught_week": 1,
+      "terms": ["accuracy", "accurate", "fact-check", "fact check", "verify", "verified", "evidence"]
+    },
+    {
+      "key": "transparency",
+      "label": "Transparency",
+      "taught_week": 1,
+      "terms": ["transparency", "transparent", "open about", "disclose", "disclosure"]
+    },
+    {
+      "key": "consistency",
+      "label": "Consistency",
+      "taught_week": 2,
+      "terms": ["consistency", "consistent", "consistently", "same standard"]
+    },
+    {
+      "key": "stakeholders",
+      "label": "Stakeholder mapping",
+      "taught_week": 2,
+      "terms": ["stakeholder", "stakeholders", "who is affected", "affected parties"]
+    }
+  ]
+}

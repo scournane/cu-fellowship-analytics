@@ -87,11 +87,49 @@ features:
   bot_user:
     display_name: cif-participation
     always_online: true
-  slash_commands:
+  slash_commands:             # one entry per command; the URL is ignored in Socket Mode
     - command: /cufa-reminders
-      description: Control your fellowship reminders
-      usage_hint: all | fewer | later | none | status
+      description: Your reminder cadence, timezone and quiet hours
+      usage_hint: all | fewer | later | none | timezone <zone> | quiet <from> <to> | status
       should_escape: false
+    - command: /reminders
+      description: See or change which reminder intervals you get
+    - command: /badges
+      description: Your badges and streak; /badges off stops the messages
+    - command: /checkin
+      description: Ask a staff member to check in with you
+    - command: /me
+      description: Your own attendance, exit tickets and Slack activity
+    - command: /dashboard
+      description: A private link to your dashboard
+    - command: /help
+      description: What the bot can do
+    - command: /attendance
+      description: "Staff: who checked in to a session"
+    - command: /fellow
+      description: "Staff: a fellow's profile card"
+    - command: /report
+      description: "Staff: the cohort so far"
+    - command: /leaderboard
+      description: "Staff: rankings"
+    - command: /assignment
+      description: "Staff: create and list assignments"
+    - command: /score
+      description: "Staff: record a Solvathon or case-brief score"
+    - command: /zoom
+      description: "Staff: put the Zoom link on a session"
+    - command: /outreach
+      description: "Staff: mark that someone reached out to a fellow"
+    - command: /alias
+      description: "Staff: a second address on one roster record"
+    - command: /link
+      description: "Staff: attach a Slack account to a fellow"
+    - command: /alerts
+      description: "Staff: accounts not on the roster"
+    - command: /digest
+      description: "Staff: post the weekly digest now"
+    - command: /sync
+      description: "Staff: pull Slack now"
 oauth_config:
   scopes:
     bot:
@@ -102,9 +140,10 @@ oauth_config:
       - users:read            # slack_user_id → profile
       - users:read.email      # → email, which is what joins to the roster
       - reactions:read        # reactions on backfill
-      - chat:write            # reminders, digests, agendas, Q&A pointers and summaries
-      - commands              # /cufa-reminders preference control
+      - chat:write            # reminders, digests, agendas, badge DMs, staff posts, Q&A pointers and summaries
       - app_mentions:read     # Q&A: "@bot summary" in a channel
+      - im:write              # open a DM to send a reminder or a welcome
+      - commands              # the slash commands listed under features above
 settings:
   event_subscriptions:
     bot_events:
@@ -116,6 +155,8 @@ settings:
       - member_left_channel
       # Q&A: "@bot summary" in a channel.
       - app_mention
+      # Roster alert when someone new joins the workspace.
+      - team_join
       # Huddle joins and leaves. Slack sends the user, not the channel.
       - user_huddle_changed
       # Canvases arrive as file events; the bot asks files.info whether the
@@ -125,8 +166,8 @@ settings:
       - file_shared
       - file_comment_added
   interactivity:
-    # Votes on polls the bot posts. Same URL as events in HTTP mode; nothing
-    # extra in Socket Mode.
+    # Votes on polls the bot posts, and the "check in with me" button. Same
+    # URL as events in HTTP mode; nothing extra in Socket Mode.
     is_enabled: true
   socket_mode_enabled: true   # flip to false for HTTP mode; then set request_url
   org_deploy_enabled: false
@@ -177,6 +218,12 @@ Then:
 6. **Optionally name the Q&A channel(s):** `CUFA_SLACK_QA_CHANNELS=q-and-a`.
    Their text is stored, repeats get a pointer, and summaries work. Leave it
    blank and none of that runs.
+7. **For the reminder / staff-command half** (the second part of this
+   document): `CUFA_SLACK_STAFF_CHANNEL` = the id of a private staff-only
+   channel the bot is invited to; `CUFA_SLACK_ADMINS` = staff addresses that
+   may run staff commands (workspace admins always can);
+   `CUFA_PUBLIC_BASE_URL` = where the console is reachable, for `/dashboard`
+   links.
 
 ## First real run — the checklist
 
@@ -469,3 +516,181 @@ database keeps looking fine, and the gap is found in March. So:
   therefore not a nice-to-have; it is what makes the bot's failure mode
   survivable.
 * Name the person who restarts it. Put their name here: **TODO(owner)**.
+
+---
+
+## Part two: reminders, badges, staff commands, dashboards
+
+Everything below runs inside the same bot process — `cufa slack socket` or
+`cufa slack serve` — on a scheduler thread that runs a **tick** every five
+minutes, and answers slash commands as they arrive. `cufa slack tick` from cron
+does the scheduled part without the bot running (and then also pulls messages,
+which the live bot otherwise captures itself). Everything can be tried with no
+workspace: `CUFA_FAKE_SLACK=1` swaps in an in-memory client, and
+`cufa slack cmd /report --as U123` runs any command as any user id.
+
+A tick does, in order, and safely on repeat: sync members and channels →
+welcome newly resolved fellows → reminders → badges → roster alerts →
+session summaries → the Monday digest. Reminders are sent by the one engine
+described under *Outbound reminders and agendas* above; inside the bot
+process that engine's own loop sends them every minute and the tick leaves
+them alone, and from cron the tick sends them itself. Either way a reminder
+is recorded in `bot_delivery` before it goes out, so nothing is sent twice.
+
+### What fellows see
+
+**Reminders** arrive by DM in the fellow's own time zone — a zone they set
+with `/cufa-reminders`, else the roster's, else the one Slack reports — with
+the Zoom link for sessions and the submission link for assignments. Nothing
+is sent overnight (`CUFA_SLACK_QUIET_START`/`END`, 21:00–08:00 by default;
+each fellow can set their own with `/cufa-reminders quiet`) — a reminder that
+would land then is skipped, not delayed. `/cufa-reminders` sets the cadence;
+`/reminders` switches single intervals off, and both are honoured:
+
+```
+/reminders                       show
+/reminders session 10m off       keep 24h and 1h, drop the 10-minute one
+/reminders assignment off        no assignment reminders at all
+/reminders all on                back to the defaults
+```
+
+**Badges** are computed from what is already recorded — check-ins, exit
+tickets, messages, thread replies, shoutouts given and received, streaks —
+and DM'd privately when earned. `/badges` shows them; `/badges off` stops the
+messages. Nothing is ever posted publicly, and there is no fellow-facing
+leaderboard: ADR-028 records why. Staff can see rankings with
+`/leaderboard`, ranked by *giving* shoutouts, not receiving them.
+
+**`/checkin [note]`** pings the staff channel and records an open request on
+the fellow's profile. It is closed when a staffer marks outreach. This is a
+public, operational button and is deliberately *not* the Part B "I'd like
+someone to check in with me" checkbox, which stays on its own path with its
+own recipient and access list (see `docs/safeguarding.md`).
+
+**`/me`** is the fellow's own attendance, exit tickets and Slack activity;
+**`/dashboard`** is a signed link (valid 7 days) to the same on the web, with
+an export button and click-to-toggle reminder and badge preferences. Only
+their own data, ever.
+
+### What staff see
+
+| Command | What it gives you |
+|---|---|
+| `/attendance <session\|next\|last>` | who checked in, who filled in the exit ticket, who attended but was not heard on the recording |
+| `/fellow <name\|id\|email>` | profile card: emails and aliases, Slack account, attendance, activity vs. cohort mean, attention index and why, reached-out flag, assignment scores, interventions, badges, funnel |
+| `/report` | the cohort so far, plus when each data source last produced anything |
+| `/leaderboard [checkins\|streak\|messages\|shoutouts_given\|exit_tickets]` | staff-only ranking |
+| `/assignment create "Title" 2026-10-01 18:00 [solvathon\|case_brief] [link]` | an assignment with reminders; `list`, `link` |
+| `/score <assignment> <fellow> <score> [note]` | record a Solvathon or case-brief score you gave by hand |
+| `/zoom <session\|next> <link>` | put the Zoom link on a session; it goes out in every reminder |
+| `/outreach <fellow> [note]` · `/outreach clear <fellow>` | the "has anyone reached out?" boolean, with who and when |
+| `/alias <fellow> <email> [school\|personal]` | a second address on one roster record |
+| `/link <@user> <fellow>` | attach a Slack account to a roster record (and record its address as an alias) |
+| `/alerts` · `/alerts resolve <@user> staff\|ignored` | accounts that joined but are not on the roster |
+| `/digest` · `/sync` | post the weekly digest now; pull Slack now |
+
+**The session summary** is posted to the staff channel once the session's
+scheduled end (plus grace) has passed: check-ins over roster, exit tickets,
+who is missing, anything waiting for a human. If a Zoom transcript has been
+ingested for the session (below) it also names who had the most airtime and
+who attended but was never heard.
+
+**The Monday digest** lists what is on this week and whether it has a Zoom
+link yet, what is due, who has been quiet for 7+ days, the most active
+fellows, fellows with a high attention index nobody has reached out to,
+open check-in requests, and unrostered accounts.
+
+### The staff dashboard
+
+`/dashboard` in the console (behind the staff allowlist). Overall attendance
+rate; every fellow sorted by attention index with the parts shown; a
+*mark reached out* button per row; this week's most active; open check-in
+requests and roster alerts; badges and ranks; assignments with a score-entry
+form per fellow; the funnel; when data last arrived. **Export CSV** gives the
+engagement table. Each fellow's name opens `/dashboard/fellow/<id>`: the
+same page the fellow sees, plus attention index and reasons, aliases,
+interventions, airtime on recordings, and the outreach toggle.
+
+#### The attention index
+
+Three signals, each relative to the cohort rather than an absolute:
+
+* **Slack** — fellow-facing messages as a share of the cohort mean
+* **Attendance** — attended over sessions held; a session under review leaves
+  the denominator (absent evidence is not evidence of absence)
+* **Form completeness** — of the exit tickets submitted, how many fields
+  were answered. *Counted, never graded.* Length and quality of writing are
+  never scored (design invariant 13).
+
+Weights are in `cufa.engagement.WEIGHTS` and are a starting point for the
+Director to change. The index is 0–100, higher meaning "more reason for a
+human to look", and its components are always shown beside it. Two things
+never enter it, and tests enforce both: the help checkbox, and assignment
+scores.
+
+### Identity: aliases and merging
+
+Fellows join Slack from one address and fill in forms from another. Identity
+resolves at read time through `v_fellow_email` — the primary address plus
+any aliases — so linking an alias re-attributes every historical check-in
+and message at once, with no backfill.
+
+* A fellow whose Slack address matches the roster is resolved automatically.
+* Anyone else who joins raises a **roster alert** in the staff channel. Link
+  them with `/link @them <fellow>`; the bot records the address as an alias
+  and resolves the alert. Staff or guests: `/alerts resolve @them staff`.
+* When the forms side used a different address, `/alias <fellow> <email>` or
+  `cufa fellow merge --keep CU-0001 --other-email …` attaches it.
+
+One address can belong to one fellow. A trigger refuses an alias that is
+another fellow's primary address, and vice versa.
+
+### Zoom: who spoke, and how much
+
+No Zoom bot is needed. Zoom's cloud recordings come with a `.vtt` transcript
+tagged by display name. Download it and:
+
+```
+cufa zoom ingest --session <id> --vtt path/to/transcript.vtt
+```
+
+That stores speaking turns and prints speaking share per fellow, unmatched
+names, and fellows who attended but were never heard. Names are matched to
+the roster and to Slack profile names, which is why the session reminder
+asks everyone to set their real name and why the teacher should say so again
+at the top of each call — a fellow who joined as "iPhone" is invisible here.
+
+### Retention
+
+`cufa fellow retention` reads `config/retention_rubric.json` — the early
+concepts and the terms that signal them — and counts, per fellow, how many
+of those concepts appear in exit-ticket answers given *after* the week each
+was taught, against the cohort mean. Deterministic term matching only: no
+model reads a fellow's words (invariant 12), and a mention is counted, never
+graded (invariant 13). Edit the rubric to match the syllabus.
+
+The midpoint and end-of-fellowship reflection the Director suggested needs
+no new form: set the rotating question on those weeks as a teacher question
+in `config/rotation.json`.
+
+### The funnel
+
+`cufa fellow funnel` (cohort) or `cufa fellow funnel --fellow CU-0001`:
+accepted → joined Slack → first message → first check-in → completed, with
+how many reached each stage and the median days between stages. Every stage
+but the first and last is derived from observations. Stamp completion with
+`cufa fellow completed CU-0001`.
+
+---
+
+### What is deliberately not here
+
+* **No public leaderboard, no public badges.** DMs only, opt-out in one
+  command. ADR-028.
+* **No AI reads a fellow's words to decide anything about them.** Retention
+  is term-matching against a rubric staff wrote.
+* **No score is a participation signal.** Solvathon and case-brief scores are
+  stored and shown, and enter no metric.
+* **The help checkbox stays on its own path.** Nothing in the bot, the
+  dashboards or the engagement queries reads that table, and the
+  safeguarding tests run every one of those queries to prove it.

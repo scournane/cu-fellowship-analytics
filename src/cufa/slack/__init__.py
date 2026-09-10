@@ -21,4 +21,21 @@ Layout:
 * ``bot``      — the Bolt app (HTTP via FastAPI, or Socket Mode).
 * ``backfill`` — walk ``conversations.history`` for what the bot missed.
 * ``signing``  — sign a request the way Slack does, for the fake and the tests.
+
+The reminder / badge / staff-command side of the bot sits next to that, over
+the same tables, behind a small ``SlackClient`` protocol with an in-memory fake:
+
+* ``client``      — the protocol, ``FakeSlackClient``, and an adapter over ``slack_sdk``.
+* ``sync``        — members (time zone, admin flag), channels, and roster alerts.
+* ``identity``    — aliases, manual links, merge, roster alerts.
+* ``reminders``   — the one engine for every DM about a session or an
+                    assignment (reminders, Part B nudges, agendas, digests),
+                    with the automation loop that runs it and the
+                    ``run_reminders`` entry point ``tick`` and cron use.
+* ``preferences`` — the per-interval switches from ``/reminders``; the
+                    cadence, timezone and quiet hours come from ``/cufa-reminders``.
+* ``badges``      — badges, streaks, a staff-only ranking.
+* ``digest``      — session summaries, the Monday digest, and ``tick``.
+* ``welcome``     — the one welcome DM, with the check-in button.
+* ``commands``    — the slash commands; ``app`` registers them on the Bolt app.
 """

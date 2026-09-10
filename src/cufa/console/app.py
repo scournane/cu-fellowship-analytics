@@ -2361,3 +2361,12 @@ def healthz() -> Response:
 
 
 __all__ = ["app"]
+
+
+# --------------------------------------------------------------------------
+# the staff dashboard and the fellow's own page — server-rendered, no bundle
+# --------------------------------------------------------------------------
+
+from .dashboard import register as _register_dashboard  # noqa: E402
+
+_register_dashboard(app, templates, require_user)

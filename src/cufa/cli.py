@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from . import __version__
@@ -556,6 +557,9 @@ def cmd_assignment(args: argparse.Namespace) -> int:
                 timezone=args.timezone,
                 description=args.description,
                 url=args.url,
+                kind=args.kind,
+                max_score=Decimal(args.max_score) if args.max_score else None,
+                created_by=args.by,
             )
             with connection() as conn:
                 assignment_id = create_assignment(conn, data)
@@ -588,6 +592,8 @@ def cmd_assignment(args: argparse.Namespace) -> int:
                     ),
                     url=existing["url"] if args.url is None else args.url,
                     status=args.status or existing["status"],
+                    kind=args.kind,
+                    max_score=Decimal(args.max_score) if args.max_score else None,
                 )
                 update_assignment(conn, assignment_id, data)
             except ValueError as exc:
@@ -1617,16 +1623,22 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--due-at", required=True, help="local time, e.g. 2026-09-18T17:00")
     q.add_argument("--timezone", required=True, help="IANA name, e.g. America/New_York")
     q.add_argument("--description", default=None)
-    q.add_argument("--url", default=None)
+    q.add_argument("--url", "--link", dest="url", default=None)
+    q.add_argument("--kind", choices=["solvathon", "case_brief", "other"], default=None)
+    q.add_argument("--max-score", default=None, help="what a full score is; scores above it are refused")
+    q.add_argument("--by", default=None, help="who created it (an address)")
     q = sp.add_parser("edit")
     q.add_argument("--assignment", required=True)
     q.add_argument("--title", default=None)
     q.add_argument("--due-at", default=None)
     q.add_argument("--timezone", default=None)
     q.add_argument("--description", default=None)
-    q.add_argument("--url", default=None)
+    q.add_argument("--url", "--link", dest="url", default=None)
+    q.add_argument("--kind", choices=["solvathon", "case_brief", "other"], default=None)
+    q.add_argument("--max-score", default=None)
     q.add_argument("--status", choices=["active", "cancelled"], default=None)
     p.set_defaults(func=cmd_assignment)
+    assignment_sp = sp
 
     p = sub.add_parser("provision", help="create the Google Form for a session")
     p.add_argument("--session", default=None)
@@ -1799,6 +1811,10 @@ def build_parser() -> argparse.ArgumentParser:
             r.add_argument("--post", action="store_true", help="post the summary to Slack")
             r.add_argument("--channel", help="where to post (default: CUFA_SLACK_QA_SUMMARY_CHANNEL, else the first Q&A channel)")
     p.set_defaults(func=cmd_slack)
+
+    from .cli_slack import add_parsers as _add_bot_parsers
+
+    _add_bot_parsers(sub, slack_sub=sp, assignment_sub=assignment_sp)
 
     return parser
 

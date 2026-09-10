@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }} · CU check-in console</title>
+  <style>{% include "_dash.css" %}</style>
+</head>
+<body>
+<main>
+  <nav><a href="/">Console</a><a href="/sessions">Sessions</a><a href="/dashboard?cohort={{ cohort_id }}">Staff dashboard</a><a href="/dashboard/export.csv?cohort={{ cohort_id }}">Export CSV</a></nav>
+  <h1>Staff dashboard — cohort {{ cohort_id }}</h1>
+  <p class="sub">
+    As of {{ now.strftime('%Y-%m-%d %H:%M') }} UTC.
+    Last data:
+    {% for k, v in received.items() %}{{ k }} {{ v.strftime('%b %d %H:%M') if v else 'never' }}{{ ' · ' if not loop.last }}{% endfor %}
+    {% if cohorts|length > 1 %} · cohort:
+      {% for c in cohorts %}<a href="/dashboard?cohort={{ c }}">{{ c }}</a> {% endfor %}
+    {% endif %}
+  </p>
+
+  <div class="tiles">
+    <div class="tile"><div class="n">{{ (100 * (attendance.rate or 0))|round|int }}%</div><div class="l">overall attendance · {{ attendance.attended }} of {{ attendance.active_fellows }} × {{ attendance.sessions_held }} sessions</div></div>
+    <div class="tile"><div class="n">{{ attendance.active_fellows }}</div><div class="l">active fellows</div></div>
+    <div class="tile"><div class="n">{{ requests|length }}</div><div class="l">open check-in requests</div></div>
+    <div class="tile"><div class="n">{{ alerts|length }}</div><div class="l">unrostered Slack accounts</div></div>
+  </div>
+
+  <h2 id="active">Most active this week</h2>
+  <div class="card">
+    {% if most_active %}{% for a in most_active %}<span class="tag">{{ a.full_name }} · {{ a.messages }}</span>{% endfor %}{% else %}<span class="muted">No Slack messages in the last 7 days.</span>{% endif %}
+  </div>
+
+  <h2 id="attention">Fellows, most attention-worthy first</h2>
+  <p class="sub">The attention index combines Slack activity against the cohort mean, attendance, and how complete exit tickets are. It is a sorted list for a human, not a grade — the parts are shown so nobody has to trust the number. Asking for help never enters it, and neither do assignment scores.</p>
+  <div class="card wrap">
+    <table>
+      <tr><th>Fellow</th><th>Index</th><th>Why</th><th>Attendance</th><th>Exit tickets</th><th>Slack (7d)</th><th>Reached out?</th></tr>
+      {% for e in engagement %}
+      <tr>
+        <td><a href="/dashboard/fellow/{{ e.fellow_id }}">{{ e.full_name }}</a><br><span class="muted">{{ e.fellow_id }}</span></td>
+        <td><b>{{ e.attention_index }}</b></td>
+        <td>{% for f in e.flags %}<span class="tag warn">{{ f }}</span>{% endfor %}{% if e.open_check_in_requests %}<span class="tag warn">asked to be checked in on</span>{% endif %}</td>
+        <td>{{ e.attended }}/{{ e.sessions_held }}{% if e.needs_review %} <span class="muted">(+{{ e.needs_review }} review)</span>{% endif %}</td>
+        <td>{{ e.forms_submitted }}/{{ e.forms_expected }}{% if e.form_completeness is not none %} <span class="muted">{{ (100 * e.form_completeness)|round|int }}% complete</span>{% endif %}</td>
+        <td>{{ e.messages }} ({{ e.messages_7d }})<br><span class="muted">mean {{ e.cohort_mean_messages }}</span></td>
+        <td>
+          <form class="inline" method="post" action="/dashboard/fellow/{{ e.fellow_id }}/outreach">
+            <input type="hidden" name="cohort" value="{{ cohort_id }}">
+            {% if e.reached_out %}
+              <span class="tag ok">yes</span>
+              <input type="hidden" name="action" value="clear"><button>clear</button>
+            {% else %}
+              <input type="hidden" name="action" value="mark"><input type="text" name="note" placeholder="note (optional)" size="14"><button class="primary">mark reached out</button>
+            {% endif %}
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+
+  {% if requests or alerts %}
+  <h2 id="queue">Needs a human</h2>
+  <div class="card">
+    {% for r in requests %}<div>🙋 <b>{{ r.full_name }}</b> asked to be checked in on ({{ r.created_at.strftime('%b %d') }}){% if r.note %} — <em>{{ r.note }}</em>{% endif %}. Mark them reached out above to close it.</div>{% endfor %}
+    {% for a in alerts %}<div>👋 <b>{{ a.real_name or a.display_name or a.slack_user_id }}</b> joined Slack but is not on the roster{% if a.email %} ({{ a.email }}){% endif %}. In Slack: <code>/link @them &lt;fellow&gt;</code> or <code>/alerts resolve @them staff</code>.</div>{% endfor %}
+  </div>
+  {% endif %}
+
+  <h2 id="ranks">Badges and ranks (staff view)</h2>
+  <p class="sub">Fellows see only their own badges, by DM, and can switch them off. Shoutouts are ranked by giving, not receiving.</p>
+  <div class="tiles">
+    {% for key, rows in ranks.items() %}
+    <div class="tile"><div class="l">{{ rank_labels[key] }}</div>
+      {% for r in rows %}<div>{{ r.rank }}. {{ r.full_name }} <span class="muted">{{ r.value }}</span></div>{% else %}<div class="muted">—</div>{% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+
+  <h2 id="assignments">Assignments and scores</h2>
+  <p class="sub">Scores are entered by staff against CU's own rubric. Nothing here is graded by the system.</p>
+  {% for a in assignments %}
+  <div class="card">
+    <b>{{ a.title }}</b> <span class="tag">{{ a.kind }}</span> due {{ a.due_at_utc.strftime('%b %d %H:%M') }} UTC · {{ a.submitted }} submitted · {{ a.scored }} scored{% if a.link %} · <a href="{{ a.link }}">link</a>{% endif %}
+    <div class="wrap"><table>
+      <tr><th>Fellow</th><th>Submitted</th><th>Score</th><th>By</th><th>Enter / change</th></tr>
+      {% for r in a.rows %}
+      <tr>
+        <td>{{ r.full_name }}</td>
+        <td>{{ r.submitted_at_utc.strftime('%b %d') if r.submitted_at_utc else '—' }}</td>
+        <td>{% if r.score is not none %}{{ r.score }}{% if a.max_score %}/{{ a.max_score }}{% endif %}{% else %}—{% endif %}</td>
+        <td class="muted">{{ r.graded_by or '' }}</td>
+        <td>
+          <form class="inline" method="post" action="/dashboard/score">
+            <input type="hidden" name="cohort" value="{{ cohort_id }}">
+            <input type="hidden" name="assignment_id" value="{{ a.assignment_id }}">
+            <input type="hidden" name="fellow_id" value="{{ r.fellow_id }}">
+            <input type="text" name="score" size="5" placeholder="score">
+            <input type="text" name="note" size="12" placeholder="note">
+            <button>save</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </table></div>
+  </div>
+  {% else %}
+  <div class="card muted">No assignments yet. Create one in Slack with <code>/assignment create</code> or <code>cufa assignment create</code>.</div>
+  {% endfor %}
+
+  <h2 id="funnel">Funnel</h2>
+  <div class="card funnel">
+    {% for stage, n in funnel.counts.items() %}
+    <div><span class="lab">{{ stage_labels[stage] }}</span><span class="bar"><i style="width:{{ (100 * n / (funnel.fellows or 1))|round|int }}%"></i></span><span>{{ n }}</span></div>
+    {% endfor %}
+    <p class="muted">Median days between stages: {% for k, d in funnel.median_days.items() %}{{ k.replace('->', ' → ') }} {{ d if d is not none else '—' }}{{ ' · ' if not loop.last }}{% endfor %}</p>
+  </div>
+</main>
+</body>
+</html>

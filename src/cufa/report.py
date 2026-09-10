@@ -470,4 +470,17 @@ EXPORT_PATHS: tuple[str, ...] = (
     # The Q&A digest for the teacher, and what it is built from.
     "cufa.slack.qa.questions_for_session",
     "cufa.slack.qa.current_summary",
+    # The reminder/badge bot's signals and the dashboards. Every one is a
+    # participation signal or an export, so every one is held to the same rule.
+    "cufa.engagement.cohort_engagement",
+    "cufa.engagement.most_active",
+    "cufa.engagement.quiet_fellows",
+    "cufa.engagement.cohort_attendance",
+    "cufa.funnel.cohort_summary",
+    "cufa.retention.cohort_retention",
+    "cufa.slack.badges.collect_evidence",
+    "cufa.slack.digest.weekly_digest_text",
+    "cufa.slack.digest.session_summary_text",
+    "cufa.console.dashboard.staff_export_csv",
+    "cufa.console.dashboard.staff_context",
 )
