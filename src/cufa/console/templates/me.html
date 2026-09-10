@@ -8,9 +8,27 @@
 </head>
 <body>
 <main>
+  {% if staff_view %}<nav><a href="/dashboard?cohort={{ fellow.cohort_id }}">← Staff dashboard</a></nav>{% endif %}
   <h1>{{ fellow.full_name }}</h1>
+  {% if staff_view %}
+  <p class="sub">{{ fellow.fellow_id }} · {{ fellow.status }} · {{ fellow.primary_email }}{% for a in aliases %} · {{ a.email }} <span class="tag">{{ a.kind }}</span>{% endfor %} · as of {{ now.strftime('%Y-%m-%d %H:%M') }} UTC</p>
+  {% else %}
   <p class="sub">Your fellowship so far · as of {{ now.strftime('%Y-%m-%d %H:%M') }} UTC · <a href="/me/{{ token }}/export.csv">Export my data (CSV)</a></p>
+  {% endif %}
 
+  {% if staff_view and engagement %}
+  <div class="card">
+    Attention index <b>{{ engagement.attention_index }}</b>{% for f in engagement.flags %} <span class="tag warn">{{ f }}</span>{% endfor %}
+    · Slack {{ engagement.messages }} vs cohort mean {{ engagement.cohort_mean_messages }}
+    · reached out: {{ 'yes' if engagement.reached_out else 'no' }}
+    {% if engagement.open_check_in_requests %}· <span class="tag warn">{{ engagement.open_check_in_requests }} open check-in request(s)</span>{% endif %}
+    <form class="inline" method="post" action="/dashboard/fellow/{{ fellow.fellow_id }}/outreach">
+      <input type="hidden" name="cohort" value="{{ fellow.cohort_id }}">
+      {% if engagement.reached_out %}<input type="hidden" name="action" value="clear"><button>clear reached out</button>
+      {% else %}<input type="hidden" name="action" value="mark"><input type="text" name="note" placeholder="note" size="12"><button class="primary">mark reached out</button>{% endif %}
+    </form>
+  </div>
+  {% endif %}
   {% if engagement %}
   <div class="tiles">
     <div class="tile"><div class="n">{{ engagement.attended }}/{{ engagement.sessions_held }}</div><div class="l">sessions attended{% if engagement.needs_review %} (+{{ engagement.needs_review }} being checked){% endif %}</div></div>
@@ -23,7 +41,7 @@
   <div class="card wrap"><table>
     <tr><th>Session</th><th>When (UTC)</th><th>Attended</th><th>Exit ticket</th></tr>
     {% for s in sessions %}
-    <tr><td>{{ s.title }}</td><td>{{ s.scheduled_at_utc.strftime('%b %-d %H:%M') }}</td>
+    <tr><td>{{ s.title }}</td><td>{{ s.scheduled_at_utc.strftime('%b %d %H:%M') }}</td>
       <td>{% if s.attended %}<span class="tag ok">yes</span>{% elif s.under_review %}<span class="tag">being checked</span>{% else %}<span class="muted">—</span>{% endif %}</td>
       <td>{% if s.exit_ticket %}<span class="tag ok">yes</span>{% else %}<span class="muted">—</span>{% endif %}</td></tr>
     {% else %}<tr><td colspan="4" class="muted">No sessions yet.</td></tr>{% endfor %}
@@ -39,7 +57,7 @@
   <div class="card wrap"><table>
     <tr><th>Assignment</th><th>Due (UTC)</th><th>Status</th><th>Score</th></tr>
     {% for a in assignments %}
-    <tr><td>{{ a.title }}</td><td>{{ a.due_at_utc.strftime('%b %-d %H:%M') }}</td>
+    <tr><td>{{ a.title }}</td><td>{{ a.due_at_utc.strftime('%b %d %H:%M') }}</td>
       <td>{% if a.submitted_at_utc %}<span class="tag ok">submitted</span>{% else %}<span class="muted">not yet</span>{% endif %}</td>
       <td>{% if a.score is not none %}{{ a.score }}{% if a.max_score %}/{{ a.max_score }}{% endif %}{% else %}—{% endif %}</td></tr>
     {% endfor %}
@@ -50,7 +68,7 @@
   <div class="card funnel">
     {% for stage, label in stage_labels.items() %}
       {% set at = funnel[stage ~ '_at'] if stage != 'accepted' else funnel.accepted_at %}
-      <div><span class="lab">{{ label }}</span><span>{{ '●' if at else '○' }} {{ at.strftime('%b %-d') if at else '' }}</span></div>
+      <div><span class="lab">{{ label }}</span><span>{{ '●' if at else '○' }} {{ at.strftime('%b %d') if at else '' }}</span></div>
     {% endfor %}
   </div>
 
@@ -61,19 +79,56 @@
     <div>{{ '✅' if connected.forms_part_b else '⬜' }} Exit ticket form</div>
   </div>
 
-  <h2>Preferences</h2>
+  {% if staff_view %}
+  {% if airtime %}
+  <h2>Airtime on recordings</h2>
+  <div class="card wrap"><table>
+    <tr><th>Session</th><th>Share of speaking time</th><th>Turns</th><th>Words</th></tr>
+    {% for a in airtime %}<tr><td>{{ a.session }}</td><td>{{ (100 * a.share)|round|int }}%</td><td>{{ a.turns }}</td><td>{{ a.words }}</td></tr>{% endfor %}
+  </table></div>
+  {% endif %}
+  <h2>Interventions</h2>
+  <div class="card wrap"><table>
+    <tr><th>When</th><th>Kind</th><th>By</th><th>Note</th><th>Resolved</th></tr>
+    {% for i in interventions %}
+    <tr><td>{{ i.created_at.strftime('%b %d') }}</td><td>{{ i.kind }}</td><td class="muted">{{ i.by_email or i.by_slack_user or '' }}</td><td>{{ i.note or '' }}</td><td>{{ i.resolved_at.strftime('%b %d') if i.resolved_at else '—' }}</td></tr>
+    {% else %}<tr><td colspan="5" class="muted">None.</td></tr>{% endfor %}
+  </table></div>
+  {% endif %}
+
+  <h2 id="prefs">Preferences</h2>
   <div class="card">
     {% if preferences %}
-      <div>Session reminders: {{ preferences.session_reminders|join(', ') if preferences.session_reminders else 'off' }} minutes before</div>
-      <div>Assignment reminders: {{ preferences.assignment_reminders|join(', ') if preferences.assignment_reminders else 'off' }} minutes before</div>
-      <div>Badge messages: {{ 'on' if preferences.gamification else 'off' }}</div>
-      <p class="muted">Change these in Slack: <code>/reminders</code> and <code>/badges on|off</code>.</p>
+      {% if staff_view %}
+        <div>Session reminders: {{ preferences.session_reminders|join(', ') if preferences.session_reminders else 'off' }} minutes before</div>
+        <div>Assignment reminders: {{ preferences.assignment_reminders|join(', ') if preferences.assignment_reminders else 'off' }} minutes before</div>
+        <div>Badge messages: {{ 'on' if preferences.gamification else 'off' }}</div>
+      {% else %}
+        {% for kind, label, chosen in (('session', 'Session reminders', preferences.session_reminders), ('assignment', 'Assignment reminders', preferences.assignment_reminders)) %}
+        <div><b>{{ label }}</b>:
+          {% for o in offsets %}
+          <form class="inline" method="post" action="/me/{{ token }}/prefs">
+            <input type="hidden" name="kind" value="{{ kind }}"><input type="hidden" name="offset" value="{{ o }}">
+            <input type="hidden" name="enabled" value="{{ 'off' if o in chosen else 'on' }}">
+            <button{% if o in chosen %} class="primary"{% endif %}>{{ {1440: '24 h', 60: '1 h', 10: '10 min'}[o] }} {{ 'on' if o in chosen else 'off' }}</button>
+          </form>
+          {% endfor %}
+        </div>
+        {% endfor %}
+        <div><b>Badge messages</b>:
+          <form class="inline" method="post" action="/me/{{ token }}/prefs">
+            <input type="hidden" name="kind" value="gamification"><input type="hidden" name="enabled" value="{{ 'off' if preferences.gamification else 'on' }}">
+            <button{% if preferences.gamification %} class="primary"{% endif %}>{{ 'on' if preferences.gamification else 'off' }}</button>
+          </form>
+        </div>
+        <p class="muted">Click to toggle. The same settings are available in Slack with <code>/reminders</code> and <code>/badges</code>.</p>
+      {% endif %}
     {% else %}
       <span class="muted">Join the Slack workspace to get reminders.</span>
     {% endif %}
   </div>
 
-  <p class="muted">This page shows only your own data. The link expires after 7 days; ask the bot for a new one with <code>/dashboard</code>.</p>
+  {% if not staff_view %}<p class="muted">This page shows only your own data. The link expires after 7 days; ask the bot for a new one with <code>/dashboard</code>.</p>{% endif %}
 </main>
 </body>
 </html>

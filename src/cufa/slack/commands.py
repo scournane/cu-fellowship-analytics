@@ -108,15 +108,16 @@ def _mention(token: str) -> str | None:
     return m.group(1) if m else None
 
 
-def _find_session(conn: psycopg.Connection, cohort_id: str, query: str) -> dict[str, Any]:
+def _find_session(conn: psycopg.Connection, cohort_id: str, query: str, *, now: datetime | None = None) -> dict[str, Any]:
+    now = now or datetime.now(timezone.utc)
     needle = (query or "").strip()
     if not needle:
         raise CufaError("Which session? Give part of the title, or `next`/`last`.")
     if needle.lower() == "next":
         row = fetch_one(
             conn,
-            'select * from "session" where cohort_id = %s and scheduled_at_utc >= now() order by scheduled_at_utc limit 1',
-            (cohort_id,),
+            'select * from "session" where cohort_id = %s and scheduled_at_utc >= %s order by scheduled_at_utc limit 1',
+            (cohort_id, now),
         )
         if row:
             return row
@@ -124,8 +125,8 @@ def _find_session(conn: psycopg.Connection, cohort_id: str, query: str) -> dict[
     if needle.lower() == "last":
         row = fetch_one(
             conn,
-            'select * from "session" where cohort_id = %s and scheduled_at_utc < now() order by scheduled_at_utc desc limit 1',
-            (cohort_id,),
+            'select * from "session" where cohort_id = %s and scheduled_at_utc < %s order by scheduled_at_utc desc limit 1',
+            (cohort_id, now),
         )
         if row:
             return row
@@ -277,7 +278,7 @@ def cmd_dashboard(conn, client, ctx: Context, args: list[str]) -> Reply:
 
 
 def cmd_attendance(conn, client, ctx: Context, args: list[str]) -> Reply:
-    session = _find_session(conn, ctx.cohort_id, " ".join(args))
+    session = _find_session(conn, ctx.cohort_id, " ".join(args), now=ctx.now)
     return Reply(session_summary_text(conn, str(session["session_id"])))
 
 
@@ -367,6 +368,9 @@ def cmd_assignment(conn, client, ctx: Context, args: list[str]) -> Reply:
     action = args[0].lower()
     if action == "create":
         rest = args[1:]
+        if len(rest) >= 2 and "T" in rest[1] and len(rest[1]) >= 15:
+            # One ISO token, `2026-09-20T18:00`, is accepted as well as two.
+            rest = [rest[0], *rest[1].split("T", 1), *rest[2:]]
         if len(rest) < 3:
             raise CufaError('Usage: `/assignment create "Title" 2026-09-20 18:00 [solvathon|case_brief|other] [link]`')
         title, date, time_ = rest[0], rest[1], rest[2]
@@ -414,7 +418,7 @@ def cmd_zoom(conn, client, ctx: Context, args: list[str]) -> Reply:
     link = args[-1]
     if not link.startswith("http"):
         raise CufaError("The last argument should be the Zoom link.")
-    session = _find_session(conn, ctx.cohort_id, " ".join(args[:-1]))
+    session = _find_session(conn, ctx.cohort_id, " ".join(args[:-1]), now=ctx.now)
     set_zoom_link(conn, str(session["session_id"]), link)
     return Reply(f"Zoom link set on *{session['title']}* ({format_when(session['scheduled_at_utc'], session['timezone'])}). It will be in every reminder.")
 
@@ -539,6 +543,9 @@ def dispatch(
         return Reply(f"⛔ {exc}")
     except (UnknownFellow, AmbiguousFellow, CufaError) as exc:
         return Reply(f"⚠️ {exc}")
+    except Exception:  # noqa: BLE001 — a bug must not leave the person with no answer
+        log.exception("command /%s failed", name)
+        return Reply(f"⚠️ `/{name}` hit an error on our side. It has been logged; try again in a minute or use the console.")
 
 
 __all__ = ["Context", "HANDLERS", "Reply", "dispatch"]

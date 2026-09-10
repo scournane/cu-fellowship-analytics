@@ -290,6 +290,18 @@ def last_data_received(conn: psycopg.Connection, cohort_id: str | None = None) -
     }
 
 
+def seen_event(conn: psycopg.Connection, event_id: str | None, event_type: str) -> bool:
+    """True when this Slack event was already handled. Slack retries deliveries."""
+    if not event_id:
+        return False
+    row = fetch_one(
+        conn,
+        "insert into slack_event_log (event_id, event_type) values (%s, %s) on conflict do nothing returning event_id",
+        (event_id, event_type),
+    )
+    return row is None
+
+
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -301,6 +313,7 @@ __all__ = [
     "mark_staff_channel",
     "observe_user",
     "record_message",
+    "seen_event",
     "sync_all",
     "sync_channels",
     "sync_messages",

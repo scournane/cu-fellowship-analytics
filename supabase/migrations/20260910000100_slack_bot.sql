@@ -135,6 +135,8 @@ create table if not exists slack_user (
     linked_by      text,
     linked_at      timestamptz,
     joined_at_utc  timestamptz,
+    -- When the bot sent its one welcome DM (how it works, the check-in button).
+    welcomed_at    timestamptz,
     first_seen_at  timestamptz not null default now(),
     last_seen_at   timestamptz not null default now(),
     raw            jsonb       not null default '{}'::jsonb
@@ -242,6 +244,8 @@ create table if not exists assignment (
     kind          text        not null default 'other'
                   check (kind in ('solvathon', 'case_brief', 'other')),
     due_at_utc    timestamptz not null,
+    -- The zone the due time was typed in, so it can be shown back the same way.
+    timezone      text        not null default 'America/New_York',
     link          text,
     max_score     numeric(6, 2),
     created_by    text,

@@ -82,11 +82,13 @@ That runs Socket Mode and, in a background thread, a **tick** every five
 minutes. A tick does everything that is due, in order, and is safe to repeat:
 
 1. **sync** — members, channels, new messages (incremental, by watermark)
-2. **reminders** — 24 h / 1 h / 10 min before each session and assignment
-3. **badges** — compute, store, DM the new ones
-4. **roster alerts** — one post per unrostered account
-5. **session summaries** — once per session, after its end
-6. **weekly digest** — Mondays, once
+2. **welcome** — one DM to each newly resolved fellow: what the bot does,
+   how to switch each part off, and the *check in with me* button
+3. **reminders** — 24 h / 1 h / 10 min before each session and assignment
+4. **badges** — compute, store, DM the new ones
+5. **roster alerts** — one post per unrostered account
+6. **session summaries** — once per session, after its end
+7. **weekly digest** — Mondays, once
 
 If you would rather use cron, run `cufa slack tick` on a schedule instead and
 skip `serve` — everything except live slash commands and the button works
@@ -127,7 +129,8 @@ own recipient and access list (see `docs/safeguarding.md`).
 
 **`/me`** is the fellow's own attendance, exit tickets and Slack activity;
 **`/dashboard`** is a signed link (valid 7 days) to the same on the web, with
-an export button. Only their own data, ever.
+an export button and click-to-toggle reminder and badge preferences. Only
+their own data, ever.
 
 ## What staff see
 
@@ -164,7 +167,9 @@ rate; every fellow sorted by attention index with the parts shown; a
 *mark reached out* button per row; this week's most active; open check-in
 requests and roster alerts; badges and ranks; assignments with a score-entry
 form per fellow; the funnel; when data last arrived. **Export CSV** gives the
-engagement table.
+engagement table. Each fellow's name opens `/dashboard/fellow/<id>`: the
+same page the fellow sees, plus attention index and reasons, aliases,
+interventions, airtime on recordings, and the outreach toggle.
 
 ### The attention index
 

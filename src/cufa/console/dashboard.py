@@ -37,12 +37,14 @@ from ..db import connection, fetch_all, fetch_one
 from ..engagement import cohort_attendance, cohort_engagement, fellow_engagement, most_active
 from ..errors import CufaError
 from ..funnel import cohort_summary, fellow_funnel, STAGE_LABELS
-from ..interventions import clear_reached_out, mark_reached_out, open_requests, resolve as resolve_intervention
+from ..interventions import clear_reached_out, for_fellow as interventions_for, mark_reached_out, open_requests, resolve as resolve_intervention
 from ..slack.badges import RANK_KEYS, badges_for, leaderboard
 from ..slack.dashboard_links import read_token
 from ..slack.identity import open_alerts
-from ..slack.preferences import get_preferences
+from ..slack.identity import list_aliases
+from ..slack.preferences import DEFAULT_OFFSETS, get_preferences, set_all_reminders, set_gamification, set_reminder
 from ..slack.sync import last_data_received
+from ..zoom import speaking_share
 
 
 def _cohorts(conn: Any) -> list[str]:
@@ -129,6 +131,26 @@ def fellow_context(conn: Any, fellow_id: str, *, now: datetime | None = None) ->
             "forms_part_b": any(s["exit_ticket"] for s in sessions),
         },
     }
+
+
+def fellow_detail_context(conn: Any, fellow_id: str, *, now: datetime | None = None) -> dict[str, Any] | None:
+    """Everything the staff see for one fellow: the fellow page plus staff-only rows."""
+    base = fellow_context(conn, fellow_id, now=now)
+    if base is None:
+        return None
+    airtime = []
+    for s in base["sessions"]:
+        for share in speaking_share(conn, str(s["session_id"])):
+            if share.fellow_id == fellow_id:
+                airtime.append({"session": s["title"], "share": share.share_of_seconds, "turns": share.turns, "words": share.words})
+    base.update(
+        {
+            "aliases": list_aliases(conn, fellow_id),
+            "interventions": interventions_for(conn, fellow_id),
+            "airtime": airtime,
+        }
+    )
+    return base
 
 
 def _csv(rows: list[dict[str, Any]], fieldnames: list[str]) -> str:
@@ -226,6 +248,48 @@ def register(app: FastAPI, templates: Jinja2Templates, require_user: Callable[..
                 return HTMLResponse(f"<p>{exc} <a href='/dashboard?cohort={cohort}'>Back</a></p>", status_code=400)
         return RedirectResponse(f"/dashboard?cohort={cohort}#assignments", status_code=303)
 
+    @app.get("/dashboard/fellow/{fellow_id}", response_class=HTMLResponse)
+    def staff_fellow_detail(fellow_id: str, request: Request, user: Any = Depends(require_user)) -> Response:
+        with connection() as conn:
+            context = fellow_detail_context(conn, fellow_id)
+        if context is None:
+            return HTMLResponse("<p>No fellow with that id.</p>", status_code=404)
+        context.update({"request": request, "user": user, "title": context["fellow"]["full_name"], "staff_view": True, "token": None})
+        return templates.TemplateResponse(request, "me.html", context)
+
+    @app.post("/me/{token}/prefs")
+    def fellow_prefs(
+        token: str,
+        kind: str = Form(...),
+        offset: str = Form(""),
+        enabled: str = Form(...),
+    ) -> Response:
+        fellow_id = read_token(get_settings(), token)
+        if fellow_id is None:
+            return Response("expired", status_code=403)
+        on = enabled == "on"
+        with connection() as conn:
+            slack = fetch_one(
+                conn,
+                "select slack_user_id from v_slack_user_resolved where fellow_id = %s and not is_bot and not deleted order by last_seen_at desc limit 1",
+                (fellow_id,),
+            )
+            if slack is None:
+                return HTMLResponse("<p>Join the Slack workspace first; preferences live on your Slack account.</p>", status_code=400)
+            uid = slack["slack_user_id"]
+            try:
+                if kind == "gamification":
+                    set_gamification(conn, uid, on)
+                elif kind in ("session", "assignment") and offset:
+                    set_reminder(conn, uid, kind=kind, offset=int(offset), enabled=on)
+                elif kind in ("session", "assignment", "all"):
+                    set_all_reminders(conn, uid, kind=kind, enabled=on)
+                else:
+                    return HTMLResponse("<p>Unknown preference.</p>", status_code=400)
+            except (CufaError, ValueError) as exc:
+                return HTMLResponse(f"<p>{exc}</p>", status_code=400)
+        return RedirectResponse(f"/me/{token}#prefs", status_code=303)
+
     @app.get("/me/{token}", response_class=HTMLResponse)
     def fellow_dashboard(token: str, request: Request) -> Response:
         fellow_id = read_token(get_settings(), token)
@@ -235,7 +299,7 @@ def register(app: FastAPI, templates: Jinja2Templates, require_user: Callable[..
             context = fellow_context(conn, fellow_id)
         if context is None:
             return HTMLResponse("<p>No record found.</p>", status_code=404)
-        context.update({"request": request, "token": token, "title": "My dashboard"})
+        context.update({"request": request, "token": token, "title": "My dashboard", "staff_view": False, "offsets": list(DEFAULT_OFFSETS)})
         return templates.TemplateResponse(request, "me.html", context)
 
     @app.get("/me/{token}/export.csv")
@@ -248,4 +312,4 @@ def register(app: FastAPI, templates: Jinja2Templates, require_user: Callable[..
         return Response(body, media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="my-fellowship-{fellow_id}.csv"'})
 
 
-__all__ = ["fellow_context", "fellow_export_csv", "register", "staff_context", "staff_export_csv"]
+__all__ = ["fellow_context", "fellow_detail_context", "fellow_export_csv", "register", "staff_context", "staff_export_csv"]

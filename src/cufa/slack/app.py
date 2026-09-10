@@ -31,11 +31,10 @@ from ..logging_setup import get_logger
 from .client import RealSlackClient, SlackClient, SlackMessage, SlackUser
 from .commands import dispatch
 from .digest import tick
-from .sync import observe_user, record_message
+from .sync import observe_user, record_message, seen_event
+from .welcome import CHECK_IN_ACTION_ID, welcome_blocks
 
 log = get_logger(__name__)
-
-CHECK_IN_ACTION_ID = "cufa_check_in_request"
 
 
 def _require_bolt() -> tuple[Any, Any]:
@@ -62,11 +61,26 @@ def build_app(settings: Settings | None = None, *, client: SlackClient | None = 
     bolt = App(token=settings.slack_bot_token, signing_secret=settings.slack_signing_secret or None)
     slack: SlackClient = client or RealSlackClient(settings.slack_bot_token)
 
+    def _run(name: str, fn):  # type: ignore[no-untyped-def]
+        """One handler body: a connection, a commit on success, a log line on failure.
+
+        A handler that raises leaves Slack showing a spinner and the person
+        with nothing. Every path here answers something, and the traceback goes
+        to the log where it can be read.
+        """
+        try:
+            with connection(settings) as conn:
+                return fn(conn)
+        except Exception:  # noqa: BLE001 — see above
+            log.exception("slack handler %s failed", name)
+            return None
+
     @bolt.command(__import__("re").compile(r"^/.*"))
     def _slash(ack, command, respond):  # type: ignore[no-untyped-def]
         ack()
-        with connection(settings) as conn:
-            reply = dispatch(
+        reply = _run(
+            "slash",
+            lambda conn: dispatch(
                 conn,
                 slack,
                 command=command["command"],
@@ -74,26 +88,38 @@ def build_app(settings: Settings | None = None, *, client: SlackClient | None = 
                 slack_user_id=command["user_id"],
                 channel_id=command.get("channel_id"),
                 settings=settings,
-            )
-        respond(text=reply.text, response_type="ephemeral" if reply.ephemeral else "in_channel")
+            ),
+        )
+        if reply is None:
+            respond(text="⚠️ That hit an error on our side. It has been logged; try again in a minute.", response_type="ephemeral")
+        else:
+            respond(text=reply.text, response_type="ephemeral" if reply.ephemeral else "in_channel")
 
     @bolt.event("team_join")
-    def _team_join(event, say):  # type: ignore[no-untyped-def]
-        user = SlackUser.from_api(event["user"])
-        with connection(settings) as conn:
+    def _team_join(event, body):  # type: ignore[no-untyped-def]
+        def handle(conn):  # type: ignore[no-untyped-def]
+            if seen_event(conn, body.get("event_id"), "team_join"):
+                return
+            user = SlackUser.from_api(event["user"])
             observe_user(conn, user, joined_at=datetime.now(timezone.utc), staff_emails=settings.slack_admins)
             if settings.slack_staff_channel:
                 from .digest import post_roster_alerts
 
                 post_roster_alerts(conn, slack, channel_id=settings.slack_staff_channel)
 
+        _run("team_join", handle)
+
     @bolt.event("message")
-    def _message(event):  # type: ignore[no-untyped-def]
+    def _message(event, body):  # type: ignore[no-untyped-def]
         if event.get("subtype") in ("message_changed", "message_deleted"):
             return
-        message = SlackMessage.from_api(event["channel"], event)
-        with connection(settings) as conn:
-            record_message(conn, message)
+
+        def handle(conn):  # type: ignore[no-untyped-def]
+            if seen_event(conn, body.get("event_id"), "message"):
+                return
+            record_message(conn, SlackMessage.from_api(event["channel"], event))
+
+        _run("message", handle)
 
     @bolt.event("member_joined_channel")
     def _member_joined(event):  # type: ignore[no-untyped-def]
@@ -102,19 +128,18 @@ def build_app(settings: Settings | None = None, *, client: SlackClient | None = 
     @bolt.action(CHECK_IN_ACTION_ID)
     def _check_in_button(ack, body, respond):  # type: ignore[no-untyped-def]
         ack()
-        with connection(settings) as conn:
-            reply = dispatch(conn, slack, command="/checkin", text="", slack_user_id=body["user"]["id"], settings=settings)
-        respond(text=reply.text, response_type="ephemeral")
+        reply = _run(
+            "check_in_button",
+            lambda conn: dispatch(conn, slack, command="/checkin", text="", slack_user_id=body["user"]["id"], settings=settings),
+        )
+        respond(text=reply.text if reply else "⚠️ That hit an error on our side; type `/checkin` to try again.", response_type="ephemeral")
 
     return bolt
 
 
-def check_in_button_blocks() -> list[dict[str, Any]]:
-    """Block Kit for a DM that offers the check-in button."""
-    return [
-        {"type": "section", "text": {"type": "mrkdwn", "text": "Unsure about something, or just want to talk? Press the button and a staff member will reach out."}},
-        {"type": "actions", "elements": [{"type": "button", "text": {"type": "plain_text", "text": "Check in with me"}, "action_id": CHECK_IN_ACTION_ID, "style": "primary"}]},
-    ]
+def check_in_button_blocks(full_name: str = "") -> list[dict[str, Any]]:
+    """Block Kit for a DM that offers the check-in button (the welcome message)."""
+    return welcome_blocks(full_name)
 
 
 def _tick_loop(settings: Settings, client: SlackClient, interval_s: int, stop: threading.Event) -> None:

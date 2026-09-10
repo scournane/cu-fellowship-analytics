@@ -63,9 +63,12 @@ def in_quiet_hours(now: datetime, tz: str | None) -> bool:
 
 
 def format_when(at: datetime, tz: str | None) -> str:
+    """``Tue Sep 15, 7:00 PM EDT``. Built by hand: ``%-d`` is not portable to Windows."""
     local = _local(at, tz)
     zone = local.tzname() or (tz or "UTC")
-    return local.strftime("%a %b %-d, %-I:%M %p") + f" {zone}"
+    hour12 = local.hour % 12 or 12
+    ampm = "AM" if local.hour < 12 else "PM"
+    return f"{local:%a %b} {local.day}, {hour12}:{local:%M} {ampm} {zone}"
 
 
 def _recipients(conn: psycopg.Connection, cohort_id: str) -> list[dict[str, Any]]:

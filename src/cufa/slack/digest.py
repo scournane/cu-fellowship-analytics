@@ -39,6 +39,7 @@ from .client import SlackApiError, SlackClient
 from .identity import open_alerts
 from .reminders import format_when, run_reminders
 from .sync import sync_all
+from .welcome import send_welcomes
 
 log = get_logger(__name__)
 
@@ -154,9 +155,9 @@ def post_session_summaries(
     posted = 0
     for r in rows:
         sid = str(r["session_id"])
-        if _post(conn, client, channel_id, kind="session_summary", key=sid, text=session_summary_text(conn, sid)):
+        if _post(conn, client, channel_id, kind="session_summary", key=sid, text=session_summary_text(conn, sid)) or _already(conn, "session_summary", sid):
             posted += 1
-        execute(conn, 'update "session" set summary_posted_at = now() where session_id = %s', (sid,))
+            execute(conn, 'update "session" set summary_posted_at = now() where session_id = %s', (sid,))
     return posted
 
 
@@ -189,7 +190,7 @@ def weekly_digest_text(conn: psycopg.Connection, cohort_id: str, *, now: datetim
             for s in sessions
         ))
     if due:
-        lines.append("*Due:* " + " · ".join(f"{a['title']} ({format_when(a['due_at_utc'], 'America/New_York')}, {a['submitted']} submitted)" for a in due))
+        lines.append("*Due:* " + " · ".join(f"{a['title']} ({format_when(a['due_at_utc'], a.get('timezone'))}, {a['submitted']} submitted)" for a in due))
     lines.append(
         "*Quiet for 7+ days:* " + (", ".join(q["full_name"] for q in quiet[:20]) + (" …" if len(quiet) > 20 else "") if quiet else "nobody 🎉")
     )
@@ -259,6 +260,7 @@ def post_check_in_ping(
 @dataclass
 class TickResult:
     synced: bool = False
+    welcomed: int = 0
     reminders_sent: int = 0
     summaries_posted: int = 0
     weekly_posted: bool = False
@@ -269,7 +271,7 @@ class TickResult:
 
     def __str__(self) -> str:  # pragma: no cover - display only
         return (
-            f"synced={self.synced} reminders={self.reminders_sent} summaries={self.summaries_posted} "
+            f"synced={self.synced} welcomed={self.welcomed} reminders={self.reminders_sent} summaries={self.summaries_posted} "
             f"weekly={self.weekly_posted} alerts={self.alerts_posted} badges={self.badges_awarded}/{self.badges_notified}"
             + (f" errors={len(self.errors)}" if self.errors else "")
         )
@@ -304,6 +306,7 @@ def tick(
 
     if sync:
         result.synced = step("sync", lambda: sync_all(conn, client, staff_channel=staff_channel, staff_emails=settings.slack_admins)) is not None
+    result.welcomed = step("welcome", lambda: send_welcomes(conn, client, cohort_id=cohort_id)) or 0
     run = step("reminders", lambda: run_reminders(conn, client, cohort_id=cohort_id, now=now))
     result.reminders_sent = run.sent if run else 0
     awards = step("badges", lambda: award_badges(conn, cohort_id, now=now))

@@ -420,3 +420,54 @@ def test_unlinked_fellow_gets_a_plain_answer_not_a_traceback(db, workspace, sett
     sync_all(db, workspace)
     assert "not linked" in _run(db, workspace, settings, "/me", user="U9")
     assert "not linked" in _run(db, workspace, settings, "/checkin", user="U9")
+
+
+# ---------------------------------------------------------------------------
+# welcome DM, event de-duplication, portability
+# ---------------------------------------------------------------------------
+
+
+def test_every_resolved_fellow_is_welcomed_once_with_the_button(db, workspace, settings):
+    from cufa.slack.welcome import CHECK_IN_ACTION_ID, send_welcomes
+
+    sync_all(db, workspace, staff_emails=settings.slack_admins)
+    assert send_welcomes(db, workspace, cohort_id=TEST_COHORT) == 2
+    assert send_welcomes(db, workspace, cohort_id=TEST_COHORT) == 0
+    dm = workspace.dms_to("U1")[0]
+    assert "reminder" in dm.text and dm.blocks and dm.blocks[-1]["elements"][0]["action_id"] == CHECK_IN_ACTION_ID
+    assert workspace.dms_to("US") == [] and workspace.dms_to("U9") == [], "staff and strangers get nothing"
+    # Linking the stranger later welcomes them then, once.
+    link_slack_user(db, "U9", "CU-2", by=STAFF)
+    assert send_welcomes(db, workspace, cohort_id=TEST_COHORT) == 1
+
+
+def test_a_retried_slack_event_is_handled_once(db, workspace):
+    from cufa.slack.sync import seen_event
+
+    assert seen_event(db, "Ev123", "message") is False
+    assert seen_event(db, "Ev123", "message") is True
+    assert seen_event(db, None, "message") is False, "no id means nothing to de-duplicate on"
+
+
+def test_format_when_needs_no_platform_specific_strftime():
+    from cufa.slack.reminders import format_when
+
+    assert format_when(datetime(2026, 9, 15, 23, 0, tzinfo=timezone.utc), "America/New_York") == "Tue Sep 15, 7:00 PM EDT"
+    assert format_when(datetime(2026, 9, 16, 0, 5, tzinfo=timezone.utc), "UTC").endswith("12:05 AM UTC")
+
+
+def test_assignment_create_accepts_an_iso_timestamp_and_next_uses_the_command_clock(db, workspace, settings):
+    sync_all(db, workspace)
+    assert "Created *Deck*" in _run(db, workspace, settings, "/assignment", 'create "Deck" 2026-09-25T18:00 solvathon')
+    make_session(db, title="Past", local=datetime(2026, 9, 1, 19, 0))
+    make_session(db, title="Future", local=datetime(2026, 9, 20, 19, 0))
+    assert "Future" in _run(db, workspace, settings, "/attendance", "next")
+    assert "Past" in _run(db, workspace, settings, "/attendance", "last")
+
+
+def test_tick_welcomes_before_it_reminds(db, workspace, settings):
+    make_session(db, title="Tonight", local=datetime(2026, 9, 14, 9, 0))
+    result = tick(db, workspace, settings=settings, now=NOW)
+    assert result.welcomed == 2 and result.reminders_sent == 2
+    first_dm = workspace.dms_to("U1")[0]
+    assert "I'm the fellowship bot" in first_dm.text

@@ -109,3 +109,37 @@ def test_fellow_page_needs_a_valid_token_and_shows_one_person(client: TestClient
     assert export.status_code == 200 and "session" in export.text.splitlines()[0]
     assert read_token(settings, issue_token(settings, a)) == a
     assert read_token(settings, issue_token(settings, a) + "x") is None
+
+
+def test_fellow_can_toggle_preferences_from_the_page(client: TestClient, cohort) -> None:
+    from cufa.slack.client import FakeSlackClient
+    from cufa.slack.preferences import get_preferences
+    from cufa.slack.sync import sync_all
+
+    cohort_id, a, b = cohort
+    fake = FakeSlackClient()
+    fake.add_user("UDASH", email=f"{a}@example.invalid", name="Ada Dash")
+    with connection() as conn:
+        sync_all(conn, fake)
+    settings = get_settings()
+    path = fellow_dashboard_url(settings, a)[len(settings.public_base_url):]
+    page = client.get(path)
+    assert "10 min on" in page.text
+    assert client.post(path + "/prefs", data={"kind": "session", "offset": "10", "enabled": "off"}).status_code == 303
+    assert client.post(path + "/prefs", data={"kind": "gamification", "offset": "", "enabled": "off"}).status_code == 303
+    with connection() as conn:
+        prefs = get_preferences(conn, "UDASH")
+    assert prefs.session_reminders == (1440, 60) and prefs.gamification is False
+    page = client.get(path)
+    assert "10 min off" in page.text
+    assert client.post("/me/bogus/prefs", data={"kind": "session", "offset": "10", "enabled": "off"}).status_code == 403
+
+
+def test_staff_fellow_detail_page(signed_in: TestClient, client: TestClient, cohort) -> None:
+    cohort_id, a, b = cohort
+    page = signed_in.get(f"/dashboard/fellow/{a}")
+    assert page.status_code == 200
+    assert "Ada Dash" in page.text and "Attention index" in page.text and "Interventions" in page.text
+    assert "Export my data" not in page.text, "the staff view is not the fellow's export link"
+    assert signed_in.get("/dashboard/fellow/CU-nope").status_code == 404
+    assert TestClient(app, follow_redirects=False).get(f"/dashboard/fellow/{a}").status_code in (302, 303, 401)

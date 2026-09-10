@@ -291,13 +291,22 @@ class RealSlackClient:
         self._sleep = sleep
 
     def _call(self, method: str, **params: Any) -> dict[str, Any]:
-        body = json.dumps({k: v for k, v in params.items() if v is not None}).encode()
+        # Form-encoded, not JSON: every Web API method accepts a form body, but
+        # only the write methods accept JSON, and the read methods this client
+        # paginates (users.list, conversations.history) are not among them.
+        # Structured arguments (blocks) go as a JSON string, which Slack accepts.
+        fields = {
+            k: (json.dumps(v) if isinstance(v, (list, dict)) else str(v))
+            for k, v in params.items()
+            if v is not None
+        }
+        body = urllib.parse.urlencode(fields).encode()
         request = urllib.request.Request(
             self.BASE + method,
             data=body,
             headers={
                 "Authorization": f"Bearer {self._token}",
-                "Content-Type": "application/json; charset=utf-8",
+                "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
             },
             method="POST",
         )

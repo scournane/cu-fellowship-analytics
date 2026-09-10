@@ -58,8 +58,8 @@ def create_assignment(conn: psycopg.Connection, data: AssignmentInput) -> str:
     row = fetch_one(
         conn,
         """
-        insert into assignment (cohort_id, title, kind, due_at_utc, link, max_score, created_by)
-        values (%s, %s, %s, %s, %s, %s, %s)
+        insert into assignment (cohort_id, title, kind, due_at_utc, timezone, link, max_score, created_by)
+        values (%s, %s, %s, %s, %s, %s, %s, %s)
         returning assignment_id
         """,
         (
@@ -67,6 +67,7 @@ def create_assignment(conn: psycopg.Connection, data: AssignmentInput) -> str:
             data.title.strip(),
             data.kind,
             data.due_at_utc(),
+            data.timezone,
             (data.link or "").strip() or None,
             data.max_score,
             (data.created_by or "").strip().lower() or None,
