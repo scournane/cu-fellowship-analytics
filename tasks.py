@@ -606,6 +606,7 @@ def task_demo() -> int:
     banner("14. report")
     cufa("report", "--cohort", COHORT)
     cufa("report", "--cohort", COHORT, "--confidence")
+    cufa("report", "--cohort", COHORT, "--html", REPORT_PATH)
 
     banner("15. acceptance checks")
     script("verify_demo.py", "--cohort", COHORT, "--fixtures", str(FIXTURES))
@@ -708,6 +709,9 @@ def _slack_demo_env() -> dict[str, str]:
         "SLACK_API_BASE_URL": f"http://127.0.0.1:{FAKE_SLACK_PORT}/api/",
         "CUFA_SLACK_COHORT": COHORT,
         "CUFA_SLACK_PORT": SLACK_BOT_PORT,
+        # #q-and-a is a Q&A channel: its text is stored, repeats get a pointer
+        # to the earlier answer, and "@bot summary" works there.
+        "CUFA_SLACK_QA_CHANNELS": "q-and-a",
         "CUFA_LOG_LEVEL": os.environ.get("CUFA_LOG_LEVEL", "INFO"),
     }
 
@@ -814,10 +818,24 @@ def _ui(action: str, payload: dict | None = None) -> dict:
 
 
 def _slack_prereqs() -> None:
-    """Roster in place, database migrated. Reuses the demo's own steps."""
+    """Roster in place, database migrated. Reuses the demo's own steps.
+
+    Also one session dated today, so the Q&A asked during the demo belongs
+    to a session — that is what "@bot summary" and `cufa slack qa summary
+    --latest` summarise. The fixture sessions are all in the future.
+    """
     task_db_reset()
     task_fixtures()
     cufa("load-roster", "--csv", str(FIXTURES / "roster.csv"), "--cohort", COHORT)
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    today = datetime.now(ZoneInfo(SHEET_TZ)).date()
+    cufa(
+        "session", "create", "--cohort", COHORT, "--title", "Demo session (today)",
+        "--scheduled-at", f"{today.isoformat()}T00:05", "--timezone", SHEET_TZ, "--duration", "90",
+        quiet=True,
+    )
 
 
 def task_demo_slack() -> int:
@@ -881,6 +899,30 @@ def task_demo_slack_batch() -> int:
         _ui("join", {"user": people[3], "channel": general})
         _ui("edit", {"channel": general, "text": "root message, edited"})
         _ui("bot-message", {"channel": general})
+        # Somebody with an address that is on no roster — recorded, and queued
+        # for a human rather than dropped. Explicit, so the check below does not
+        # depend on the random day having picked them.
+        guest = next(u["id"] for u in state["users"] if (u["email"] or "").startswith("guest."))
+        _ui("message", {"user": guest, "channel": general, "text": "thanks for having me tonight!"})
+
+        banner("3b. Q&A: a question answered, a question open, and one asked AGAIN")
+        _ui("qa-ask", {"user": people[0], "text": "does anyone have the slides from tuesday?"})
+        _ui("qa-answer", {"user": people[1], "text": "yes — they're pinned in #announcements"})
+        _ui("qa-accept", {"user": people[0]})
+        _ui("qa-ask", {"user": people[2], "text": "what does 'quorum' mean in this context?"})
+        _ui("qa-again", {"user": people[3], "text": "can someone share tuesday's slides?"})
+        posted = _ui_state()["posted"]
+        pointers = [p for p in posted if "came up before" in p["text"]]
+        print(f"  bot replied in the repeat's thread: {'yes' if pointers else 'NO'}")
+        if pointers:
+            print("    " + pointers[-1]["text"].splitlines()[0])
+        banner("3c. the teacher asks for the session's Q&A summary")
+        _ui("mention", {"user": people[0], "channel": general, "text": "summary"})
+        posted = _ui_state()["posted"]
+        summaries = [p for p in posted if p["text"].startswith("*Q&A summary")]
+        print(f"  bot posted a summary in the thread: {'yes' if summaries else 'NO'}")
+        for row in (summaries[-1]["text"].splitlines()[:2] if summaries else []):
+            print("    " + row)
 
         banner("3b. the newer signals: mentions, huddles, canvases, a poll")
         import json  # local, like every other helper in this file
@@ -918,12 +960,15 @@ def task_demo_slack_batch() -> int:
 
         env = _slack_demo_env()
         banner("6. the bot was down for a while — backfill what it missed")
-        cufa("slack", "backfill", "--channel", "general", "--channel", "announcements", env=env)
+        cufa("slack", "backfill", "--channel", "general", "--channel", "announcements", "--channel", "q-and-a", env=env)
 
         banner("7. what the database holds")
         cufa("slack", "stats", env=env)
         cufa("slack", "report", "--cohort", COHORT, env=env)
         cufa("slack", "insights", "--cohort", COHORT, env=env)
+        cufa("slack", "qa", "list", "--latest", env=env)
+        cufa("slack", "qa", "summary", "--latest", env=env)
+        cufa("report", "--cohort", COHORT, "--html", REPORT_PATH, env=env)
 
         banner("8. acceptance checks")
         # The verifier reads the fake's delivery log, so it has to be told
@@ -944,8 +989,31 @@ def _ui_state() -> dict:
 
 
 def task_slack_bot() -> int:
-    """Run the bot against REAL Slack, from .env. HTTP mode; see docs for Socket Mode."""
-    cufa("slack", "serve", "--port", SLACK_BOT_PORT)
+    """Run the bot against REAL Slack, from .env — preflight first.
+
+    `doctor` refuses to start the bot when it would record nothing: a missing
+    scope, a channel it was never invited to, a token from the wrong app. Each
+    of those fails silently once the bot is running, which is why the check
+    happens before it starts rather than after nothing arrives.
+    """
+    clean = {k: v for k, v in os.environ.items()}
+    # The demo's fake-server override must never leak into a real run.
+    clean.pop("SLACK_API_BASE_URL", None)
+    result = run([venv_python(), "-m", "cufa", "slack", "doctor"], env=clean, check=False)
+    if result.returncode != 0:
+        raise TaskError("preflight failed — fix the items above, then re-run")
+    mode = "socket" if os.environ.get("SLACK_APP_TOKEN") else "serve"
+    args = ["slack", mode] + (["--port", SLACK_BOT_PORT] if mode == "serve" else [])
+    run([venv_python(), "-m", "cufa", *args], env=clean)
+    return 0
+
+
+REPORT_PATH = os.environ.get("REPORT_PATH", "out/report.html")
+
+
+def task_report() -> int:
+    """Regenerate the self-contained HTML report. This is the evergreen step."""
+    cufa("report", "--cohort", COHORT, "--html", REPORT_PATH)
     return 0
 
 
@@ -1007,6 +1075,7 @@ TASKS = {
     "db-down": task_db_down,
     "studio": task_studio,
     "fixtures": task_fixtures,
+    "report": task_report,
     "demo-slack": task_demo_slack,
     "demo-slack-batch": task_demo_slack_batch,
     "slack-bot": task_slack_bot,
@@ -1020,9 +1089,10 @@ HELP = """Civic Innovators check-in — Parts A and B
   python tasks.py demo-again    re-run over the same database, to show idempotency
   python tasks.py demo-ai       same as demo, with tier 2 live (needs GEMINI_API_KEY)
   python tasks.py demo-console  demo data plus the web console
+  python tasks.py report        regenerate out/report.html — the self-contained HTML report
   python tasks.py demo-slack    the Slack bot + a fake Slack workspace you drive from a browser
   python tasks.py demo-slack-batch  the same, driven automatically and checked (no browser)
-  python tasks.py slack-bot     run the bot against real Slack, from .env
+  python tasks.py slack-bot     preflight (cufa slack doctor), then run the bot against real Slack
   python tasks.py frontend      build the console bundle (npm ci + vite build)
   python tasks.py test          pytest, no network
   python tasks.py clean         stop Supabase, remove generated fixtures

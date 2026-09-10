@@ -45,11 +45,14 @@ def main() -> int:
     with connection() as conn:
         n = (fetch_one(conn, "select count(*) as n from slack_event") or {})["n"]
 
-        # 1. Every accepted, non-skipped delivery is in the table.
+        # 1. Every accepted, non-skipped delivery is in the table. A bot message
+        #    is skipped by design; an app_mention is a request to the bot, not
+        #    an act of participation (the message event for the same post is).
         accepted = [e for e in log if e["status"] == 200 and not e["note"]]
         # Accepted deliveries that are meant to leave no row: a bot's own
-        # message, and a file that turns out not to be a canvas.
-        skippable = [e for e in accepted if e["kind"].startswith("message/bot_message") or "(not a canvas)" in e["kind"]]
+        # message, a mention the Q&A handler replies to, and a file that
+        # turns out not to be a canvas.
+        skippable = [e for e in accepted if e["kind"].startswith(("message/bot_message", "app_mention")) or "(not a canvas)" in e["kind"]]
         expected_min = len(accepted) - len(skippable)
         check(
             f"every accepted delivery is recorded ({n} rows, ≥{expected_min} unique deliveries)",
@@ -139,6 +142,29 @@ def main() -> int:
         graph = reply_graph(conn, args.cohort)
         check("reply graph reports nobody-replied-to alphabetically, never a received count",
               "received" not in json.dumps(graph) and graph["not_replied_to"] == sorted(graph["not_replied_to"], key=lambda r: (r["full_name"], r["fellow_id"])))
+        # 12. Q&A: questions and answers captured (text stored THERE, and only there),
+        #     the repeat got a pointer to the earlier answer, the mention got a summary.
+        questions = (fetch_one(conn, "select count(*) as n from slack_qa_question where deleted_at_utc is null") or {})["n"]
+        answers = (fetch_one(conn, "select count(*) as n from slack_qa_answer where deleted_at_utc is null") or {})["n"]
+        check(f"Q&A questions and replies captured ({questions} questions, {answers} replies)", questions >= 3 and answers >= 1)
+        accepted_answers = (fetch_one(conn, "select count(*) as n from slack_qa_answer where accepted") or {})["n"]
+        check("a ✅ reaction marked an answer accepted", accepted_answers >= 1)
+        pointer = fetch_one(conn, "select method, similarity, posted_ts, post_error from slack_qa_pointer order by created_at desc limit 1")
+        check(
+            "the repeated question got a pointer to the earlier answer, and it was posted",
+            bool(pointer) and bool(pointer["posted_ts"]),
+            f"method={pointer['method']} similarity={pointer['similarity']}" if pointer else "no pointer row",
+        )
+        summary = fetch_one(conn, "select model, questions_considered, answered_count, posted_ts from slack_qa_summary where superseded_at is null order by generated_at desc limit 1")
+        check(
+            "the mention produced a session summary, and it was posted",
+            bool(summary) and bool(summary["posted_ts"]),
+            f"{summary['questions_considered']} questions, {summary['answered_count']} answered, model={summary['model']}" if summary else "no summary row",
+        )
+        posted = state.get("posted") or []
+        check("what the bot posted names no address", all("@example.invalid" not in p["text"] and "<@U" not in p["text"] for p in posted))
+        qa_text_in_events = (fetch_one(conn, "select count(*) as n from slack_event where text is not null") or {})["n"]
+        check("Q&A text lives in the Q&A tables, not on slack_event", qa_text_in_events == 0)
 
     print("=" * 62)
     if failures:

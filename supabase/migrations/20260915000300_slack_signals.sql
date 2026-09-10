@@ -21,7 +21,7 @@
 --   * no "mentions received" or "replies received" count column or view:
 --     received recognition is recorded on the rows (the mentions array, the
 --     thread parent) and is used only to find people NOBODY talks to. It is
---     never ranked. See ADR-028 and ADR-032.
+--     never ranked. See ADR-028 and ADR-033.
 
 -- ---------------------------------------------------------------------------
 -- slack_event — new kinds of act

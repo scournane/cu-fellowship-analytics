@@ -108,6 +108,14 @@ class Settings:
     slack_rhythm_min_acts: int = 20
     #: A channel with no message for this many days is reported as quiet.
     slack_quiet_channel_days: int = 7
+    #: Channels (names or ids) treated as Q&A: their message text IS stored,
+    #: the bot points a repeated question at the earlier answer, and a
+    #: per-session summary can be generated. Empty means none of that runs.
+    #: See ADR-032.
+    slack_qa_channels: tuple[str, ...] = ()
+    #: Where `cufa slack qa summary --post` goes when no --channel is given.
+    #: Blank means the first Q&A channel.
+    slack_qa_summary_channel: str | None = None
 
     fixtures_dir: Path = field(default_factory=lambda: _repo_root() / "fixtures")
 
@@ -206,6 +214,10 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         slack_rhythm_days=_int("CUFA_SLACK_RHYTHM_DAYS", 28),
         slack_rhythm_min_acts=_int("CUFA_SLACK_RHYTHM_MIN_ACTS", 20),
         slack_quiet_channel_days=_int("CUFA_SLACK_QUIET_CHANNEL_DAYS", 7),
+        slack_qa_channels=tuple(
+            item.strip() for item in (env.get("CUFA_SLACK_QA_CHANNELS") or "").split(",") if item.strip()
+        ),
+        slack_qa_summary_channel=(env.get("CUFA_SLACK_QA_SUMMARY_CHANNEL") or "").strip().lstrip("#") or None,
     )
 
 
