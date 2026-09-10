@@ -46,10 +46,11 @@ from ..interventions import clear_reached_out, for_fellow as interventions_for, 
 from ..db import fetch_all, fetch_one
 from ..logging_setup import get_logger
 from ..report import cohort_report
+from ..timeutil import short_date, short_datetime
 from .badges import badges_for, collect_evidence, leaderboard, render_badges, render_leaderboard, RANK_KEYS
 from .client import SlackClient
 from .dashboard_links import fellow_dashboard_url
-from .digest import post_check_in_ping, post_weekly_digest, session_summary_text
+from .digest import post_check_in_ping, post_weekly_digest, resolve_channel, session_summary_text
 from .identity import (
     AmbiguousFellow,
     UnknownFellow,
@@ -149,7 +150,7 @@ def _find_session(conn: psycopg.Connection, cohort_id: str, query: str, *, now: 
         return rows[0]
     if rows:
         raise CufaError(
-            f"{needle!r} matches more than one session: " + ", ".join(f"{r['title']} ({r['scheduled_at_utc']:%b %-d})" for r in rows[:6])
+            f"{needle!r} matches more than one session: " + ", ".join(f"{r['title']} ({short_date(r['scheduled_at_utc'])})" for r in rows[:6])
         )
     raise CufaError(f"No session matches {needle!r}.")
 
@@ -239,7 +240,7 @@ def cmd_checkin(conn, client, ctx: Context, args: list[str]) -> Reply:
         return Reply("Your Slack account is not linked to the roster yet. Message a staff member directly and they will sort it out.")
     note = " ".join(args).strip() or None
     intervention_id = request_check_in(conn, ctx.caller.fellow_id, by_slack_user=ctx.caller.slack_user_id, note=note)
-    channel = ctx.settings.slack_staff_channel
+    channel = resolve_channel(conn, client, ctx.settings.slack_staff_channel)
     if channel:
         post_check_in_ping(conn, client, channel_id=channel, intervention_id=intervention_id, fellow_name=ctx.caller.full_name or ctx.caller.fellow_id, note=note)
         return Reply("Done — a staff member has been pinged and will reach out.")
@@ -305,7 +306,7 @@ def cmd_fellow(conn, client, ctx: Context, args: list[str]) -> Reply:
         ))
     recent = interventions_for(conn, f["fellow_id"])[:5]
     if recent:
-        lines.append("Interventions: " + " · ".join(f"{i['kind']} {i['created_at']:%b %-d}" + (f" ({i['by_email']})" if i["by_email"] else "") for i in recent))
+        lines.append("Interventions: " + " · ".join(f"{i['kind']} {short_date(i['created_at'])}" + (f" ({i['by_email']})" if i["by_email"] else "") for i in recent))
     badges = badges_for(conn, f["fellow_id"])
     if badges:
         lines.append("Badges: " + " ".join(f"{b['emoji']}{b['level']}" for b in badges))
@@ -325,7 +326,7 @@ def cmd_report(conn, client, ctx: Context, args: list[str]) -> Reply:
     engagement = cohort_engagement(conn, cohort, now=ctx.now)
     received = last_data_received(conn, cohort)
     t = report.totals
-    lines = [f"*Report — cohort {cohort}* (as of {ctx.now:%b %-d %H:%M} UTC)"]
+    lines = [f"*Report — cohort {cohort}* (as of {short_datetime(ctx.now)} UTC)"]
     lines.append(
         f"Sessions held: {att.get('sessions_held', 0)} · active fellows: {att.get('active_fellows', 0)} · "
         f"overall attendance: {round(100 * (att.get('rate') or 0))}%"
@@ -343,7 +344,7 @@ def cmd_report(conn, client, ctx: Context, args: list[str]) -> Reply:
     watch = [e for e in engagement if e.attention_index >= 60][:8]
     if watch:
         lines.append("Highest attention index: " + ", ".join(f"{e.full_name} {e.attention_index}{' ✓' if e.reached_out else ''}" for e in watch))
-    lines.append("Last data: " + " · ".join(f"{k} {v:%b %-d %H:%M}" if v else f"{k} never" for k, v in received.items()))
+    lines.append("Last data: " + " · ".join(f"{k} {short_datetime(v)}" if v else f"{k} never" for k, v in received.items()))
     lines.append("_✓ = someone has reached out. Full detail: the staff dashboard, or `cufa report`._")
     return Reply("\n".join(lines))
 
@@ -474,15 +475,18 @@ def cmd_alerts(conn, client, ctx: Context, args: list[str]) -> Reply:
     if not alerts:
         return Reply("No unrostered accounts. 🎉")
     return Reply("*Joined but not on the roster:*\n" + "\n".join(
-        f"• <@{a['slack_user_id']}> {a['real_name'] or a['display_name']}" + (f" — {a['email']}" if a["email"] else "") + f" (since {a['created_at']:%b %-d})"
+        f"• <@{a['slack_user_id']}> {a['real_name'] or a['display_name']}" + (f" — {a['email']}" if a["email"] else "") + f" (since {short_date(a['created_at'])})"
         for a in alerts
     ) + "\n`/link <@user> <fellow>` · `/alerts resolve <@user> staff|ignored`")
 
 
 def cmd_digest(conn, client, ctx: Context, args: list[str]) -> Reply:
-    channel = ctx.settings.slack_staff_channel
+    channel = resolve_channel(conn, client, ctx.settings.slack_staff_channel)
     if not channel:
-        raise CufaError("No staff channel configured (CUFA_SLACK_STAFF_CHANNEL).")
+        raise CufaError(
+            "No staff channel the bot can find. Set CUFA_SLACK_STAFF_CHANNEL to the "
+            "channel's name or id, and invite the bot to it."
+        )
     if post_weekly_digest(conn, client, cohort_id=ctx.cohort_id, channel_id=channel, now=ctx.now, force=True):
         return Reply("Posted the weekly digest to the staff channel.")
     return Reply("This week's digest was already posted; it is in the staff channel.")

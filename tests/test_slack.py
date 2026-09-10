@@ -430,13 +430,26 @@ def test_demo_workspace_has_the_edge_cases(tmp_path):
 # ===========================================================================
 
 def test_doctor_passes_against_a_configured_workspace(db, ws, capsys):
-    """Every check green, and the next-step commands printed."""
+    """Every check green, and the next-step commands printed.
+
+    "Green" covers BOTH halves of the bot: capture needs the scopes and the
+    channels, and the reminder half needs somewhere to post, someone allowed to
+    run the staff commands, and a signing key that is not the one in the example
+    file. A preflight that passed without those would be telling a half-truth.
+    """
     from cufa.slack.bot import doctor
     from cufa.slack.fake_server import FakeSlackHTTPServer
 
     fake = FakeSlackHTTPServer(ws, signing_secret="s", bot_events_url="http://bot.invalid/slack/events", port=0).start_in_thread()
     try:
-        settings = _settings(fake.api_base_url, SLACK_APP_TOKEN="xapp-test", CUFA_SLACK_COHORT="cu-test")
+        settings = _settings(
+            fake.api_base_url,
+            SLACK_APP_TOKEN="xapp-test",
+            CUFA_SLACK_COHORT="cu-test",
+            CUFA_SLACK_STAFF_CHANNEL="cohort-private",
+            CUFA_SLACK_ADMINS="staff@example.invalid",
+            CUFA_CONSOLE_SECRET="not-the-default-secret",
+        )
         assert doctor(settings) == 0
     finally:
         fake.stop()
@@ -444,8 +457,99 @@ def test_doctor_passes_against_a_configured_workspace(db, ws, capsys):
     assert "token works" in out
     assert "bot is a member of at least one channel" in out
     assert "users carry an email on their profile" in out
+    assert "staff channel #cohort-private" in out and "bot is a member" in out
+    assert "staff channel is private" in out
     assert "cufa slack socket" in out, "Socket Mode is recommended when an app token is present"
+    assert "cufa slack tick" in out, "the scheduled half is part of what to run next"
     assert "@" not in out, "the preflight never prints an address"
+
+
+def test_doctor_passes_a_capture_only_install_and_says_what_is_off(db, ws, capsys):
+    """No staff channel is a legitimate install, not a misconfiguration.
+
+    The second half is opt-in. Without it the bot still records every act, so
+    the preflight passes — but it says plainly which features are not running,
+    because "nothing was posted" is otherwise indistinguishable from a bug.
+    """
+    from cufa.slack.bot import doctor
+    from cufa.slack.fake_server import FakeSlackHTTPServer
+
+    fake = FakeSlackHTTPServer(ws, signing_secret="s", bot_events_url="http://bot.invalid/slack/events", port=0).start_in_thread()
+    try:
+        settings = _settings(
+            fake.api_base_url, SLACK_APP_TOKEN="xapp-test", CUFA_SLACK_COHORT="cu-test",
+            CUFA_SLACK_STAFF_CHANNEL="",
+        )
+        assert doctor(settings) == 0
+    finally:
+        fake.stop()
+    out = capsys.readouterr().out
+    assert "reminders, badges, slash commands  — OFF" in out
+    assert "no session summaries" in out and "Monday digest" in out
+    assert "Reminders and badge DMs still work" in out
+    assert "@" not in out
+
+
+def test_doctor_holds_the_second_half_to_account_once_it_is_switched_on(db, ws, capsys):
+    """Configure somewhere to post, and every setting that half needs must be right."""
+    from cufa.slack.bot import doctor
+    from cufa.slack.fake_server import FakeSlackHTTPServer
+
+    fake = FakeSlackHTTPServer(ws, signing_secret="s", bot_events_url="http://bot.invalid/slack/events", port=0).start_in_thread()
+    try:
+        settings = _settings(
+            fake.api_base_url, SLACK_APP_TOKEN="xapp-test", CUFA_SLACK_COHORT="cu-test",
+            CUFA_SLACK_STAFF_CHANNEL="cohort-private",
+            CUFA_SLACK_ADMINS="",
+            CUFA_CONSOLE_SECRET="dev-insecure-secret",
+        )
+        assert doctor(settings) == 1, "an incomplete second half is not a pass"
+    finally:
+        fake.stop()
+    out = capsys.readouterr().out
+    assert "MISS  CUFA_SLACK_ADMINS set" in out
+    assert "MISS  CUFA_CONSOLE_SECRET is not the default" in out
+    assert "FORGEABLE" in out, "the consequence is named, not just the setting"
+    assert "@" not in out
+
+
+def test_doctor_warns_when_the_staff_channel_is_public(db, ws, capsys):
+    """The digest names who is falling behind. A fellow must not be able to read it."""
+    from cufa.slack.bot import doctor
+    from cufa.slack.fake_server import FakeSlackHTTPServer
+
+    fake = FakeSlackHTTPServer(ws, signing_secret="s", bot_events_url="http://bot.invalid/slack/events", port=0).start_in_thread()
+    try:
+        settings = _settings(
+            fake.api_base_url, SLACK_APP_TOKEN="xapp-test", CUFA_SLACK_COHORT="cu-test",
+            CUFA_SLACK_STAFF_CHANNEL="general",
+            CUFA_SLACK_ADMINS="staff@example.invalid", CUFA_CONSOLE_SECRET="not-the-default-secret",
+        )
+        assert doctor(settings) == 1
+    finally:
+        fake.stop()
+    out = capsys.readouterr().out
+    assert "MISS  staff channel is private" in out
+    assert "every fellow could read it" in out
+
+
+def test_doctor_says_loudly_when_the_roster_is_empty(db, ws, capsys):
+    """Not a failure: a workspace can be connected first. But nothing is attributed."""
+    from cufa.slack.bot import doctor
+    from cufa.slack.fake_server import FakeSlackHTTPServer
+
+    fake = FakeSlackHTTPServer(ws, signing_secret="s", bot_events_url="http://bot.invalid/slack/events", port=0).start_in_thread()
+    try:
+        settings = _settings(
+            fake.api_base_url, SLACK_APP_TOKEN="xapp-test", CUFA_SLACK_COHORT="nobody-loaded-yet",
+            CUFA_SLACK_STAFF_CHANNEL="cohort-private",
+            CUFA_SLACK_ADMINS="staff@example.invalid", CUFA_CONSOLE_SECRET="not-the-default",
+        )
+        assert doctor(settings) == 0, "an empty roster is a warning, not a blocker"
+    finally:
+        fake.stop()
+    out = capsys.readouterr().out
+    assert "EMPTY" in out and "cufa load-roster" in out
 
 
 def test_doctor_fails_fast_without_a_token(capsys):

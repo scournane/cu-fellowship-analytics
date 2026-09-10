@@ -189,6 +189,20 @@ def sync_users(
 # ---------------------------------------------------------------------------
 
 
+def _is_staff_channel(channel: Any, configured: str | None) -> bool:
+    """Whether this channel is the staff one, named by id OR by name.
+
+    By name matters: `is_staff` is what keeps staff conversation out of every
+    fellow-facing count, and somebody configuring `#staff` rather than
+    `C0123456789` must not silently get a channel that is counted as
+    participation.
+    """
+    if not configured:
+        return False
+    wanted = configured.strip().lstrip("#").lower()
+    return channel.id.lower() == wanted or (channel.name or "").lower() == wanted
+
+
 def sync_channels(conn: psycopg.Connection, client: SlackClient, *, staff_channel: str | None = None) -> int:
     team = client.team_id
     ensure_workspace_row(conn, team)
@@ -206,7 +220,8 @@ def sync_channels(conn: psycopg.Connection, client: SlackClient, *, staff_channe
                    is_staff = slack_channel.is_staff or excluded.is_staff,
                    fetched_at = now()
             """,
-            (team, channel.id, channel.name, channel.is_private, channel.is_member, channel.id == staff_channel),
+            (team, channel.id, channel.name, channel.is_private, channel.is_member,
+             _is_staff_channel(channel, staff_channel)),
         )
         n += 1
     return n

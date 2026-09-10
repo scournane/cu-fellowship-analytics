@@ -129,11 +129,26 @@ def test_every_chart_has_a_table_twin(db, tmp_path):
     assert out.count("<summary>Table view</summary>") >= 3
 
 
-def test_no_combined_score(db, tmp_path):
+def test_no_combined_participation_score(db, tmp_path):
+    """The three signals are shown side by side and never added up into a mark.
+
+    The report does carry an attention index, and that is a different object: a
+    triage ORDER for staff, labelled as one everywhere it appears, never shown
+    to a fellow. The difference is the whole point, so it is asserted rather
+    than assumed — the denial is present, the index is never called a score,
+    and no total or grade is offered anywhere.
+    """
     _populate(db, tmp_path)
     out = render_report_html(db, TEST_COHORT)
-    assert "not combined into a score" in out
-    assert "participation score" not in out.lower()
+    # Prose in the template wraps across lines, so compare on collapsed whitespace.
+    flat = re.sub(r"\s+", " ", out.lower())
+    assert "not combined into a participation score" in flat
+    assert "triage order, not a grade and not a participation score" in flat
+    for forbidden in ("participation score:", "overall score", "total score", "combined score", "final score", "grade:"):
+        assert forbidden not in flat, f"the report offers a {forbidden!r}"
+    # The index never appears without the parts it is made of.
+    assert "attention index" in flat and "weighted" in flat
+    assert "asking for help never lowers any signal" in flat
 
 
 def test_help_checkbox_is_named_as_excluded(db):

@@ -21,6 +21,10 @@ dependencies = [
     "itsdangerous",
     "python-multipart",
     "slack-bolt",
+    # Windows ships no IANA timezone database, so ZoneInfo finds nothing and every
+    # zone lookup fails — which matters here because reminders are rendered in each
+    # fellow's own zone, as Slack reports it.
+    "tzdata; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

@@ -20,6 +20,7 @@ the safeguarding path to its own recipient, and does not appear in a digest.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -30,6 +31,7 @@ from ..config import Settings, get_settings
 from ..db import execute, fetch_all, fetch_one
 from ..errors import CufaError
 from ..logging_setup import get_logger
+from ..timeutil import short_date
 from ..assignments import list_assignments
 from ..engagement import most_active, quiet_fellows
 from ..interventions import open_requests
@@ -42,6 +44,41 @@ from .sync import sync_all
 from .welcome import send_welcomes
 
 log = get_logger(__name__)
+
+
+#: What a Slack channel id looks like. C public, G private, D direct message.
+_CHANNEL_ID = re.compile(r"[CGD][A-Z0-9]{2,}")
+
+
+def resolve_channel(conn: psycopg.Connection, client: SlackClient, target: str | None) -> str | None:
+    """A channel id, from an id or a name.
+
+    Staff write ``#staff`` in a configuration file, not ``C0123456789``, and the
+    Q&A channels already accept either. The staff channel does too, so the two
+    halves of the bot are configured the same way. Resolved from the synced
+    channel table first, then from the API, so a name works on the first run
+    before anything has been synced.
+    """
+    if not target:
+        return None
+    wanted = target.strip().lstrip("#")
+    if not wanted:
+        return None
+    row = fetch_one(
+        conn,
+        "select channel_id from slack_channel where channel_id = %s or lower(name) = lower(%s) "
+        "order by (channel_id = %s) desc limit 1",
+        (wanted, wanted, wanted),
+    )
+    if row:
+        return row["channel_id"]
+    for channel in client.list_channels():
+        if channel.name.lower() == wanted.lower() or channel.id == wanted:
+            return channel.id
+    # Nothing matched by name. If it is shaped like an id, use it anyway: the
+    # bot can post to a channel it cannot list, and refusing would turn a
+    # permissions quirk into a silently missing digest.
+    return wanted if _CHANNEL_ID.fullmatch(wanted) else None
 
 
 def _already(conn: psycopg.Connection, kind: str, key: str) -> bool:
@@ -183,7 +220,7 @@ def weekly_digest_text(conn: psycopg.Connection, cohort_id: str, *, now: datetim
 
     attention = [e for e in cohort_engagement(conn, cohort_id, now=now) if e.attention_index >= 60 and not e.reached_out][:8]
 
-    lines = [f"*Weekly digest — {now.strftime('%b %-d')}*"]
+    lines = [f"*Weekly digest — {short_date(now)}*"]
     if sessions:
         lines.append("*This week:* " + " · ".join(
             f"{s['title']} ({format_when(s['scheduled_at_utc'], s['timezone'])}{'' if s['zoom_url'] else ' — no Zoom link yet'})"
@@ -231,11 +268,17 @@ def post_roster_alerts(conn: psycopg.Connection, client: SlackClient, *, channel
         if a["posted_at"] is not None:
             continue
         who = a["real_name"] or a["display_name"] or a["slack_user_id"]
+        # The Slack mention, not the address. Staff can click the mention to see
+        # the profile, so the address adds nothing they cannot already reach —
+        # and a Slack channel keeps its history, is searchable, can be exported,
+        # and is readable by whoever is added to it next year. The address stays
+        # where access is gated: `cufa slack alerts` and the staff dashboard.
         text = (
-            f"👋 *{who}* joined the workspace but is not on the roster"
-            + (f" ({a['email']})" if a["email"] else "")
-            + f".\nIf they are a fellow: `/link <@{a['slack_user_id']}> <fellow id or name>`. "
-            f"Staff or a guest: `/alerts resolve <@{a['slack_user_id']}> staff` or `… ignored`."
+            f"👋 *{who}* (<@{a['slack_user_id']}>) joined the workspace but is not on the roster.\n"
+            + ("" if a["email"] else "Their profile carries no email, so nothing can be matched automatically.\n")
+            + f"If they are a fellow: `/link <@{a['slack_user_id']}> <fellow id or name>`. "
+            f"Staff or a guest: `/alerts resolve <@{a['slack_user_id']}> staff` or `… ignored`.\n"
+            "_`/alerts` lists these with the address on them._"
         )
         if _post(conn, client, channel_id, kind="roster_alert", key=a["slack_user_id"], text=text):
             execute(conn, "update roster_alert set posted_at = now() where alert_id = %s", (a["alert_id"],))
@@ -297,7 +340,6 @@ def tick(
     """
     settings = settings or get_settings()
     cohort_id = cohort_id or settings.slack_cohort
-    staff_channel = staff_channel or settings.slack_staff_channel
     now = now or datetime.now(timezone.utc)
     result = TickResult()
     if not cohort_id:
@@ -311,6 +353,7 @@ def tick(
             log.warning("tick step %s failed: %s", name, exc)
             return None
 
+    configured_channel = staff_channel or settings.slack_staff_channel
     if sync:
         result.synced = step("sync", lambda: sync_all(conn, client, staff_channel=staff_channel, staff_emails=settings.slack_admins, store_text=settings.slack_store_text, cohort_id=cohort_id, messages=sync_messages)) is not None
     result.welcomed = step("welcome", lambda: send_welcomes(conn, client, cohort_id=cohort_id)) or 0
@@ -322,6 +365,13 @@ def tick(
         result.badges_awarded = len(awards.new_awards)
         notified = step("badge_dms", lambda: notify_new_awards(conn, client, awards, cohort_id=cohort_id))
         result.badges_notified = notified.notified if notified else 0
+    # Resolved after the sync, so a channel named by name is already in the table.
+    staff_channel = step("staff_channel", lambda: resolve_channel(conn, client, configured_channel))
+    if configured_channel and not staff_channel:
+        result.errors.append(
+            f"staff channel {configured_channel!r} not found, or the bot is not in it; "
+            "summaries, alerts and digests were not posted"
+        )
     if staff_channel:
         result.alerts_posted = step("roster_alerts", lambda: post_roster_alerts(conn, client, channel_id=staff_channel)) or 0
         result.summaries_posted = step(
@@ -331,7 +381,7 @@ def tick(
         result.weekly_posted = bool(
             step("weekly", lambda: post_weekly_digest(conn, client, cohort_id=cohort_id, channel_id=staff_channel, now=now))
         )
-    else:
+    elif not configured_channel:
         result.errors.append("no staff channel configured (CUFA_SLACK_STAFF_CHANNEL); summaries, alerts and digests not posted")
     log.info("tick %s", result)
     return result
@@ -339,6 +389,7 @@ def tick(
 
 __all__ = [
     "TickResult",
+    "resolve_channel",
     "post_check_in_ping",
     "post_roster_alerts",
     "post_session_summaries",

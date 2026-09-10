@@ -978,3 +978,167 @@ the same here: ranking received recognition builds a popularity contest and
 rewards the already-visible. Everything in this ADR is designed so that the
 worst thing an inherited copy of this database can do is count how many
 people used the fire emoji in a given week.
+
+## ADR-034 — One Slack stack, two halves, one event store
+
+**Context.** Two bots were built against the same workspace from different
+starting points. One captures participation: every message, reaction, edit and
+join written to `slack_event` as it happens, because Slack's free plan deletes
+history. The other sends: reminders before each session and assignment, a
+welcome, private badges, staff slash commands, a session summary, a Monday
+digest. Both needed members, channels, identity by email, and a Slack client.
+
+**Decision.** They are one bot. There is **one event store** (`slack_event`),
+**one identity path** (`v_slack_user_resolved`, which resolves a manual staff
+link, then the primary address, then an alias), **one Bolt app** — the sending
+half registers its slash commands, its button and its `team_join` handler on the
+app the capture half builds — and **one HTTP client**, a thin adapter over the
+`slack_sdk` `WebClient` the capture half already owns. The sending half's tables
+extend the capture half's with columns it needs (time zone, admin flag, staff
+link, welcome stamp, staff-channel flag) rather than creating parallel ones.
+
+The two halves write messages through the same idempotency key, so the live
+handler, a scheduled pull and a backfill all collide on one row. While the bot
+is running the live handler owns message capture and the scheduler does not pull
+messages at all; from cron with no bot running, the pull does it.
+
+There is also **one reminder engine**. Both halves had written one — the
+capture side's, with per-fellow quiet hours and time zones, Part B nudges,
+agendas and a retry table; the sending side's, with per-interval switches and
+the Slack profile's zone — and a fellow would have been reminded twice. The
+first is the engine; the second's entry points (`run_reminders`, the `/zoom`
+command, `cufa slack tick`) call into it. The two preference commands both
+stand: `/cufa-reminders` sets cadence, zone and quiet hours, `/reminders`
+switches single intervals off, and the engine honours both. Where the two
+schemas named the same thing twice (`assignment.url`/`link`,
+`session.zoom_url`/`zoom_link`) a migration made them one column.
+
+The sending half is **opt-in**: configuring a staff channel turns it on. Without
+one, the bot records everything and sends nothing but reminders and badge DMs,
+and the preflight passes and says so.
+
+**Rejected.** Two bots in one workspace, each with its own token and its own
+tables. A second `slack_message` table beside `slack_event`. A second HTTP client
+written against `urllib` because the core package did not depend on the Slack
+SDK. Letting the scheduler pull messages while the live handler was also
+receiving them. Making the sending half mandatory.
+
+**Why.** Two tables holding the same messages is two answers to "how many did
+she send", and the wrong one is always the one somebody reports. Two clients is
+two places a base URL can be pointed at the wrong host — and the demo's fake
+Slack server works by pointing one base URL, so a second client silently escapes
+it and would have reached the real slack.com from a test. Two tokens is two
+things to rotate and two sets of scopes to audit.
+
+The race matters more than it looks. A pull that claims a message row first wins
+the idempotency key, and the Q&A logic that runs on the live event — pointing a
+repeated question at an earlier answer — then never runs, because from its point
+of view the message was already recorded. Nothing would error; a feature would
+just stop. So the scheduler is told not to pull while the handler is live.
+
+Opt-in, because a capture-only install is a legitimate thing to want and should
+not have to configure four settings to get it. Making it opt-in also gives the
+preflight a rule it can state: with no staff channel, the second half is off and
+that is fine; with one, every setting it needs is a hard failure when missing,
+because from then on a missing one means a feature that looks on and is off.
+
+---
+
+## ADR-035 — The attention index is a triage order, not a score
+
+**Context.** The Director of Programs asked for "whether someone is falling
+behind", combining Slack activity, attendance and how thorough a fellow's
+end-of-session answers are. ADR-020 left participation weighting explicitly
+undecided: combining those three into a measure of a fellow's standing is her
+decision, not one to infer from what happens to be measurable.
+
+**Decision.** There is a number, from 0 to 100, called the **attention index**.
+Higher means more reason for a person to look. It is computed from three
+components, each relative to the cohort rather than to an absolute: Slack
+messages as a share of the cohort mean, sessions attended over sessions held,
+and how many fields of submitted end-of-session forms were filled in. Its
+weights live in one dictionary, `cufa.engagement.WEIGHTS`, named in the report
+and changeable without touching anything else.
+
+Four rules hold, and each is enforced rather than documented:
+
+1. **The components are always shown beside it**, in Slack, on the dashboard and
+   in the HTML report.
+2. **A session awaiting a human decision counts neither way.** It leaves the
+   denominator. Absent evidence is not evidence of absence.
+3. **The help checkbox and assignment scores never enter it.** Asking for help
+   never lowers any signal; a mark on the Solvathon is not participation.
+4. **A fellow never sees it.** It appears on staff surfaces only.
+
+It is not a participation score, and the report says so next to both objects:
+the per-session grid still states that the three signals are not combined into a
+measure of standing, and the index states that it is a triage order instead.
+
+**Rejected.** Combining the three into a participation score, which is ADR-020's
+open question and not ours to close. A pass/fail "at risk" flag, which is a label
+that follows a person. Absolute thresholds instead of cohort-relative ones.
+Grading free text, or scoring its length — the form fields are counted, never
+graded (ADR-026). Including assignment scores, which would quietly turn a mark
+into a participation signal. Showing it to fellows.
+
+**Why.** A staff member with twenty minutes on a Monday has to start somewhere,
+and alphabetical order is not better than a considered order just because it
+refuses to judge. The honest form of the feature is an ordering with its reasons
+attached, which a person can disagree with row by row, rather than either a
+ranking presented as truth or no help at all.
+
+Cohort-relative, because "quiet" only means anything against this cohort in this
+week. Shown-in-parts, because a number a staff member cannot take apart is a
+number they either over-trust or ignore, and both are worse than none. Never
+shown to a fellow, because the moment it is, it becomes a grade no matter what it
+is called — and a fellow who believes a number is watching them starts performing
+for it, which destroys the signal and is unkind.
+
+The two exclusions are the ones that would do real damage. If asking for help
+could move the index, the help checkbox stops working (ADR invariant: asking for
+help never lowers any participation signal), and the programme loses its only
+self-reported distress channel. If scores entered it, a fellow who writes slowly
+but turns up to everything would read as disengaged.
+
+A known weakness, recorded rather than hidden: the Slack component compares a
+fellow's all-time message count against the cohort's all-time mean, so somebody
+who joined late reads as quieter than they are. The fix is to normalise by days
+since joining, and it is not done.
+
+---
+
+## ADR-036 — Badges are private, opt-out, and ranked by giving
+
+**Context.** The scope section of this project ruled out gamification:
+leaderboards, points, streaks, or any public shoutout display. The Director then
+asked for badges and streaks as encouragement, and separately for a way to see
+the week's top contributors.
+
+**Decision.** Badges exist, and every one of them is **direct-messaged to the
+person it is about**. Nothing is posted publicly, there is no fellow-facing
+leaderboard, and `/badges off` stops the messages in one command. Awards are
+still computed while messages are off, because the staff view needs them, and the
+award rows record that a notification was suppressed rather than pretending none
+was earned.
+
+Staff get rankings, on staff surfaces only (`/leaderboard`, the dashboard, the
+report). The shoutout ranking is by shoutouts **given**, not received.
+
+**Rejected.** A public badge announcement in a channel. A fellow-facing
+leaderboard of any kind. Ranking by shoutouts received. Revoking a badge once
+earned. Making opt-out require asking a staff member.
+
+**Why.** ADR-028 recorded the finding that ranking on recognition received builds
+a popularity contest; ranking on giving rewards the behaviour the programme
+actually wants. The same reasoning applied to the rest: a public badge is a
+ranking whether or not it is presented as one, because fellows can see each
+other's. A private "you have checked in five sessions running" is encouragement
+with nobody to lose to.
+
+Opt-out in one command, because the only honest version of encouragement is one
+the recipient can switch off without a conversation. Computing awards while
+messages are off keeps the staff view whole and means turning messages back on
+does not require backfilling.
+
+Never revoking, because a badge is a record that something happened, and a
+streak that ended is not a streak that never was.

@@ -72,13 +72,20 @@ def cmd_slack(args: argparse.Namespace) -> int:
             for err in result.errors:
                 print(f"  ! {err}")
         elif action == "digest":
-            from .slack.digest import post_weekly_digest, weekly_digest_text
+            from .slack.digest import post_weekly_digest, resolve_channel, weekly_digest_text
 
             if args.post:
-                if not settings.slack_staff_channel:
-                    raise CufaError("CUFA_SLACK_STAFF_CHANNEL is not set.")
-                posted = post_weekly_digest(conn, client, cohort_id=_cohort(args), channel_id=settings.slack_staff_channel, now=_now(args), force=True)
-                print("posted" if posted else "already posted this week")
+                # The setting may be a NAME. Resolve it the way the tick and the
+                # slash command do, or the post goes to a channel id that is
+                # really the string somebody typed.
+                channel = resolve_channel(conn, client, settings.slack_staff_channel)
+                if not channel:
+                    raise CufaError(
+                        "No staff channel the bot can find. Set CUFA_SLACK_STAFF_CHANNEL to the "
+                        "channel's name or id, and invite the bot to it."
+                    )
+                posted = post_weekly_digest(conn, client, cohort_id=_cohort(args), channel_id=channel, now=_now(args), force=True)
+                print("posted" if posted else "this week's digest was already posted; it is in the staff channel")
             else:
                 print(weekly_digest_text(conn, _cohort(args), now=_now(args)))
         elif action == "summary":
@@ -289,10 +296,15 @@ def add_parsers(
     q.add_argument("--session", required=True)
     q.add_argument("--fake", action="store_true")
 
-    q = sp.add_parser("cmd", help="run a slash command as a given Slack user, e.g. cufa slack cmd /fellow --as U123 ada")
+    q = sp.add_parser(
+        "cmd",
+        help="run a slash command as a given Slack user",
+        description="Put --as FIRST or LAST, never between the command and its arguments: "
+                    "cufa slack cmd --as U0123 /fellow ada",
+    )
     q.add_argument("name", help="/attendance, /fellow, /report, …")
-    q.add_argument("text", nargs="*")
-    q.add_argument("--as", dest="as_user", required=True, help="Slack user id to run as")
+    q.add_argument("text", nargs="*", help="the command's own arguments")
+    q.add_argument("--as", dest="as_user", required=True, help="Slack user id to run as (put this first or last)")
     q.add_argument("--now")
     q.add_argument("--fake", action="store_true")
 
@@ -323,7 +335,7 @@ def add_parsers(
     q.add_argument("--note")
     q.add_argument("--clear", action="store_true")
     q.add_argument("--fake", action="store_true")
-    for name in ("sync", "tick", "reminders", "digest", "summary", "cmd", "alerts", "link", "badges", "engagement", "outreach"):
+    for name in ("sync", "tick", "digest", "summary", "cmd", "alerts", "link", "badges", "engagement", "outreach"):
         sp.choices[name].set_defaults(func=cmd_slack)
 
     # --- assignment ---

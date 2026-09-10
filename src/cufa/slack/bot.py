@@ -246,7 +246,12 @@ class EventProcessor:
 REQUIRED_SCOPES = (
     "channels:history", "channels:read", "users:read", "users:read.email", "reactions:read",
 )
-OPTIONAL_SCOPES = ("groups:history", "groups:read", "chat:write", "app_mentions:read")
+OPTIONAL_SCOPES = ("groups:history", "groups:read", "app_mentions:read")
+#: What the reminder / badge / slash-command half needs. `chat:write` used to be
+#: optional, when the bot only listened: it now sends reminders, welcomes, badge
+#: DMs, session summaries and the Monday digest, so it is required. `im:write`
+#: opens the DM those go to, and `commands` carries the slash commands.
+BOT_HALF_SCOPES = ("chat:write", "im:write", "commands")
 #: What the Q&A features need on top: posting a pointer or a summary is chat:write;
 #: "@bot summary" needs the mention event, which is app_mentions:read.
 QA_SCOPES = ("chat:write",)
@@ -302,8 +307,67 @@ def doctor(settings: Settings, *, out: Any = None) -> int:
              if settings.gemini_api_key else
              "not set — matching is by word overlap only and the summary is the plain digest")
 
+    # 1b. the reminder / badge / slash-command half.
+    #
+    #     This half is opt-in: the staff channel is what turns it on. With no
+    #     channel configured the bot still records everything and the preflight
+    #     still passes — that is a legitimate capture-only install. Configure the
+    #     channel and every setting the half needs becomes a hard failure, because
+    #     from then on a missing one means a feature that looks on and is off.
+    second_half = bool(settings.slack_staff_channel)
+
+    def half(ok: bool, label: str, detail: str = "", *, fix: str = "") -> None:
+        line(ok or not second_half, label, detail, fix=fix if not ok else "")
+
+    line(True, "reminders, badges, slash commands",
+         f"on — posting to {settings.slack_staff_channel!r}" if second_half else
+         "OFF — no CUFA_SLACK_STAFF_CHANNEL, so no session summaries, roster alerts, "
+         "check-in pings or Monday digest. Reminders and badge DMs still work.")
+    half(bool(settings.slack_admins),
+         "CUFA_SLACK_ADMINS set",
+         f"{len(settings.slack_admins)} address(es) configured" if settings.slack_admins
+         else "only Slack workspace admins will be able to run the staff commands",
+         fix="CUFA_SLACK_ADMINS=<your work address>,<a colleague's>   (comma-separated)")
+    # The fellow dashboard link the bot hands out is signed with this. On the
+    # default, anyone who can read the repo can mint a link to any fellow's page.
+    half(settings.console_secret != "dev-insecure-secret",
+         "CUFA_CONSOLE_SECRET is not the default",
+         "" if settings.console_secret != "dev-insecure-secret"
+         else "`/dashboard` links would be FORGEABLE — the signing key is the one in .env.example",
+         fix="python -c \"import secrets; print(secrets.token_urlsafe(32))\"  → CUFA_CONSOLE_SECRET in .env")
+    if second_half:
+        local_url = "127.0.0.1" in settings.public_base_url or "localhost" in settings.public_base_url
+        line(True, "CUFA_PUBLIC_BASE_URL", settings.public_base_url + (
+            "  — a fellow cannot open this from their own machine, so `/dashboard` links will not work for them"
+            if local_url else ""))
+        try:
+            from ..retention import load_rubric
+
+            rubric = load_rubric()
+            line(True, "retention rubric",
+                 f"{len(rubric.concepts)} concept(s) from {rubric.source}" if rubric.concepts
+                 else f"no concepts in {rubric.source} — `cufa fellow retention` will report nothing")
+        except Exception as exc:  # noqa: BLE001 — a bad rubric must not stop the preflight
+            line(False, "retention rubric", str(exc), fix="Fix or delete config/retention_rubric.json.")
+
     # 2. database
     line(ping(settings), "database reachable", fix="make db-up   (Docker must be running)")
+    if ping(settings):
+        from ..db import connection, fetch_one
+
+        with connection(settings) as conn:
+            roster = fetch_one(
+                conn, "select count(*) as n from fellow where cohort_id = %s and status = 'active'",
+                (settings.slack_cohort,),
+            ) or {}
+        n = int(roster.get("n") or 0)
+        # Not a failure: a workspace can legitimately be connected before the
+        # roster is loaded, and capture still works. But nothing is attributed
+        # and nobody is reminded until it is, so it is said loudly.
+        line(True, f"cohort {settings.slack_cohort!r} roster",
+             f"{n} active fellow(s)" if n else
+             f"EMPTY — no events will be attributed and no reminders sent. "
+             f"cufa load-roster --csv <path> --cohort {settings.slack_cohort}")
 
     if not settings.slack_bot_token:
         print("=" * 62, file=out)
@@ -349,6 +413,11 @@ def doctor(settings: Settings, *, out: Any = None) -> int:
         extra = [s for s in OPTIONAL_SCOPES if s in granted]
         if extra:
             line(True, "optional scopes granted", ", ".join(extra))
+        half_missing = [s for s in BOT_HALF_SCOPES if s not in granted]
+        half(not half_missing, "scopes for reminders, badges and slash commands",
+             ", ".join(BOT_HALF_SCOPES) if not half_missing
+             else "missing: " + ", ".join(half_missing) + " — reminders, welcomes and badge DMs cannot be sent",
+             fix="OAuth & Permissions → add them → Reinstall to Workspace → copy the NEW token")
         if settings.slack_qa_channels:
             qa_missing = [s for s in QA_SCOPES if s not in granted]
             line(not qa_missing, "Q&A scopes granted",
@@ -398,6 +467,25 @@ def doctor(settings: Settings, *, out: Any = None) -> int:
                 line(bool(found.get("is_member")), f"Q&A channel #{key}",
                      "bot is a member" if found.get("is_member") else "bot is NOT a member — nothing from it is recorded",
                      fix=f"In Slack:  /invite @<bot name>  in #{key}")
+        # 5c. the staff channel: it has to exist, the bot has to be in it, and
+        #     it really ought to be private — the digest names who is falling behind.
+        if settings.slack_staff_channel:
+            key = settings.slack_staff_channel.lstrip("#").strip().lower()
+            found = next(
+                (ch for ch in seen if (ch.get("name") or "").lower() == key or ch["id"] == settings.slack_staff_channel),
+                None,
+            )
+            if found is None:
+                half(False, f"staff channel {settings.slack_staff_channel!r}", "not found in this workspace",
+                     fix="Create it and invite the bot, or fix CUFA_SLACK_STAFF_CHANNEL (a name or an id).")
+            else:
+                half(bool(found.get("is_member")), f"staff channel #{found.get('name') or found['id']}",
+                     "bot is a member" if found.get("is_member") else "bot is NOT a member — nothing will be posted there",
+                     fix=f"In Slack:  /invite @<bot name>  in #{found.get('name') or found['id']}")
+                half(bool(found.get("is_private")), "staff channel is private",
+                     "" if found.get("is_private") else
+                     "it is PUBLIC — the weekly digest names fellows who are falling behind, and every fellow could read it",
+                     fix="Use a private channel for this. Fellows should not read the digest about themselves.")
     except SlackApiError as exc:
         error = (getattr(exc, "response", None) or {}).get("error", str(exc))
         line(False, "conversations.list", error, fix="Grant channels:read (and groups:read) and reinstall.")
@@ -426,6 +514,8 @@ def doctor(settings: Settings, *, out: Any = None) -> int:
     print(f"  {mode:<28} start the bot (Ctrl+C stops it)", file=out)
     print("  cufa slack backfill          read what is already in the channels", file=out)
     print("  cufa slack stats             confirm rows are arriving", file=out)
+    print("  cufa slack tick              reminders, welcomes, badges, summaries, digest", file=out)
+    print("                               (the running bot does this every 5 minutes)", file=out)
     return 0
 
 

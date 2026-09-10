@@ -157,7 +157,14 @@ class FakeSlackHTTPServer:
         return u.get("real_name") or uid or "?"
 
     def _channel_name(self, cid: str | None) -> str:
-        return (self.ws.channels.get(cid or "") or {}).get("name") or cid or ""
+        name = (self.ws.channels.get(cid or "") or {}).get("name")
+        if name:
+            return name
+        recipient = self.ws.dm_recipient(cid or "")
+        if recipient is not None:
+            who = (self.ws.users.get(recipient) or {}).get("real_name") or recipient
+            return f"DM → {who}"
+        return cid or ""
 
     # -- actions the UI can trigger -------------------------------------------
 
@@ -402,6 +409,20 @@ class FakeSlackHTTPServer:
                 {"channel": self._channel_name(p["channel"]), "thread_ts": p.get("thread_ts"), "text": p["text"]}
                 for p in self.ws.posted[-10:]
             ],
+            # Every direct message the bot sent: reminders, welcomes, badge news.
+            # Separate from `posted` because these are the half a fellow sees, and
+            # because the acceptance checks have to count them.
+            "dms": [
+                {
+                    "to": p["to"],
+                    "name": (self.ws.users.get(p["to"]) or {}).get("real_name") or p["to"],
+                    "text": p["text"],
+                    "blocks": len(p.get("blocks") or []),
+                }
+                for p in self.ws.posted
+                if p.get("to")
+            ],
+            "posted_total": len(self.ws.posted),
         }
 
     # -- server ---------------------------------------------------------------
@@ -614,6 +635,12 @@ UI_PAGE = """<!doctype html>
     <table id="posted"><tr><th>where</th><th>text</th></tr></table>
     <p class="hint">Pointers and summaries, exactly as the bot sent them to chat.postMessage. Names and addresses never appear here.</p>
   </div>
+  <div class="card"><h2>Direct messages the bot sent <span class="tag" id="dmcount"></span></h2>
+    <table id="dms"><tr><th>to</th><th>message</th></tr></table>
+    <p class="hint">Welcomes, reminders and badge news — the half a fellow actually sees. The bot
+       sends these on its own schedule (every five minutes while it runs); to make one happen now,
+       run <code>cufa slack tick</code> in another terminal. No address ever appears in a direct message.</p>
+  </div>
   <div class="card"><h2>Bot status (live)</h2><iframe id="frame" src="about:blank"></iframe></div>
 </div>
 </main>
@@ -634,8 +661,14 @@ async function refresh(){
   const t=document.getElementById('log'); while(t.rows.length>1)t.deleteRow(1);
   S.log.forEach(e=>{const r=t.insertRow();[e.at,e.kind,e.who,e.where].forEach(v=>r.insertCell().textContent=v);
     const c=r.insertCell();c.textContent=e.status;c.className=e.status===200?'s200':'bad';r.insertCell().textContent=e.ms;r.insertCell().textContent=e.note||'';});
+  const dt=document.getElementById('dms'); while(dt.rows.length>1)dt.deleteRow(1);
+  document.getElementById('dmcount').textContent=(S.dms||[]).length+' sent';
+  (S.dms||[]).slice().reverse().slice(0,25).forEach(d=>{const r=dt.insertRow();
+    r.insertCell().textContent=d.name;
+    const c=r.insertCell();c.textContent=d.text;c.style.whiteSpace='pre-wrap';});
   const pt=document.getElementById('posted'); while(pt.rows.length>1)pt.deleteRow(1);
-  (S.posted||[]).slice().reverse().forEach(p=>{const r=pt.insertRow();r.insertCell().textContent='#'+p.channel+(p.thread_ts?' (thread)':'');
+  (S.posted||[]).slice().reverse().forEach(p=>{const r=pt.insertRow();
+    r.insertCell().textContent=(p.channel.startsWith('DM ')?'':'#')+p.channel+(p.thread_ts?' (thread)':'');
     const c=r.insertCell();c.textContent=p.text;c.style.whiteSpace='pre-wrap';});
 }
 async function qa(a){
