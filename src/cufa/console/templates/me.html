@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }} · Civic Innovators</title>
+  <style>{% include "_dash.css" %}</style>
+</head>
+<body>
+<main>
+  <h1>{{ fellow.full_name }}</h1>
+  <p class="sub">Your fellowship so far · as of {{ now.strftime('%Y-%m-%d %H:%M') }} UTC · <a href="/me/{{ token }}/export.csv">Export my data (CSV)</a></p>
+
+  {% if engagement %}
+  <div class="tiles">
+    <div class="tile"><div class="n">{{ engagement.attended }}/{{ engagement.sessions_held }}</div><div class="l">sessions attended{% if engagement.needs_review %} (+{{ engagement.needs_review }} being checked){% endif %}</div></div>
+    <div class="tile"><div class="n">{{ engagement.forms_submitted }}/{{ engagement.forms_expected }}</div><div class="l">exit tickets</div></div>
+    <div class="tile"><div class="n">{{ engagement.messages }}</div><div class="l">Slack messages · {{ engagement.messages_7d }} this week</div></div>
+  </div>
+  {% endif %}
+
+  <h2>Sessions</h2>
+  <div class="card wrap"><table>
+    <tr><th>Session</th><th>When (UTC)</th><th>Attended</th><th>Exit ticket</th></tr>
+    {% for s in sessions %}
+    <tr><td>{{ s.title }}</td><td>{{ s.scheduled_at_utc.strftime('%b %-d %H:%M') }}</td>
+      <td>{% if s.attended %}<span class="tag ok">yes</span>{% elif s.under_review %}<span class="tag">being checked</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+      <td>{% if s.exit_ticket %}<span class="tag ok">yes</span>{% else %}<span class="muted">—</span>{% endif %}</td></tr>
+    {% else %}<tr><td colspan="4" class="muted">No sessions yet.</td></tr>{% endfor %}
+  </table></div>
+
+  <h2>Badges</h2>
+  <div class="card">
+    {% for b in badges %}<span class="badge">{{ b.emoji }} <b>{{ b.label }}</b> {{ '★' * b.level }}{{ '☆' * (b.max_level - b.level) }}</span>{% else %}<span class="muted">None yet — check in to a session and one appears.</span>{% endfor %}
+  </div>
+
+  {% if assignments %}
+  <h2>Assignments</h2>
+  <div class="card wrap"><table>
+    <tr><th>Assignment</th><th>Due (UTC)</th><th>Status</th><th>Score</th></tr>
+    {% for a in assignments %}
+    <tr><td>{{ a.title }}</td><td>{{ a.due_at_utc.strftime('%b %-d %H:%M') }}</td>
+      <td>{% if a.submitted_at_utc %}<span class="tag ok">submitted</span>{% else %}<span class="muted">not yet</span>{% endif %}</td>
+      <td>{% if a.score is not none %}{{ a.score }}{% if a.max_score %}/{{ a.max_score }}{% endif %}{% else %}—{% endif %}</td></tr>
+    {% endfor %}
+  </table></div>
+  {% endif %}
+
+  <h2>Your journey</h2>
+  <div class="card funnel">
+    {% for stage, label in stage_labels.items() %}
+      {% set at = funnel[stage ~ '_at'] if stage != 'accepted' else funnel.accepted_at %}
+      <div><span class="lab">{{ label }}</span><span>{{ '●' if at else '○' }} {{ at.strftime('%b %-d') if at else '' }}</span></div>
+    {% endfor %}
+  </div>
+
+  <h2>What's connected</h2>
+  <div class="card">
+    <div>{{ '✅' if connected.slack else '⬜' }} Slack {% for s in slack %}<span class="muted">({{ s.real_name or s.display_name }} · {{ s.match_method }}{% if s.tz %} · {{ s.tz }}{% endif %})</span>{% endfor %}</div>
+    <div>{{ '✅' if connected.forms_part_a else '⬜' }} Mid-session check-in form</div>
+    <div>{{ '✅' if connected.forms_part_b else '⬜' }} Exit ticket form</div>
+  </div>
+
+  <h2>Preferences</h2>
+  <div class="card">
+    {% if preferences %}
+      <div>Session reminders: {{ preferences.session_reminders|join(', ') if preferences.session_reminders else 'off' }} minutes before</div>
+      <div>Assignment reminders: {{ preferences.assignment_reminders|join(', ') if preferences.assignment_reminders else 'off' }} minutes before</div>
+      <div>Badge messages: {{ 'on' if preferences.gamification else 'off' }}</div>
+      <p class="muted">Change these in Slack: <code>/reminders</code> and <code>/badges on|off</code>.</p>
+    {% else %}
+      <span class="muted">Join the Slack workspace to get reminders.</span>
+    {% endif %}
+  </div>
+
+  <p class="muted">This page shows only your own data. The link expires after 7 days; ask the bot for a new one with <code>/dashboard</code>.</p>
+</main>
+</body>
+</html>

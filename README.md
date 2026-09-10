@@ -1,6 +1,7 @@
 # Civic Innovators check-in
 
-Two forms per live lesson for the Civics Unplugged Civic Innovators Fellowship.
+Two forms per live lesson for the Civics Unplugged Civic Innovators Fellowship,
+and a Slack bot plus staff dashboard built on what those forms record.
 
 **Part A** goes out **mid-lesson** and proves someone was there: a
 **Google-verified email**, a **timestamp**, and a **session passphrase** the
@@ -13,6 +14,17 @@ peer shoutout, and an optional "I'd like someone to check in with me" checkbox.
 They are two forms because they are released at two different moments, and one
 form cannot be both. A fellow may answer one and not the other — both are valid
 data, and neither is ever used to fill in the other.
+
+**The Slack bot** sits on the same database. Fellows get reminders they control
+(24 h / 1 h / 10 min, with the Zoom link, in their own time zone), private badge
+DMs they can switch off, a *check in with me* button, and a link to their own
+dashboard. Staff get slash commands (`/attendance`, `/fellow`, `/report`,
+`/leaderboard`, `/assignment`, `/score`, `/zoom`, `/outreach`, `/alias`,
+`/link`, `/alerts`), a session summary in the staff channel after every lesson,
+a Monday digest, an alert when someone joins who is not on the roster, a
+per-fellow funnel, an attention index for who might be falling behind, hand-entered
+Solvathon and case-brief scores, and speaking share from a Zoom transcript.
+See [`docs/setup/slack-bot.md`](docs/setup/slack-bot.md).
 
 ---
 
@@ -102,7 +114,7 @@ the [Supabase CLI](https://supabase.com/docs/guides/local-development/cli/gettin
 python tasks.py demo-console   # demo data plus the web console, zero Google calls
 python tasks.py demo-again     # re-run over the same database, to show idempotency
 python tasks.py demo-ai        # tier 2 live; skips with a message if no GEMINI_API_KEY
-python tasks.py test           # 282 tests, no network
+python tasks.py test           # 435 tests, no network
 python tasks.py clean          # stop Supabase, remove generated fixtures
 ```
 
@@ -243,6 +255,12 @@ cufa themes         --session <id> [--regenerate]
 cufa shoutouts      review | link --shoutout <id> --fellow <id> --by <email>
 cufa help-requests  list | ack --id <id> --by <email> --note "<text>" | close
 cufa report         --cohort <id> [--confidence] [--json]
+
+cufa slack          serve | sync | tick | reminders | digest [--post] | summary --session <id>
+cufa slack          cmd </command> --as <slack user id> [text…] | alerts | link | badges | engagement | outreach
+cufa assignment     create | list | link | submitted | score | show
+cufa fellow         alias | merge | funnel | completed | retention | card <query>
+cufa zoom           ingest --session <id> --vtt <file> | share --session <id>
 ```
 
 `--sheet-timezone` is **mandatory and has no default** — not UTC, not the
@@ -353,6 +371,7 @@ because a plausible-looking guess in any of them quietly becomes the policy.
 | [`docs/setup/console.md`](docs/setup/console.md) | Running the console, connecting Google, the one manual step |
 | [`docs/setup/google-cloud.md`](docs/setup/google-cloud.md) | Enabling the APIs, the OAuth client, the exact scopes |
 | [`docs/setup/part-b-form.md`](docs/setup/part-b-form.md) | The end-of-session form, its own Verified step, the rotation, what a teacher prepares |
+| [`docs/setup/slack-bot.md`](docs/setup/slack-bot.md) | The Slack bot: app setup, scopes, every command, the tick, the dashboards, aliases, Zoom transcripts, retention, the funnel |
 | [`docs/safeguarding.md`](docs/safeguarding.md) | The help-request path — **written for CU staff, not engineers** |
 | [`docs/google-api-traps.md`](docs/google-api-traps.md) | The five traps — **read this before touching the Google code** |
 | [`docs/decisions.md`](docs/decisions.md) | 28 ADRs: what was decided, what was rejected, and why |
@@ -364,21 +383,38 @@ because a plausible-looking guess in any of them quietly becomes the policy.
 **Part A** — verified email, timestamp, passphrase — and **Part B** — confidence,
 takeaway, a rotating question, a peer shoutout, and the help checkbox.
 
-Out of scope by design, and deliberately not started:
+**The Slack bot and dashboards** — reminders, badges, the check-in button,
+staff commands, session summaries, the weekly digest, roster alerts, aliases,
+assignments and scores, the attention index, the funnel, retention tracking,
+and Zoom speaking share. Every one of these is a function over the same
+database and the same `SlackClient` protocol, and every one runs against the
+in-memory fake with no workspace.
 
-- **Gamification** — leaderboards, points, streaks, or any public shoutout
-  display. Shoutouts are collected and resolved only. (If recognition is ever
-  ranked, ADR-028 records the finding that it should be ranked by *giving*, not
-  receiving — ranking on recognition received builds a popularity contest.)
-- **Participation scoring across Part A, Part B, Slack and assignments.** The
-  weighting is a decision owned by the Director of Programs, not something to
-  infer from what happens to be measurable.
-- **Any at-risk flag or struggling-fellow label.**
-- **Fellow-facing views** of themes or of their own data — a data-owner decision,
-  not a default.
-- Slack and Zoom integration, auto-posting links, scheduled triggers, reminder
-  nudges, dashboards beyond the console screens and the terminal report, and
-  cloud deployment. Local only.
+Where a feature sits next to an earlier design decision, the decision held:
+
+- **Gamification is private.** Badges and streaks are DM'd to the person they
+  are about and can be switched off with one command. There is no public
+  leaderboard and no public shoutout display; the staff-only ranking
+  (`/leaderboard`) ranks shoutouts by *giving*, per ADR-028.
+- **The attention index is a sorted list for a human, not a label.** Its
+  three components (Slack against the cohort mean, attendance with
+  `needs_review` removed from the denominator, exit-ticket completeness) are
+  always shown beside it, its weights are one dictionary the Director can
+  change, and two things never enter it by test: the help checkbox and
+  assignment scores.
+- **Free text is still counted, never graded.** Form completeness counts
+  fields answered; retention counts rubric terms in later answers. No model
+  reads a fellow's words to decide anything about them.
+- **The help checkbox stays on its own path.** The bot's *check in with me*
+  button is a public, operational request that pings the staff channel; the
+  Part B checkbox is unchanged, and the safeguarding tests run every new
+  query to prove none of them reads its table.
+- **Fellow-facing views show only the fellow's own data**, behind a signed,
+  expiring link the bot hands out. Scores are entered by staff by hand.
+
+Still out of scope: a live Zoom bot (speaking share comes from the cloud
+recording's transcript instead), AI rubric grading of Solvathon or case-brief
+work, and cloud deployment. Local only.
 
 Never commit real fellow data. Every fixture name is invented and every fixture
 address is `@example.invalid`, a reserved TLD that cannot be registered.

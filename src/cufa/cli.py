@@ -1191,6 +1191,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.set_defaults(func=cmd_rotation)
 
+    from .cli_slack import add_parsers as _add_slack_parsers
+
+    _add_slack_parsers(sub)
+
     return parser
 
 

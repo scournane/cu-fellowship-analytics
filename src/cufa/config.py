@@ -62,6 +62,22 @@ class Settings:
     max_edit_distance: int = 1
     log_level: str = "INFO"
 
+    # --- Slack bot -----------------------------------------------------
+    slack_bot_token: str | None = None
+    slack_app_token: str | None = None
+    slack_signing_secret: str | None = None
+    fake_slack: bool = False
+    #: The channel the bot posts session summaries, roster alerts, check-in
+    #: pings and the Monday digest to. A private, staff-only channel.
+    slack_staff_channel: str | None = None
+    #: Staff addresses allowed to run admin commands, in addition to anyone
+    #: Slack itself marks as a workspace admin.
+    slack_admins: tuple[str, ...] = ()
+    #: Which cohort the bot serves. Reminders, digests and badges are scoped to it.
+    slack_cohort: str | None = None
+    #: Where the fellow dashboard lives, for the links the bot hands out.
+    public_base_url: str = "http://127.0.0.1:8000"
+
     fixtures_dir: Path = field(default_factory=lambda: _repo_root() / "fixtures")
 
     def require_encryption_key(self) -> str:
@@ -126,6 +142,14 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         ai_max_calls_per_run=_int("CUFA_AI_MAX_CALLS_PER_RUN", 250),
         max_edit_distance=_int("CUFA_MAX_EDIT_DISTANCE", 1),
         log_level=(env.get("CUFA_LOG_LEVEL") or "INFO").upper(),
+        slack_bot_token=(env.get("SLACK_BOT_TOKEN") or "").strip() or None,
+        slack_app_token=(env.get("SLACK_APP_TOKEN") or "").strip() or None,
+        slack_signing_secret=(env.get("SLACK_SIGNING_SECRET") or "").strip() or None,
+        fake_slack=_truthy(env.get("CUFA_FAKE_SLACK")),
+        slack_staff_channel=(env.get("CUFA_SLACK_STAFF_CHANNEL") or "").strip() or None,
+        slack_admins=_addresses("CUFA_SLACK_ADMINS"),
+        slack_cohort=(env.get("CUFA_SLACK_COHORT") or "").strip() or None,
+        public_base_url=(env.get("CUFA_PUBLIC_BASE_URL") or "http://127.0.0.1:8000").rstrip("/"),
     )
 
 

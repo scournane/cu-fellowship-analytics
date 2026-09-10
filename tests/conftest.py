@@ -47,6 +47,20 @@ TEST_TZ = "America/New_York"
 
 # Order matters: children before parents, so a cascade is not relied on.
 _TABLES = (
+    "digest_log",
+    "badge_award",
+    "reminder_sent",
+    "zoom_transcript_turn",
+    "intervention",
+    "assignment_submission",
+    "assignment",
+    "slack_preference",
+    "roster_alert",
+    "slack_message",
+    "slack_channel",
+    "slack_user",
+    "slack_event_log",
+    "fellow_alias",
     "attendance_decision",
     "checkin",
     "muddiest_theme_member",
