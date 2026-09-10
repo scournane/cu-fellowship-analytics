@@ -62,20 +62,44 @@ class Settings:
     max_edit_distance: int = 1
     log_level: str = "INFO"
 
-    # --- Slack bot -----------------------------------------------------
+    # --- Slack -----------------------------------------------------------
+    #: xoxb- bot token. Required for both HTTP and Socket Mode.
     slack_bot_token: str | None = None
+    #: xapp- app-level token. Socket Mode only.
     slack_app_token: str | None = None
+    #: Verifies every inbound HTTP delivery. Required for `cufa slack serve`.
     slack_signing_secret: str | None = None
+    #: Override the Web API base. The demo points this at the fake server;
+    #: blank means slack.com. Must end in "/api/".
+    slack_api_base_url: str | None = None
+    #: Which cohort this workspace's members belong to.
+    slack_cohort: str = "demo"
+    #: Whether message TEXT is stored. Default off — the participation
+    #: definition counts acts; it does not read them. See the migration.
+    slack_store_text: bool = False
+    slack_port: int = 3000
+    #: How long a users.info answer is trusted before it is refreshed.
+    slack_user_cache_hours: int = 24
+    #: HTTP mode: run the listener before answering Slack (deterministic for
+    #: the demo and tests) rather than acking first and writing in a thread.
+    slack_process_before_response: bool = True
+    #: Channels (names or ids) treated as Q&A: their message text IS stored,
+    #: the bot points a repeated question at the earlier answer, and a
+    #: per-session summary can be generated. Empty means none of that runs.
+    #: See ADR-032.
+    slack_qa_channels: tuple[str, ...] = ()
+    #: Where `cufa slack qa summary --post` goes when no --channel is given.
+    #: Blank means the first Q&A channel.
+    slack_qa_summary_channel: str | None = None
+    #: Run the bot's own tools against the in-memory fake client (tests, dry runs).
     fake_slack: bool = False
-    #: The channel the bot posts session summaries, roster alerts, check-in
-    #: pings and the Monday digest to. A private, staff-only channel.
+    #: The private staff-only channel: session summaries, roster alerts,
+    #: check-in pings and the Monday digest go here.
     slack_staff_channel: str | None = None
-    #: Staff addresses allowed to run admin commands, in addition to anyone
-    #: Slack itself marks as a workspace admin.
+    #: Staff addresses allowed to run admin commands, on top of anyone Slack
+    #: itself marks as a workspace admin.
     slack_admins: tuple[str, ...] = ()
-    #: Which cohort the bot serves. Reminders, digests and badges are scoped to it.
-    slack_cohort: str | None = None
-    #: Where the fellow dashboard lives, for the links the bot hands out.
+    #: Where the console is reachable, for the fellow dashboard links the bot hands out.
     public_base_url: str = "http://127.0.0.1:8000"
 
     fixtures_dir: Path = field(default_factory=lambda: _repo_root() / "fixtures")
@@ -145,10 +169,19 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         slack_bot_token=(env.get("SLACK_BOT_TOKEN") or "").strip() or None,
         slack_app_token=(env.get("SLACK_APP_TOKEN") or "").strip() or None,
         slack_signing_secret=(env.get("SLACK_SIGNING_SECRET") or "").strip() or None,
+        slack_api_base_url=(env.get("SLACK_API_BASE_URL") or "").strip() or None,
+        slack_cohort=(env.get("CUFA_SLACK_COHORT") or "demo").strip(),
+        slack_store_text=_truthy(env.get("CUFA_SLACK_STORE_TEXT")),
+        slack_port=_int("CUFA_SLACK_PORT", 3000),
+        slack_user_cache_hours=_int("CUFA_SLACK_USER_CACHE_HOURS", 24),
+        slack_process_before_response=not _truthy(env.get("CUFA_SLACK_ACK_FIRST")),
+        slack_qa_channels=tuple(
+            item.strip() for item in (env.get("CUFA_SLACK_QA_CHANNELS") or "").split(",") if item.strip()
+        ),
+        slack_qa_summary_channel=(env.get("CUFA_SLACK_QA_SUMMARY_CHANNEL") or "").strip().lstrip("#") or None,
         fake_slack=_truthy(env.get("CUFA_FAKE_SLACK")),
         slack_staff_channel=(env.get("CUFA_SLACK_STAFF_CHANNEL") or "").strip() or None,
         slack_admins=_addresses("CUFA_SLACK_ADMINS"),
-        slack_cohort=(env.get("CUFA_SLACK_COHORT") or "").strip() or None,
         public_base_url=(env.get("CUFA_PUBLIC_BASE_URL") or "http://127.0.0.1:8000").rstrip("/"),
     )
 

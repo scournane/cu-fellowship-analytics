@@ -489,7 +489,7 @@ def cmd_digest(conn, client, ctx: Context, args: list[str]) -> Reply:
 
 
 def cmd_sync(conn, client, ctx: Context, args: list[str]) -> Reply:
-    summary = sync_all(conn, client, staff_channel=ctx.settings.slack_staff_channel, staff_emails=ctx.settings.slack_admins)
+    summary = sync_all(conn, client, staff_channel=ctx.settings.slack_staff_channel, staff_emails=ctx.settings.slack_admins, store_text=ctx.settings.slack_store_text, cohort_id=ctx.cohort_id)
     return Reply(f"Synced: {summary}")
 
 

@@ -119,8 +119,19 @@ def test_word_count_ignores_mentions_and_links():
 
 def test_bot_and_system_messages_are_not_recorded(db, workspace):
     sync_all(db, workspace)
-    assert record_message(db, SlackMessage(channel_id="C1", ts="1.0", user=None, text="x")) is False
-    assert record_message(db, SlackMessage(channel_id="C1", ts="2.0", user="U1", text="joined", subtype="channel_join")) is False
+    assert record_message(db, SlackMessage(channel_id="C1", ts="1.0", user=None, text="x"), team_id="TFAKE") is False
+    assert record_message(db, SlackMessage(channel_id="C1", ts="2.0", user="U1", text="joined", subtype="channel_join"), team_id="TFAKE") is False
+
+
+def test_message_text_is_not_stored_unless_configured(db, workspace):
+    """ADR-031: the participation definition counts acts; it does not read them."""
+    workspace.add_message("C1", "U1", "something personal")
+    sync_all(db, workspace)
+    row = fetch_one(db, "select text, word_count from slack_event where event_type = 'message'")
+    assert row["text"] is None and row["word_count"] == 2
+    workspace.add_message("C1", "U1", "kept this time")
+    sync_all(db, workspace, store_text=True)
+    assert fetch_one(db, "select text from slack_event where word_count = 3")["text"] == "kept this time"
 
 
 def test_an_alias_reattributes_history_at_read_time(db, workspace):
@@ -334,10 +345,13 @@ def test_tick_does_everything_due_and_is_safe_to_repeat(db, workspace, settings)
     assert (second.reminders_sent, second.summaries_posted, second.weekly_posted, second.alerts_posted, second.badges_awarded) == (0, 0, False, 0, 0)
 
 
-def test_tick_without_a_cohort_is_a_clear_error(db, workspace):
-    bare = load_settings({"CUFA_DATABASE_URL": os.environ["CUFA_DATABASE_URL"], "CUFA_FAKE_SLACK": "1"})
-    with pytest.raises(CufaError):
-        tick(db, workspace, settings=bare, now=NOW)
+def test_tick_from_the_live_bot_leaves_messages_to_the_event_handler(db, workspace, settings):
+    workspace.add_message("C1", "U1", "hello")
+    result = tick(db, workspace, settings=settings, now=NOW, sync_messages=False)
+    assert result.synced
+    assert fetch_one(db, "select count(*) as n from slack_event")["n"] == 0
+    tick(db, workspace, settings=settings, now=NOW)
+    assert fetch_one(db, "select count(*) as n from slack_event")["n"] == 1
 
 
 # ---------------------------------------------------------------------------

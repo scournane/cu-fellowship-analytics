@@ -286,6 +286,7 @@ def tick(
     staff_channel: str | None = None,
     now: datetime | None = None,
     sync: bool = True,
+    sync_messages: bool = True,
 ) -> TickResult:
     """Do everything that is due. Each step is independent; one failing does not stop the rest."""
     settings = settings or get_settings()
@@ -305,7 +306,7 @@ def tick(
             return None
 
     if sync:
-        result.synced = step("sync", lambda: sync_all(conn, client, staff_channel=staff_channel, staff_emails=settings.slack_admins)) is not None
+        result.synced = step("sync", lambda: sync_all(conn, client, staff_channel=staff_channel, staff_emails=settings.slack_admins, store_text=settings.slack_store_text, cohort_id=cohort_id, messages=sync_messages)) is not None
     result.welcomed = step("welcome", lambda: send_welcomes(conn, client, cohort_id=cohort_id)) or 0
     run = step("reminders", lambda: run_reminders(conn, client, cohort_id=cohort_id, now=now))
     result.reminders_sent = run.sent if run else 0

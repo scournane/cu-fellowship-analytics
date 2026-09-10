@@ -447,7 +447,15 @@ def test_19_no_report_or_participation_query_reads_help_request(db):
     themes_for(recording, session_id)
     adjudicate_cohort(recording, TEST_COHORT, use_ai=False)
 
-    # The Slack bot's signals and the dashboards run the same gauntlet.
+    # The HTML report, and each query only it makes.
+    from cufa.report_html import fellow_grid, provenance, render_report_html, slack_summary
+
+    fellow_grid(recording, TEST_COHORT)
+    slack_summary(recording, TEST_COHORT)
+    provenance(recording, TEST_COHORT)
+    render_report_html(recording, TEST_COHORT)
+
+    # The reminder/badge bot's signals and the dashboards run the same gauntlet.
     from cufa.console.dashboard import staff_context, staff_export_csv
     from cufa.engagement import cohort_attendance, cohort_engagement, most_active, quiet_fellows
     from cufa.funnel import cohort_summary

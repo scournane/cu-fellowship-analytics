@@ -5,18 +5,13 @@ imports anything network-facing, so it can be exercised end to end without a
 workspace. ``FakeSlackClient`` keeps every posted message in an outbox and
 lets a test stand up users, channels and history in memory.
 
-``RealSlackClient`` talks to ``slack.com/api`` with the standard library only.
-The Slack SDK is not a dependency of the core package — ``slack_bolt`` is
-needed only by ``cufa slack serve`` and lives in the ``[slack]`` extra.
+``WebClientAdapter`` wraps the ``slack_sdk.WebClient`` the participation bot
+already uses (``cufa.slack.bot.make_web_client``), so both halves of the bot
+share one HTTP client, one token, and — in the demo — one fake Slack server.
 """
 
 from __future__ import annotations
 
-import json
-import time
-import urllib.error
-import urllib.parse
-import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Protocol
@@ -120,6 +115,9 @@ class Posted:
 class SlackClient(Protocol):
     """Everything the bot needs from Slack. Nothing more."""
 
+    @property
+    def team_id(self) -> str: ...
+
     def list_users(self) -> list[SlackUser]: ...
 
     def get_user(self, user_id: str) -> SlackUser | None: ...
@@ -155,6 +153,8 @@ class OutboxItem:
 
 class FakeSlackClient:
     """In-memory workspace. Tests seed it and read the outbox."""
+
+    team_id = "TFAKE"
 
     def __init__(self) -> None:
         self.users: dict[str, SlackUser] = {}
@@ -279,118 +279,75 @@ class FakeSlackClient:
 # ---------------------------------------------------------------------------
 
 
-class RealSlackClient:
-    """``slack.com/api`` over ``urllib``. Paginates, retries on 429."""
+class WebClientAdapter:
+    """The protocol, over a ``slack_sdk.WebClient``. Paginates; the SDK retries 429s."""
 
-    BASE = "https://slack.com/api/"
+    def __init__(self, web: Any) -> None:
+        self._web = web
+        self._team: str | None = None
 
-    def __init__(self, bot_token: str, *, sleep=time.sleep) -> None:
-        if not bot_token:
-            raise CufaError("SLACK_BOT_TOKEN is not set.")
-        self._token = bot_token
-        self._sleep = sleep
-
-    def _call(self, method: str, **params: Any) -> dict[str, Any]:
-        # Form-encoded, not JSON: every Web API method accepts a form body, but
-        # only the write methods accept JSON, and the read methods this client
-        # paginates (users.list, conversations.history) are not among them.
-        # Structured arguments (blocks) go as a JSON string, which Slack accepts.
-        fields = {
-            k: (json.dumps(v) if isinstance(v, (list, dict)) else str(v))
-            for k, v in params.items()
-            if v is not None
-        }
-        body = urllib.parse.urlencode(fields).encode()
-        request = urllib.request.Request(
-            self.BASE + method,
-            data=body,
-            headers={
-                "Authorization": f"Bearer {self._token}",
-                "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
-            },
-            method="POST",
-        )
-        for attempt in range(5):
-            try:
-                with urllib.request.urlopen(request, timeout=30) as response:
-                    payload = json.loads(response.read().decode())
-            except urllib.error.HTTPError as exc:
-                if exc.code == 429:
-                    self._sleep(int(exc.headers.get("Retry-After", "1")))
-                    continue
-                raise SlackApiError(method, f"http_{exc.code}") from exc
-            if payload.get("ok"):
-                return payload
-            if payload.get("error") == "ratelimited" and attempt < 4:
-                self._sleep(1 + attempt)
-                continue
-            raise SlackApiError(method, str(payload.get("error")), payload)
-        raise SlackApiError(method, "ratelimited")
+    @property
+    def team_id(self) -> str:
+        if self._team is None:
+            self._team = str(self._web.auth_test()["team_id"])
+        return self._team
 
     def _paginate(self, method: str, key: str, **params: Any) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         cursor: str | None = None
         while True:
-            payload = self._call(method, cursor=cursor, limit=200, **params)
+            payload = getattr(self._web, method)(cursor=cursor, limit=200, **params)
             items.extend(payload.get(key) or [])
             cursor = ((payload.get("response_metadata") or {}).get("next_cursor") or "").strip()
             if not cursor:
                 return items
 
     def list_users(self) -> list[SlackUser]:
-        return [SlackUser.from_api(m) for m in self._paginate("users.list", "members")]
+        return [SlackUser.from_api(m) for m in self._paginate("users_list", "members")]
 
     def get_user(self, user_id: str) -> SlackUser | None:
         try:
-            payload = self._call("users.info", user=user_id)
-        except SlackApiError as exc:
-            if exc.error == "user_not_found":
+            payload = self._web.users_info(user=user_id)
+        except Exception as exc:  # noqa: BLE001 — SlackApiError from the SDK
+            if "user_not_found" in str(exc):
                 return None
-            raise
+            raise SlackApiError("users.info", str(exc)) from exc
         return SlackUser.from_api(payload["user"])
 
     def list_channels(self) -> list[SlackChannel]:
-        rows = self._paginate(
-            "conversations.list", "channels", types="public_channel,private_channel", exclude_archived=True
-        )
+        rows = self._paginate("conversations_list", "channels", types="public_channel,private_channel", exclude_archived=True)
         return [
-            SlackChannel(
-                id=str(r["id"]),
-                name=r.get("name") or "",
-                is_private=bool(r.get("is_private")),
-                is_member=bool(r.get("is_member")),
-            )
+            SlackChannel(id=str(r["id"]), name=r.get("name") or "", is_private=bool(r.get("is_private")), is_member=bool(r.get("is_member")))
             for r in rows
         ]
 
     def channel_history(
         self, channel_id: str, *, oldest: str | None = None, include_replies: bool = True
     ) -> list[SlackMessage]:
-        rows = self._paginate("conversations.history", "messages", channel=channel_id, oldest=oldest)
+        rows = self._paginate("conversations_history", "messages", channel=channel_id, oldest=oldest)
         messages = [SlackMessage.from_api(channel_id, r) for r in rows]
         if include_replies:
-            parents = [r for r in rows if r.get("reply_count")]
-            for parent in parents:
-                replies = self._paginate(
-                    "conversations.replies", "messages", channel=channel_id, ts=parent["ts"], oldest=oldest
-                )
-                for reply in replies:
+            for parent in [r for r in rows if r.get("reply_count")]:
+                for reply in self._paginate("conversations_replies", "messages", channel=channel_id, ts=parent["ts"], oldest=oldest):
                     if reply.get("ts") != parent["ts"]:
                         messages.append(SlackMessage.from_api(channel_id, reply))
         return sorted(messages, key=lambda m: float(m.ts))
 
     def open_dm(self, user_id: str) -> str:
-        payload = self._call("conversations.open", users=user_id)
+        payload = self._web.conversations_open(users=user_id)
         return str(payload["channel"]["id"])
 
     def post_message(
         self, channel_id: str, text: str, *, blocks: list[dict[str, Any]] | None = None
     ) -> Posted:
-        payload = self._call("chat.postMessage", channel=channel_id, text=text, blocks=blocks)
+        try:
+            payload = self._web.chat_postMessage(channel=channel_id, text=text, blocks=blocks)
+        except Exception as exc:  # noqa: BLE001
+            raise SlackApiError("chat.postMessage", str(exc)) from exc
         return Posted(channel_id=str(payload["channel"]), ts=str(payload["ts"]))
 
     def post_ephemeral(self, channel_id: str, user_id: str, text: str) -> None:
-        self._call("chat.postEphemeral", channel=channel_id, user=user_id, text=text)
+        self._web.chat_postEphemeral(channel=channel_id, user=user_id, text=text)
 
 
 def build_client(settings: Any | None = None) -> SlackClient:
@@ -400,14 +357,16 @@ def build_client(settings: Any | None = None) -> SlackClient:
     settings = settings or get_settings()
     if settings.fake_slack:
         return FakeSlackClient()
-    return RealSlackClient(settings.slack_bot_token or "")
+    from .bot import make_web_client
+
+    return WebClientAdapter(make_web_client(settings))
 
 
 __all__ = [
     "FakeSlackClient",
     "OutboxItem",
     "Posted",
-    "RealSlackClient",
+    "WebClientAdapter",
     "SlackApiError",
     "SlackChannel",
     "SlackClient",

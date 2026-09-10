@@ -58,20 +58,12 @@ def _dump(value: Any) -> None:
 def cmd_slack(args: argparse.Namespace) -> int:
     action = args.slack_action
     settings = get_settings()
-    if action == "serve":
-        from .slack.app import serve
-
-        print("Slack bot starting in Socket Mode. Ctrl-C to stop.")
-        if settings.fake_slack:
-            raise CufaError("CUFA_FAKE_SLACK=1 — the fake client cannot serve. Unset it and provide SLACK_BOT_TOKEN and SLACK_APP_TOKEN.")
-        serve(settings, tick_interval_s=args.tick_interval)
-        return 0
     client = _client(args)
     with connection() as conn:
         if action == "sync":
             from .slack.sync import sync_all
 
-            print(sync_all(conn, client, staff_channel=settings.slack_staff_channel, staff_emails=settings.slack_admins))
+            print(sync_all(conn, client, staff_channel=settings.slack_staff_channel, staff_emails=settings.slack_admins, store_text=settings.slack_store_text, cohort_id=settings.slack_cohort))
         elif action == "tick":
             from .slack.digest import tick
 
@@ -289,13 +281,13 @@ def cmd_zoom(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------
 
 
-def add_parsers(sub: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
-    # --- slack ---
-    p = sub.add_parser("slack", help="the Slack bot: serve, sync, tick, commands")
-    sp = p.add_subparsers(dest="slack_action", required=True)
+def add_parsers(sub: argparse._SubParsersAction, *, slack_sub: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+    """Extend ``cufa slack`` (built in cli.py) and add ``assignment``, ``fellow``, ``zoom``.
 
-    q = sp.add_parser("serve", help="run the bot (Socket Mode) with the scheduler thread")
-    q.add_argument("--tick-interval", type=int, default=300, help="seconds between scheduler ticks")
+    Each sub-command below sets its own ``func`` so it dispatches here rather
+    than to the participation-capture handler that owns the ``slack`` parser.
+    """
+    sp = slack_sub
 
     for name, help_ in (
         ("sync", "pull members, channels and new messages"),
@@ -353,7 +345,8 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:  # type: ignore[type-a
     q.add_argument("--note")
     q.add_argument("--clear", action="store_true")
     q.add_argument("--fake", action="store_true")
-    p.set_defaults(func=cmd_slack)
+    for name in ("sync", "tick", "reminders", "digest", "summary", "cmd", "alerts", "link", "badges", "engagement", "outreach"):
+        sp.choices[name].set_defaults(func=cmd_slack)
 
     # --- assignment ---
     p = sub.add_parser("assignment", help="assignments, submissions and hand-entered scores")

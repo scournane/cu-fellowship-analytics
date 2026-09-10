@@ -114,7 +114,7 @@ the [Supabase CLI](https://supabase.com/docs/guides/local-development/cli/gettin
 python tasks.py demo-console   # demo data plus the web console, zero Google calls
 python tasks.py demo-again     # re-run over the same database, to show idempotency
 python tasks.py demo-ai        # tier 2 live; skips with a message if no GEMINI_API_KEY
-python tasks.py test           # 435 tests, no network
+python tasks.py test           # 535 tests, no network
 python tasks.py clean          # stop Supabase, remove generated fixtures
 ```
 
@@ -132,6 +132,26 @@ use the copy-pasteable SQL in
 [`docs/setup/local-dev.md`](docs/setup/local-dev.md).
 
 ---
+
+```
+make demo-slack          # the Slack bot + a fake Slack workspace you drive from a browser
+make demo-slack-batch    # the same, driven automatically and checked — what CI runs
+make report              # regenerate out/report.html — the self-contained HTML report
+make slack-bot           # preflight (cufa slack doctor), then run the bot against real Slack
+```
+
+`make report` writes one file that opens from disk and attaches to an email:
+every fellow against every session, attendance by session, the confidence
+trend, Slack activity by week, the review queues, and where each number came
+from. No addresses, nothing from the help table, no combined score. `make
+demo` writes it as its last step, so there is always a fresh one to look at.
+
+`demo-slack` starts the real bot and a fake Slack on `http://127.0.0.1:3001/`
+with buttons that post, react, join, edit and delete as any fellow — and two
+that matter more: **Replay last delivery** re-sends an event with Slack's retry
+headers (the bot acks it and writes nothing), and **Send with bad signature**
+(the bot refuses it). No Slack account is involved. See
+[docs/setup/slack-bot.md](docs/setup/slack-bot.md).
 
 ## How it works
 
@@ -331,6 +351,69 @@ document: [`docs/safeguarding.md`](docs/safeguarding.md), written for CU staff
 rather than for engineers.
 
 ---
+
+## Slack: the third participation signal
+
+The Director's definition of participation has three parts: attendance at live
+lessons (Parts A and B above), **Slack activity**, and assignment submission.
+`cufa slack` covers the second.
+
+It is a bot rather than an export because Slack's free plan **hides messages
+after 90 days and deletes them after a year** — a workspace that starts on the
+free plan would lose September's record by December. The bot writes each
+message, reaction, join, edit and deletion to `slack_event` as it happens, keyed
+by the act rather than by Slack's delivery id, so a retry, a restart and a
+backfill all collide with the live row instead of duplicating it.
+
+**Message text is not stored.** The definition counts acts; it does not read
+them. Length, word count, link/file presence and thread position are kept; the
+words are not (ADR-031). Every row stores the email, and the roster join happens
+at read time, exactly as for the forms.
+
+```
+cufa slack socket                 # run it — Socket Mode, no public URL
+cufa slack backfill               # read what it missed, while Slack still has it
+cufa slack stats                  # totals, no addresses
+cufa slack report --cohort cu-2026
+cufa slack qa summary --latest    # a session's Q&A, summarised for the teacher
+
+cufa slack tick                   # reminders, welcomes, badges, summaries, digest — from cron
+cufa slack cmd /fellow --as U123 ada   # any slash command, from a terminal
+cufa slack engagement | badges | digest | alerts | link | outreach
+cufa assignment create | list | link | submitted | score | show
+cufa fellow  alias | merge | funnel | completed | retention | card <query>
+cufa zoom    ingest --session <id> --vtt <file> | share --session <id>
+```
+
+The same Bolt app also carries the **fellow- and staff-facing half**: reminders
+24 h / 1 h / 10 min before sessions and assignments (Zoom link included, in the
+fellow's own time zone, each interval switchable), a one-time welcome DM with a
+*check in with me* button, private badges and streaks with opt-out, staff slash
+commands (`/attendance`, `/fellow`, `/report`, `/leaderboard`, `/assignment`,
+`/score`, `/zoom`, `/outreach`, `/alias`, `/link`, `/alerts`), a session summary
+in the staff channel after every lesson, a Monday digest, roster alerts for
+unrostered joins, aliases for fellows on two addresses, an attention index for
+who might be falling behind, a per-fellow funnel, hand-entered Solvathon and
+case-brief scores, a staff dashboard at `/dashboard` and a fellow-only page
+behind a signed link. It reads the same `slack_event` rows the capture writes —
+one event store — and its every query is held to the same rule about the help
+table. Details in the second half of
+[`docs/setup/slack-bot.md`](docs/setup/slack-bot.md).
+
+**Q&A channels** are the one exception to no-text. Name them in
+`CUFA_SLACK_QA_CHANNELS` and the bot keeps their questions and replies in their
+own tables (ADR-032), so it can do two things there: when a question resembles
+an earlier one that was *answered*, it replies in the new thread with a link
+to that answer and the session it came from — *"came up before, during Sep 2 ·
+Voting systems"* — and `cufa slack qa summary` (or `@bot summary` in Slack)
+writes the session's Q&A up for the teacher: what was asked, what got settled,
+what is still open, each with a link. With a `GEMINI_API_KEY` the model matches
+paraphrases and writes the paragraph, from anonymous strings only; without one,
+word overlap and a plain digest. Nobody is named in either.
+
+The honest cost is that a bot has to be running, and the contract ends.
+docs/setup/slack-bot.md ends with what that means and a `TODO(owner)` for the
+person who restarts it.
 
 ## Accessibility
 

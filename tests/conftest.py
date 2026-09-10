@@ -47,6 +47,7 @@ TEST_TZ = "America/New_York"
 
 # Order matters: children before parents, so a cascade is not relied on.
 _TABLES = (
+    # The bot's own tables first: several reference slack_user.
     "digest_log",
     "badge_award",
     "reminder_sent",
@@ -56,11 +57,17 @@ _TABLES = (
     "assignment",
     "slack_preference",
     "roster_alert",
-    "slack_message",
-    "slack_channel",
-    "slack_user",
     "slack_event_log",
     "fellow_alias",
+    # Slack: events reference workspace, so they go first.
+    "slack_qa_pointer",
+    "slack_qa_answer",
+    "slack_qa_question",
+    "slack_qa_summary",
+    "slack_event",
+    "slack_user",
+    "slack_channel",
+    "slack_workspace",
     "attendance_decision",
     "checkin",
     "muddiest_theme_member",

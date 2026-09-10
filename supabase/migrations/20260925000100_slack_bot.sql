@@ -116,71 +116,44 @@ alter table fellow add column if not exists completed_at timestamptz;
 
 -- ---------------------------------------------------------------------------
 -- The Slack workspace as observed.
+--
+-- `slack_workspace`, `slack_user`, `slack_channel` and `slack_event` come from
+-- the participation-capture migration (20260915). This one EXTENDS them: the
+-- reminder/badge bot needs each member's time zone and admin flag, a place for
+-- a staff-made link to a roster record, and a flag on the staff-only channel.
+-- Messages are read from `slack_event` — there is one event store, not two.
 -- ---------------------------------------------------------------------------
 
-create table if not exists slack_user (
-    slack_user_id  text        primary key,
-    team_id        text,
-    email          text,
-    display_name   text        not null default '',
-    real_name      text        not null default '',
-    tz             text,
-    tz_offset_s    integer,
-    is_admin       boolean     not null default false,
-    is_bot         boolean     not null default false,
-    deleted        boolean     not null default false,
-    -- A staff link made by hand. Read-time resolution tries email and aliases
-    -- first; this column wins when set, and says who set it.
-    linked_fellow_id text      references fellow (fellow_id) on delete set null,
-    linked_by      text,
-    linked_at      timestamptz,
-    joined_at_utc  timestamptz,
-    -- When the bot sent its one welcome DM (how it works, the check-in button).
-    welcomed_at    timestamptz,
-    first_seen_at  timestamptz not null default now(),
-    last_seen_at   timestamptz not null default now(),
-    raw            jsonb       not null default '{}'::jsonb
-);
+alter table slack_user add column if not exists tz               text;
+alter table slack_user add column if not exists tz_offset_s      integer;
+alter table slack_user add column if not exists is_admin         boolean not null default false;
+-- A staff link made by hand. Read-time resolution tries email and aliases
+-- first; this column wins when set, and says who set it.
+alter table slack_user add column if not exists linked_fellow_id text references fellow (fellow_id) on delete set null;
+alter table slack_user add column if not exists linked_by        text;
+alter table slack_user add column if not exists linked_at        timestamptz;
+alter table slack_user add column if not exists joined_at_utc    timestamptz;
+-- When the bot sent its one welcome DM (how it works, the check-in button).
+alter table slack_user add column if not exists welcomed_at      timestamptz;
+alter table slack_user add column if not exists first_seen_at    timestamptz not null default now();
+alter table slack_user add column if not exists last_seen_at     timestamptz not null default now();
+alter table slack_user add column if not exists raw              jsonb not null default '{}'::jsonb;
 
-create index if not exists slack_user_email_idx on slack_user (lower(email));
+-- Slack user ids are globally unique (one workspace per install here), and the
+-- bot's own tables key on the id alone. The unique index lets them reference it.
+create unique index if not exists slack_user_id_uniq on slack_user (slack_user_id);
 
 comment on column slack_user.tz is
     'IANA zone as Slack reports it. Reminders are rendered in it, and never '
     'sent between 22:00 and 07:00 local — nobody wants a nudge at 2am.';
 
-create table if not exists slack_channel (
-    channel_id   text        primary key,
-    name         text        not null default '',
-    is_private   boolean     not null default false,
-    is_member    boolean     not null default false,
-    -- Staff-only channels are where summaries, alerts and digests go, and
-    -- their messages are excluded from every fellow-facing count.
-    is_staff     boolean     not null default false,
-    tracked      boolean     not null default true,
-    last_ts      text,
-    synced_at    timestamptz,
-    created_at   timestamptz not null default now()
-);
+-- Staff-only channels are where summaries, alerts and digests go, and their
+-- messages are excluded from every fellow-facing count.
+alter table slack_channel add column if not exists is_staff  boolean not null default false;
+alter table slack_channel add column if not exists tracked   boolean not null default true;
+alter table slack_channel add column if not exists synced_at timestamptz;
 
--- One row per message the bot can see. Immutable. The text is kept because
--- staff asked for the qualitative side too; it is RLS-locked below.
-create table if not exists slack_message (
-    message_key     text        primary key,           -- channel_id || ':' || ts
-    channel_id      text        not null references slack_channel (channel_id) on delete restrict,
-    slack_user_id   text        not null,
-    ts              text        not null,
-    posted_at_utc   timestamptz not null,
-    thread_ts       text,
-    is_thread_reply boolean     not null default false,
-    subtype         text,
-    text            text        not null default '',
-    word_count      integer     not null default 0,
-    reaction_count  integer     not null default 0,
-    ingested_at     timestamptz not null default now()
-);
-
-create index if not exists slack_message_user_time_idx on slack_message (slack_user_id, posted_at_utc);
-create index if not exists slack_message_time_idx on slack_message (posted_at_utc);
+create unique index if not exists slack_channel_id_uniq on slack_channel (channel_id);
 
 -- Idempotency for anything that arrives as an event rather than a pull.
 create table if not exists slack_event_log (
@@ -369,7 +342,7 @@ create or replace view v_slack_user_resolved
 with (security_invoker = true) as
 select
     u.slack_user_id, u.team_id, u.email, u.display_name, u.real_name, u.tz,
-    u.tz_offset_s, u.is_admin, u.is_bot, u.deleted, u.joined_at_utc,
+    u.tz_offset_s, u.is_admin, u.is_bot, u.is_deleted as deleted, u.joined_at_utc,
     u.first_seen_at, u.last_seen_at,
     coalesce(u.linked_fellow_id, e.fellow_id)     as fellow_id,
     case when u.linked_fellow_id is not null then 'manual'
@@ -381,18 +354,38 @@ from slack_user u
 left join v_fellow_email e on e.email = lower(u.email)
 left join fellow f on f.fellow_id = coalesce(u.linked_fellow_id, e.fellow_id);
 
--- Every message with the fellow who wrote it, staff channels flagged so they
--- can be excluded from fellow-facing counts.
+-- Every message with the fellow who wrote it, read from the one event store.
+-- Identity resolves three ways, in order: the staff link on the Slack account,
+-- then the address stored on the event (primary or alias), then the address
+-- currently on the account. Staff channels are flagged so fellow-facing counts
+-- can exclude them. Reactions received are counted for display only; nothing
+-- ranks on them.
 create or replace view v_slack_message_resolved
 with (security_invoker = true) as
 select
-    m.message_key, m.channel_id, c.name as channel_name, c.is_staff as staff_channel,
-    m.slack_user_id, m.ts, m.posted_at_utc, m.is_thread_reply, m.subtype,
-    m.text, m.word_count, m.reaction_count,
-    r.fellow_id, r.full_name, r.cohort_id
-from slack_message m
-join slack_channel c on c.channel_id = m.channel_id
-left join v_slack_user_resolved r on r.slack_user_id = m.slack_user_id;
+    e.source_event_id                       as message_key,
+    e.channel_id,
+    c.name                                  as channel_name,
+    coalesce(c.is_staff, false)             as staff_channel,
+    e.slack_user_id,
+    e.message_ts                            as ts,
+    e.event_time_utc                        as posted_at_utc,
+    e.is_thread_reply,
+    e.text,
+    coalesce(e.word_count, 0)               as word_count,
+    (select count(*) from slack_event r
+      where r.event_type = 'reaction_added' and r.channel_id = e.channel_id
+        and r.message_ts = e.message_ts)    as reaction_count,
+    coalesce(u.linked_fellow_id, fe.fellow_id, r2.fellow_id) as fellow_id,
+    f.full_name,
+    f.cohort_id
+from slack_event e
+left join slack_channel c on c.channel_id = e.channel_id
+left join slack_user u on u.slack_user_id = e.slack_user_id
+left join v_fellow_email fe on fe.email = lower(e.user_email)
+left join v_slack_user_resolved r2 on r2.slack_user_id = e.slack_user_id
+left join fellow f on f.fellow_id = coalesce(u.linked_fellow_id, fe.fellow_id, r2.fellow_id)
+where e.event_type = 'message';
 
 -- Part A and Part B now resolve through aliases too. Same column list as
 -- before, so nothing downstream changes; only the join does.
@@ -509,8 +502,6 @@ from fellow f;
 -- ---------------------------------------------------------------------------
 
 alter table fellow_alias           enable row level security;
-alter table slack_user             enable row level security;
-alter table slack_message          enable row level security;
 alter table roster_alert           enable row level security;
 alter table slack_preference       enable row level security;
 alter table assignment_submission  enable row level security;
@@ -523,7 +514,7 @@ declare
     t text;
 begin
     foreach t in array array[
-        'fellow_alias', 'slack_user', 'slack_message', 'roster_alert',
+        'fellow_alias', 'roster_alert',
         'slack_preference', 'assignment_submission', 'intervention',
         'badge_award', 'zoom_transcript_turn'
     ] loop

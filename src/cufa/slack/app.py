@@ -1,66 +1,41 @@
-"""The Bolt adapter: Socket Mode in, slash commands and events out.
+"""The slash commands and the button, registered on the participation bot's Bolt app.
 
-This is the only module that imports ``slack_bolt``, and it is imported only
-by ``cufa slack serve``. Everything it does is one line into a function that
-already works with the fake client:
+``cufa.slack.bot`` builds the Bolt app and runs it (HTTP or Socket Mode);
+this module adds to it, in :func:`register_handlers`:
 
-* a slash command → :func:`cufa.slack.commands.dispatch`
-* ``team_join``   → :func:`cufa.slack.sync.observe_user` (and a roster alert)
-* ``message``     → :func:`cufa.slack.sync.record_message`
+* every slash command  → :func:`cufa.slack.commands.dispatch`
+* ``team_join``        → :func:`cufa.slack.sync.observe_user` and a roster alert
 * the *check in with me* button → the same path as ``/checkin``
 
-A background thread runs :func:`cufa.slack.digest.tick` every few minutes, so
-reminders, summaries and the Monday digest need no separate scheduler. Run
-``cufa slack tick`` from cron instead if you would rather.
-
-Socket Mode is used because it needs no public URL: the bot dials out to
-Slack, which is the right shape for a laptop or a small box behind NAT.
+and :func:`start_tick_thread` runs :func:`cufa.slack.digest.tick` every few
+minutes, so reminders, welcomes, summaries and the Monday digest need no
+separate scheduler. ``cufa slack tick`` from cron does the same without the
+bot running. Message capture itself stays with the participation bot.
 """
 
 from __future__ import annotations
 
+import re
 import threading
-import time
 from datetime import datetime, timezone
 from typing import Any
 
 from ..config import Settings, get_settings
 from ..db import connection
-from ..errors import ConfigError, CufaError
+from ..errors import CufaError
 from ..logging_setup import get_logger
-from .client import RealSlackClient, SlackClient, SlackMessage, SlackUser
+from .client import SlackClient, SlackUser, WebClientAdapter
 from .commands import dispatch
 from .digest import tick
-from .sync import observe_user, record_message, seen_event
+from .sync import observe_user, seen_event
 from .welcome import CHECK_IN_ACTION_ID, welcome_blocks
 
 log = get_logger(__name__)
 
 
-def _require_bolt() -> tuple[Any, Any]:
-    try:
-        from slack_bolt import App
-        from slack_bolt.adapter.socket_mode import SocketModeHandler
-    except ImportError as exc:  # pragma: no cover - depends on the extra
-        raise ConfigError(
-            "slack_bolt is not installed. Install the Slack extra:\n"
-            '    pip install -e ".[slack]"'
-        ) from exc
-    return App, SocketModeHandler
-
-
-def build_app(settings: Settings | None = None, *, client: SlackClient | None = None) -> Any:
-    """A configured Bolt app. Handlers close over ``client`` and ``settings``."""
-    settings = settings or get_settings()
-    if not settings.slack_bot_token or not settings.slack_app_token:
-        raise ConfigError(
-            "SLACK_BOT_TOKEN and SLACK_APP_TOKEN are both required for `cufa slack serve`. "
-            "See docs/setup/slack-bot.md."
-        )
-    App, _ = _require_bolt()
-    bolt = App(token=settings.slack_bot_token, signing_secret=settings.slack_signing_secret or None)
-    slack: SlackClient = client or RealSlackClient(settings.slack_bot_token)
-
+def register_handlers(bolt: Any, settings: Settings, web_client: Any) -> SlackClient:
+    """Attach the commands, the join handler and the button to an existing Bolt app."""
+    slack: SlackClient = WebClientAdapter(web_client)
     def _run(name: str, fn):  # type: ignore[no-untyped-def]
         """One handler body: a connection, a commit on success, a log line on failure.
 
@@ -75,7 +50,7 @@ def build_app(settings: Settings | None = None, *, client: SlackClient | None = 
             log.exception("slack handler %s failed", name)
             return None
 
-    @bolt.command(__import__("re").compile(r"^/.*"))
+    @bolt.command(re.compile(r"^/.*"))
     def _slash(ack, command, respond):  # type: ignore[no-untyped-def]
         ack()
         reply = _run(
@@ -109,22 +84,6 @@ def build_app(settings: Settings | None = None, *, client: SlackClient | None = 
 
         _run("team_join", handle)
 
-    @bolt.event("message")
-    def _message(event, body):  # type: ignore[no-untyped-def]
-        if event.get("subtype") in ("message_changed", "message_deleted"):
-            return
-
-        def handle(conn):  # type: ignore[no-untyped-def]
-            if seen_event(conn, body.get("event_id"), "message"):
-                return
-            record_message(conn, SlackMessage.from_api(event["channel"], event))
-
-        _run("message", handle)
-
-    @bolt.event("member_joined_channel")
-    def _member_joined(event):  # type: ignore[no-untyped-def]
-        return  # the periodic sync marks membership; nothing to do live
-
     @bolt.action(CHECK_IN_ACTION_ID)
     def _check_in_button(ack, body, respond):  # type: ignore[no-untyped-def]
         ack()
@@ -134,7 +93,28 @@ def build_app(settings: Settings | None = None, *, client: SlackClient | None = 
         )
         respond(text=reply.text if reply else "⚠️ That hit an error on our side; type `/checkin` to try again.", response_type="ephemeral")
 
-    return bolt
+    return slack
+
+
+def start_tick_thread(settings: Settings, client: SlackClient, *, interval_s: int = 300) -> threading.Event:
+    """Run ``tick`` every ``interval_s`` seconds in a daemon thread. Returns the stop flag."""
+    stop = threading.Event()
+
+    def loop() -> None:
+        while not stop.is_set():
+            try:
+                with connection(settings) as conn:
+                    # The live handler captures messages; the tick must not race it.
+                    tick(conn, client, settings=settings, sync_messages=False)
+            except CufaError as exc:
+                log.warning("tick failed: %s", exc)
+            except Exception:  # noqa: BLE001 — the loop must survive anything
+                log.exception("tick crashed")
+            stop.wait(interval_s)
+
+    threading.Thread(target=loop, name="cufa-slack-tick", daemon=True).start()
+    log.info("scheduler thread started; tick every %ss", interval_s)
+    return stop
 
 
 def check_in_button_blocks(full_name: str = "") -> list[dict[str, Any]]:
@@ -142,31 +122,4 @@ def check_in_button_blocks(full_name: str = "") -> list[dict[str, Any]]:
     return welcome_blocks(full_name)
 
 
-def _tick_loop(settings: Settings, client: SlackClient, interval_s: int, stop: threading.Event) -> None:
-    while not stop.is_set():
-        try:
-            with connection(settings) as conn:
-                tick(conn, client, settings=settings)
-        except CufaError as exc:
-            log.warning("tick failed: %s", exc)
-        except Exception:  # noqa: BLE001 — the loop must survive anything
-            log.exception("tick crashed")
-        stop.wait(interval_s)
-
-
-def serve(settings: Settings | None = None, *, tick_interval_s: int = 300) -> None:  # pragma: no cover - network
-    settings = settings or get_settings()
-    bolt = build_app(settings)
-    _, SocketModeHandler = _require_bolt()
-    client = RealSlackClient(settings.slack_bot_token or "")
-    stop = threading.Event()
-    worker = threading.Thread(target=_tick_loop, args=(settings, client, tick_interval_s, stop), daemon=True)
-    worker.start()
-    log.info("slack bot starting (socket mode); tick every %ss", tick_interval_s)
-    try:
-        SocketModeHandler(bolt, settings.slack_app_token).start()
-    finally:
-        stop.set()
-
-
-__all__ = ["CHECK_IN_ACTION_ID", "build_app", "check_in_button_blocks", "serve"]
+__all__ = ["CHECK_IN_ACTION_ID", "check_in_button_blocks", "register_handlers", "start_tick_thread"]

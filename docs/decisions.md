@@ -822,3 +822,109 @@ recoverable; resetting is not.
 transaction and rolls it back, taking the bookkeeping row with it, so each failed attempt
 left another untracked form in Drive. The row is now written on a separate autocommit
 connection. A promise about what survives a failure has to be tested under the failure.
+
+## ADR-030 — Slack participation is captured by a bot, as it happens
+
+**Decision.** A Slack app subscribed to message, reaction and membership events
+writes each one to `slack_event` on arrival. `conversations.history` is used only
+to backfill what the bot did not see. Every row is keyed by the act (channel +
+message ts; or channel + message + user + reaction), never by Slack's delivery
+id, so a retry, a restart and a backfill all collide with the live row instead of
+duplicating it.
+
+**Rejected.** Periodic workspace exports; a scheduled `conversations.history`
+pull with no live component; the Slack analytics CSV as the source of record;
+Zapier.
+
+**Why.** Slack's free plan hides messages after 90 days and deletes them after a
+year, and the workspace CU is waiting on may start on the free plan. Any approach
+that *asks Slack later* is bounded by that window; a bot that records on arrival
+is not. The analytics CSV counts messages but not reactions, and the Director's
+definition names reacting explicitly. Zapier cannot confirm attendance at all.
+
+The cost is that a bot must be running, and the contract ends. That risk is not
+solved here; it is made visible (`load_run` left in `running`, `last_received`
+in `cufa slack stats`) and made recoverable (backfill, and the Slack for
+Nonprofits upgrade that removes the window). docs/setup/slack-bot.md ends with a
+`TODO(owner)` for the person who restarts it, because a bot with no named owner
+is a bot that is off by November.
+
+The idempotency key is the same design as the forms pipeline: what identifies the
+act, not how it was delivered. The test that matters is the one where a message
+is recorded live, then read back through history, and the table still has one
+row.
+
+## ADR-031 — Message text is not stored
+
+**Decision.** `slack_event.text` is NULL unless `CUFA_SLACK_STORE_TEXT=1`. Length,
+word count, whether there was a link, whether it was a thread reply, and the
+reaction name are stored; the words are not. The status page and the logs never
+show text at any level, even when it is stored.
+
+**Rejected.** Storing text by default and redacting on display; storing a hash of
+the text; storing text for public channels only.
+
+**Why.** The participation definition is "sending messages, reacting to messages,
+etc" — it counts acts, it does not read them. Nothing downstream needs the words.
+The people talking are young; the channel is their conversation with each other;
+and a table of everything they said is a very different thing to hold than a
+table of when they said something, both for them and for whoever inherits this
+database without a data manager. Minimum necessary is the rule, and here the
+minimum is the count.
+
+Redact-on-display would still leave the text in Postgres. A hash still answers
+"did anyone write exactly this", which is a question this system should not be
+able to answer. Public-only would make the exposure depend on a channel setting a
+fellow cannot see.
+
+The switch exists because the data owner may decide otherwise for a specific
+workspace — for the muddiest-point-style clustering that Part B does on form
+answers, say. That is her decision to take, and taking it should be one line in
+`.env`, not a code change.
+
+## ADR-032 — Q&A channels keep their text, by name, in their own tables; a repeat is pointed at an *answered* earlier question; the model sees strings
+
+**Context.** Two things the Director's team asked for need the words of a
+message: a summary of a session's Q&A for the teacher, and a reply that points
+someone who asks a question that was already answered at the earlier answer.
+ADR-031 stores no text.
+
+**Decision.** Channels named in `CUFA_SLACK_QA_CHANNELS` — and only those — have
+their question and reply text stored, in `slack_qa_question` / `slack_qa_answer`,
+never on `slack_event`. The rows carry a Slack user id and no email, and nothing
+joins them to the roster. The bot points a new question at an earlier one only when
+the earlier one was **answered** (a ✅, or a reply from someone other than the
+asker), links the ✅'d reply when there is one and the thread otherwise, names the
+session it came from, is worded as a guess, and posts once per question. Matching is
+two-tier: word overlap decides what it can; a model is asked only about earlier
+questions that share a word, only as anonymous strings, and only with a key. The
+summary is generated from numbered question and reply texts and nothing else,
+degrades to a plain digest without a model, and is superseded rather than
+overwritten on regeneration.
+
+**Rejected.** Turning `CUFA_SLACK_STORE_TEXT` on for the whole workspace to get
+the Q&A features; storing Q&A text on `slack_event.text`; pointing at any earlier
+question that looks similar, answered or not; a pointer to the *newest* similar
+question rather than the answered one; sending every earlier question to the
+model on every new one; embedding vectors; a summary that names who asked or
+answered; letting the mention handler answer a retried delivery.
+
+**Why.** A Q&A channel is different in kind from #general. A question is posted
+*so that* it can be found and answered; the value of an answer is that the next
+person can be pointed at it. Neither is possible without the words — and both are
+the channel's own purpose, not a repurposing of what fellows said to each other.
+Naming the channel is the data owner's explicit act, the same shape as ADR-031's
+switch, and narrower. Keeping the text off `slack_event` keeps ADR-031's
+invariant simple to state and simple to test: that column is NULL, everywhere.
+
+Answered-only, because a pointer to an unanswered thread helps nobody and teaches
+fellows to ignore the bot. Hedged wording and one-per-question, because word
+overlap is not understanding: "when does the session start" and "when does the
+session end" share every content word. The model is asked only about the
+candidates overlap could not settle, as the passphrase tier 2 is asked only about
+what edit distance cannot read (ADR-027's boundary, applied to Slack: it sees
+strings, never people). No key means the deterministic tier still works; a
+feature that stops when the key runs out has made the key mandatory.
+
+Superseding on regeneration is the muddiest-point rule: what a teacher read last
+week should still be there to read.

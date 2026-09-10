@@ -20,11 +20,11 @@ dependencies = [
     "python-dotenv",
     "itsdangerous",
     "python-multipart",
+    "slack-bolt",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest", "httpx"]
-slack = ["slack-bolt>=1.18", "slack-sdk>=3.27"]
 
 [project.scripts]
 cufa = "cufa.cli:main"
