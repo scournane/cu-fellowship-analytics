@@ -179,7 +179,7 @@ def cmd_help(conn, client, ctx: Context, args: list[str]) -> Reply:
         "`/reminders` — see or change when you get session and assignment reminders (`/reminders session 10m off`, `/reminders all off`)",
         "`/badges` — your badges and streak (`/badges off` to stop badge messages)",
         "`/checkin [note]` — ask a staff member to check in with you",
-        "`/me` — your attendance, exit tickets and Slack activity",
+        "`/mystats` — your attendance, exit tickets and Slack activity",
         "`/dashboard` — a private link to the same, with an export button",
     ]
     if ctx.caller.is_admin:
@@ -329,7 +329,9 @@ def cmd_report(conn, client, ctx: Context, args: list[str]) -> Reply:
     lines = [f"*Report — cohort {cohort}* (as of {short_datetime(ctx.now)} UTC)"]
     lines.append(
         f"Sessions held: {att.get('sessions_held', 0)} · active fellows: {att.get('active_fellows', 0)} · "
-        f"overall attendance: {round(100 * (att.get('rate') or 0))}%"
+        # A rate of None means nothing has been held yet. Saying "0%" there is a
+        # claim about attendance; "—" is the truth.
+        f"overall attendance: {'—' if att.get('rate') is None else str(round(100 * att['rate'])) + '%'}"
     )
     lines.append(
         f"Check-ins: {t.get('checkins', 0)} (attended {t.get('attended', 0)}, needs review {t.get('needs_review', 0)}, "
@@ -497,12 +499,21 @@ def cmd_sync(conn, client, ctx: Context, args: list[str]) -> Reply:
     return Reply(f"Synced: {summary}")
 
 
+def cmd_mystats_alias(conn, client, ctx, args):
+    """`/mystats` — the registered name for what the code calls `/me`."""
+    return cmd_me(conn, client, ctx, args)
+
+
 HANDLERS: dict[str, Handler] = {
     "help": cmd_help,
     "reminders": cmd_reminders,
     "badges": cmd_badges,
     "checkin": cmd_checkin,
     "me": cmd_me,
+    # Slack reserves "/me" for its own italic-action command and rejects an app
+    # manifest that declares it ("invalid_name"), so the registered name is
+    # /mystats. "me" stays mapped for the offline driver and older installs.
+    "mystats": cmd_mystats_alias,
     "dashboard": cmd_dashboard,
     "attendance": cmd_attendance,
     "fellow": cmd_fellow,
@@ -534,6 +545,10 @@ def dispatch(
     """Run one slash command. Errors come back as replies, never as tracebacks."""
     settings = settings or get_settings()
     name = command.lstrip("/").lower()
+    # `/cufa-reminders` has its own Bolt listener in bot.py, so it never
+    # reached this map and `cufa slack cmd` reported it as unknown (F-04).
+    if name == "cufa-reminders":
+        name = "reminders"
     handler = HANDLERS.get(name)
     if handler is None:
         return Reply(f"I don't know `/{name}`. Try `/help`.")

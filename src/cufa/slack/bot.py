@@ -269,11 +269,19 @@ def doctor(settings: Settings, *, out: Any = None) -> int:
     out = out or sys.stdout
     failures: list[str] = []
 
-    def line(ok: bool, label: str, detail: str = "", *, fix: str = "") -> None:
-        mark = "ok  " if ok else "MISS"
+    def line(ok: bool | str, label: str, detail: str = "", *, fix: str = "") -> None:
+        """``ok`` is True, False, or "warn".
+
+        "warn" is for a real fault that does not stop the bot recording — it is
+        printed so it cannot be missed, but it does not fail the preflight,
+        because refusing to start a bot that is collecting correctly over a
+        broken link would cost more than the link does.
+        """
+        mark = {True: "ok  ", False: "MISS", "warn": "WARN"}[ok]
         print(f"  {mark}  {label}" + (f"  — {detail}" if detail else ""), file=out)
-        if not ok:
-            failures.append(label)
+        if ok is not True:
+            if ok is False:
+                failures.append(label)
             if fix:
                 for row in fix.splitlines():
                     print(f"          {row}", file=out)
@@ -330,16 +338,40 @@ def doctor(settings: Settings, *, out: Any = None) -> int:
          fix="CUFA_SLACK_ADMINS=<your work address>,<a colleague's>   (comma-separated)")
     # The fellow dashboard link the bot hands out is signed with this. On the
     # default, anyone who can read the repo can mint a link to any fellow's page.
-    half(settings.console_secret != "dev-insecure-secret",
-         "CUFA_CONSOLE_SECRET is not the default",
-         "" if settings.console_secret != "dev-insecure-secret"
-         else "`/dashboard` links would be FORGEABLE — the signing key is the one in .env.example",
+    # Every placeholder this has ever shipped with, not just one of them: the
+    # check used to compare against "dev-insecure-secret" while .env.example
+    # shipped "change-me-to-a-random-string", so it passed on the exact value it
+    # exists to catch. A short secret is no better than a known one.
+    PLACEHOLDER_SECRETS = {
+        "dev-insecure-secret",
+        "change-me-to-a-random-string",
+        "change-me",
+        "",
+    }
+    secret = (settings.console_secret or "").strip()
+    secret_ok = secret.lower() not in PLACEHOLDER_SECRETS and len(secret) >= 16
+    half(secret_ok,
+         "CUFA_CONSOLE_SECRET is not a placeholder",
+         "" if secret_ok
+         else "`/dashboard` links are FORGEABLE — this signing key is in the repo, so anyone "
+              "who can read it can mint a link to ANY fellow's page",
          fix="python -c \"import secrets; print(secrets.token_urlsafe(32))\"  → CUFA_CONSOLE_SECRET in .env")
     if second_half:
-        local_url = "127.0.0.1" in settings.public_base_url or "localhost" in settings.public_base_url
-        line(True, "CUFA_PUBLIC_BASE_URL", settings.public_base_url + (
-            "  — a fellow cannot open this from their own machine, so `/dashboard` links will not work for them"
-            if local_url else ""))
+        # A loopback address is never right here. `/dashboard` hands the fellow
+        # this URL in a DM, and 127.0.0.1 means *their* machine, where nothing is
+        # listening — they get ERR_CONNECTION_REFUSED and no hint why. This used
+        # to pass with a note beside it; it fails now, because every other
+        # failure doctor reports is silent once the bot is running and so is
+        # this one.
+        local_url = any(
+            h in settings.public_base_url for h in ("127.0.0.1", "localhost", "0.0.0.0", "::1")
+        )
+        line("warn" if local_url else True, "CUFA_PUBLIC_BASE_URL", settings.public_base_url,
+             fix=("`/dashboard` DMs this URL to a fellow, and a loopback address resolves to\n"
+                  "THEIR machine — they get ERR_CONNECTION_REFUSED with no hint why.\n"
+                  "Fine while you are the only person clicking it. Before any fellow does,\n"
+                  "set it to a host they can actually reach."
+                  if local_url else ""))
         try:
             from ..retention import load_rubric
 
@@ -572,7 +604,10 @@ def build_bolt_app(settings: Settings, client: WebClient, processor: EventProces
             return
         processor.process(event, team_id, retry_num=_retry_num(req))
 
-    @app.action(POLL_ACTION_ID)
+    # Each option button has its own action_id (`cufa_poll_vote:0`, `:1`, …)
+    # because Slack refuses a message that repeats one. Match the family with a
+    # pattern, not the bare string, or every vote comes back "unhandled request".
+    @app.action(re.compile(rf"^{re.escape(POLL_ACTION_ID)}(:\d+)?$"))
     def on_poll_vote(ack: Any, body: dict[str, Any], context: Any) -> None:
         # Slack wants the press acknowledged within three seconds; the row is
         # written after that. The message is left as posted — results are

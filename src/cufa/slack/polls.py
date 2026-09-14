@@ -27,11 +27,15 @@ def poll_blocks(poll_id: str, question: str, options: list[str]) -> list[dict[st
             "elements": [
                 {
                     "type": "button",
-                    "action_id": POLL_ACTION_ID,
+                    # Slack requires action_id to be unique WITHIN a message, so the
+                    # option index is appended. Everything that reads a vote back
+                    # matches on the POLL_ACTION_ID prefix, never the whole string:
+                    # the poll comes from block_id and the option from value.
+                    "action_id": f"{POLL_ACTION_ID}:{index}",
                     "text": {"type": "plain_text", "text": option[:75]},
                     "value": option,
                 }
-                for option in options
+                for index, option in enumerate(options)
             ],
         },
         {

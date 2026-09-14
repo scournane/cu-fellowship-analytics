@@ -85,6 +85,12 @@ class SlackMessage:
     thread_ts: str | None = None
     subtype: str | None = None
     reactions: int = 0
+    #: Set on anything an app posted. A message from a modern Slack app carries
+    #: BOTH a ``user`` (the bot's user id) and a ``bot_id``, and carries no
+    #: ``subtype``, so ``subtype`` alone does not identify it. The live event
+    #: path keys off ``bot_id``; history has to key off the same thing or the
+    #: bot's own posts are counted as participation.
+    bot_id: str | None = None
 
     @property
     def posted_at(self) -> datetime:
@@ -101,6 +107,7 @@ class SlackMessage:
             thread_ts=item.get("thread_ts"),
             subtype=item.get("subtype"),
             reactions=reactions,
+            bot_id=item.get("bot_id"),
         )
 
 
