@@ -207,6 +207,37 @@ The **Review** screen has three lists:
 
 ---
 
+## The look, and where it is defined
+
+Every colour, radius, border and type size in the console comes from one theme:
+`frontend/src/theme/classroomTheme.js`. Screens ask for components and never set
+a colour of their own, so the whole console changes from that file and nowhere
+else.
+
+It is compiled, not read at start-up:
+
+```bash
+cd frontend
+npm run theme      # rebuilds src/theme/classroom.css and classroom.js
+npm run build      # rebuilds the bundle that imports them
+```
+
+The compiled pair is committed alongside the source. `python tasks.py frontend`
+refuses to build when they have drifted apart, because a theme edited and not
+rebuilt renders the *previous* look with no error anywhere.
+
+Two things worth knowing before changing it:
+
+* **The fonts are bundled, not fetched.** Nunito and Nunito Sans come from
+  `node_modules` through the build, so the console renders the same on a laptop
+  with no network. Naming a font in the theme that nothing loads is a silent
+  fallback to whatever the browser has.
+* **It is a light theme on purpose.** `main.jsx` pins `mode="light"`; a dark
+  scheme derived from these colours would be a different design rather than this
+  one after dark.
+
+---
+
 ## When something looks wrong
 
 | What you see | What it means |

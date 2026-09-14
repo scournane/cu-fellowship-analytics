@@ -43,3 +43,6 @@ run/
 
 # Scratch output from `npx astryx template/theme add`
 frontend/.astryx-tmp/
+
+# Worktrees created for parallel agent runs
+.claude/worktrees/

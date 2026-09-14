@@ -362,6 +362,23 @@ def task_frontend() -> int:
     if not (FRONTEND / "node_modules").is_dir():
         print("installing front-end dependencies (first run only)")
         run_tool("npm", "ci", cwd=FRONTEND)
+    # The theme is compiled from src/theme/classroomTheme.js into files that are
+    # committed, so the app imports a stylesheet rather than building one at
+    # start-up. That only holds if the two stay in step: editing the source and
+    # forgetting to rebuild leaves the console rendering the previous look with
+    # no error anywhere. --check says so here instead.
+    stale = run_tool(
+        "npm", "run", "theme", "--", "--check", cwd=FRONTEND, check=False, quiet=True
+    )
+    if stale.returncode != 0:
+        raise TaskError(
+            "The built theme is out of step with its source.\n"
+            "\n"
+            "  cd frontend && npm run theme\n"
+            "\n"
+            "then commit frontend/src/theme/classroom.css and classroom.js "
+            "alongside the source you changed."
+        )
     print("building the console bundle")
     run_tool("npm", "run", "build", cwd=FRONTEND)
     print(f"bundle written to {BUNDLE.parent}")

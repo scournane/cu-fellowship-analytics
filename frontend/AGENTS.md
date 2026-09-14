@@ -31,3 +31,21 @@ MORE CLI:
   swizzle <Name>     eject component source for deep customization
   upgrade --apply    run after any @astryxdesign/core bump
 <!-- ASTRYX:END -->
+
+## This project
+
+The theme is `src/theme/classroomTheme.js`, built by `npm run theme` into
+`classroom.css` + `classroom.js` (both committed, both generated — edit the
+source). It is what the `theme add`/`theme list` instructions above are for; the
+console does not use a published theme package directly, it extends neutral.
+
+Two things the CLI's advice does not cover here:
+
+* A component's own colour comes from a StyleX class in a later cascade layer
+  than any theme rule, so a theme override that sets `color` on a component can
+  compile and still lose. Check it in a browser with `getComputedStyle`, and
+  where the theme cannot win, pass `xstyle` carrying a token
+  (`colorVars['--color-accent']`) rather than reaching for a hex.
+* Fonts named in the theme have to be loaded by the app. Ours are bundled from
+  `node_modules` in `main.jsx`; nothing is fetched from a CDN at page load.
+
