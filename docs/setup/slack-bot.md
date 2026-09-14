@@ -98,7 +98,8 @@ features:
       description: Your badges and streak; /badges off stops the messages
     - command: /checkin
       description: Ask a staff member to check in with you
-    - command: /me
+    - command: /mystats        # NOT /me — Slack reserves that name and the
+                               # manifest is rejected with `invalid_name`
       description: Your own attendance, exit tickets and Slack activity
     - command: /dashboard
       description: A private link to your dashboard
@@ -164,7 +165,8 @@ settings:
       - file_created
       - file_change
       - file_shared
-      - file_comment_added
+      # `file_comment_added` is NOT a valid bot event type — Slack answers
+      # `invalid_user_event_types` and refuses the whole manifest.
   interactivity:
     # Votes on polls the bot posts, and the "check in with me" button. Same
     # URL as events in HTTP mode; nothing extra in Socket Mode.

@@ -515,7 +515,17 @@ def parse_interaction(body: dict[str, Any], team_id: str) -> ParseResult:
     channel = (body.get("channel") or {}).get("id")
     message_ts = (body.get("message") or {}).get("ts")
     actions = body.get("actions") or []
-    action = next((a for a in actions if a.get("action_id") == POLL_ACTION_ID), None)
+    # Each option button carries a unique action_id (`cufa_poll_vote:0`, `:1`, …)
+    # because Slack rejects a message that repeats one. Match on the prefix; the
+    # bare id is still accepted so votes on polls posted before that change work.
+    action = next(
+        (
+            a
+            for a in actions
+            if (a.get("action_id") or "").split(":", 1)[0] == POLL_ACTION_ID
+        ),
+        None,
+    )
     if action is None:
         return Skipped("interaction is not a poll vote", "block_actions")
     block_id = action.get("block_id") or ""

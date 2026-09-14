@@ -248,6 +248,12 @@ def record_message(
     seen by any of the three paths is one row. Text is stored only when
     ``CUFA_SLACK_STORE_TEXT`` says so (ADR-031). Bot and system posts are skipped.
     """
+    # `bot_id` first: an app's own posts carry a real `user` and no `subtype`, so
+    # checking `subtype` alone let the bot's digests, session summaries and Q&A
+    # pointers in as participation. The live path (events.parse_event) keys off
+    # `bot_id`; this is the same rule, so all three ingest paths agree.
+    if message.bot_id:
+        return False
     if not message.user or message.subtype in ("bot_message", "channel_join", "channel_leave"):
         return False
     ensure_workspace_row(conn, team_id)

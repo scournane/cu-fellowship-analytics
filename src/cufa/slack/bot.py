@@ -572,7 +572,10 @@ def build_bolt_app(settings: Settings, client: WebClient, processor: EventProces
             return
         processor.process(event, team_id, retry_num=_retry_num(req))
 
-    @app.action(POLL_ACTION_ID)
+    # Each option button has its own action_id (`cufa_poll_vote:0`, `:1`, …)
+    # because Slack refuses a message that repeats one. Match the family with a
+    # pattern, not the bare string, or every vote comes back "unhandled request".
+    @app.action(re.compile(rf"^{re.escape(POLL_ACTION_ID)}(:\d+)?$"))
     def on_poll_vote(ack: Any, body: dict[str, Any], context: Any) -> None:
         # Slack wants the press acknowledged within three seconds; the row is
         # written after that. The message is left as posted — results are

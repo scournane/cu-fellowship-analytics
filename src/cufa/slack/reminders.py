@@ -148,6 +148,37 @@ def _offset_label(minutes: int) -> str:
     return f"{minutes} minutes"
 
 
+def _countdown(target: datetime, now: datetime | None, fallback_minutes: int) -> str:
+    """How long is actually left, not which reminder slot this is.
+
+    The scheduler fires a slot as soon as it is due and unserved, so a session
+    created inside its own 24-hour window sends the "24 hours" reminder within
+    minutes of starting. Wording that from the slot told a fellow they had a day
+    when they had ninety minutes. Rendered from the real delta instead, and the
+    slot's name is used only when no instant was supplied.
+    """
+    if now is None or target is None:
+        return _offset_label(fallback_minutes)
+    left = round((to_utc(target) - to_utc(now)).total_seconds() / 60)
+    if left <= 0:
+        return "under a minute"
+    if left < 60:
+        return f"{left} minute{'s' if left != 1 else ''}"
+    # Within half an hour of the round day, say the round day: a reminder that
+    # really did fire on the 24-hour mark should still read "24 hours".
+    if abs(left - 24 * 60) <= 30:
+        return "24 hours"
+    hours = left / 60
+    if left < 24 * 60:
+        rounded = round(hours)
+        # Don't round 90 minutes up to "2 hours" and call it precise.
+        if abs(hours - rounded) > 0.15:
+            return f"about {hours:.1f} hours".replace(".0 hours", " hours")
+        return f"{rounded} hour{'s' if rounded != 1 else ''}"
+    days = round(left / (24 * 60))
+    return f"{days} day{'s' if days != 1 else ''}"
+
+
 def _zoom_line(session: dict[str, Any]) -> str:
     if session.get("zoom_url"):
         return _slack_link(session["zoom_url"], "Join Zoom")
@@ -155,17 +186,26 @@ def _zoom_line(session: dict[str, Any]) -> str:
 
 
 def session_reminder_text(
-    fellow_name: str, session: dict[str, Any], minutes: int, zone: ZoneInfo
+    fellow_name: str,
+    session: dict[str, Any],
+    minutes: int,
+    zone: ZoneInfo,
+    now: datetime | None = None,
 ) -> str:
     return (
         f"Hi {_first_name(fellow_name)}, reminder: *{_slack_text(session['title'])}* "
-        f"starts in {_offset_label(minutes)} ({_local_when(session['scheduled_at_utc'], zone)}). "
+        f"starts in {_countdown(session['scheduled_at_utc'], now, minutes)} "
+        f"({_local_when(session['scheduled_at_utc'], zone)}). "
         f"{_zoom_line(session)}"
     )
 
 
 def assignment_reminder_text(
-    fellow_name: str, assignment: dict[str, Any], minutes: int, zone: ZoneInfo
+    fellow_name: str,
+    assignment: dict[str, Any],
+    minutes: int,
+    zone: ZoneInfo,
+    now: datetime | None = None,
 ) -> str:
     link = (
         " " + _slack_link(assignment["url"], "Open assignment")
@@ -174,7 +214,8 @@ def assignment_reminder_text(
     )
     return (
         f"Hi {_first_name(fellow_name)}, *{_slack_text(assignment['title'])}* is due "
-        f"in {_offset_label(minutes)} ({_local_when(assignment['due_at_utc'], zone)}).{link}"
+        f"in {_countdown(assignment['due_at_utc'], now, minutes)} "
+        f"({_local_when(assignment['due_at_utc'], zone)}).{link}"
     )
 
 
@@ -529,7 +570,7 @@ class ReminderEngine:
                     kind="session_reminder",
                     target=fellow["slack_user_id"],
                     text=session_reminder_text(
-                        fellow["full_name"], session, minutes, zone
+                        fellow["full_name"], session, minutes, zone, now
                     ),
                     scheduled_for=scheduled_for,
                     now=now,
@@ -579,7 +620,7 @@ class ReminderEngine:
                     kind="assignment_reminder",
                     target=fellow["slack_user_id"],
                     text=assignment_reminder_text(
-                        fellow["full_name"], assignment, minutes, self._zone(fellow)
+                        fellow["full_name"], assignment, minutes, self._zone(fellow), now
                     ),
                     scheduled_for=scheduled_for,
                     now=now,
