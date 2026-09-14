@@ -3,15 +3,14 @@ import {Banner} from '@astryxdesign/core/Banner'
 import {Button} from '@astryxdesign/core/Button'
 import {Card} from '@astryxdesign/core/Card'
 import {Divider} from '@astryxdesign/core/Divider'
-import {DropdownMenu} from '@astryxdesign/core/DropdownMenu'
 import {Heading} from '@astryxdesign/core/Heading'
 import {Layout, LayoutContent} from '@astryxdesign/core/Layout'
-import {OverflowList} from '@astryxdesign/core/OverflowList'
+import {SideNav, SideNavHeading, SideNavItem, SideNavSection} from '@astryxdesign/core/SideNav'
 import {Stack} from '@astryxdesign/core/Stack'
 import {Text} from '@astryxdesign/core/Text'
 import {TextInput} from '@astryxdesign/core/TextInput'
 import {Token} from '@astryxdesign/core/Token'
-import {TopNav, TopNavHeading, TopNavItem} from '@astryxdesign/core/TopNav'
+import {TopNav, TopNavHeading} from '@astryxdesign/core/TopNav'
 import {colorVars} from '@astryxdesign/core/theme/tokens.stylex'
 import * as stylex from '@stylexjs/stylex'
 import {useState} from 'react'
@@ -26,28 +25,48 @@ const styles = stylex.create({
   sectionHeading: {color: colorVars['--color-accent']},
 })
 
+/** Every staff destination, in rail order.
+ *
+ *  `section` is the heading an entry sits under, and the rail reads the
+ *  sections back off this list — so there is no second list of groups to drift
+ *  out of step with the items. Screens that want only the destinations
+ *  (Simple.jsx) still get a flat array. */
 export const NAV = [
-  // 'Google' rather than 'Connect Google': ten items is what fits across a
-  // 1280-wide laptop, and this is the only one that names a once-per-install
-  // action rather than a place. The screen itself still says Connect Google.
-  {href: '/', label: 'Google', match: (p) => p === '/'},
-  {href: '/template', label: 'Templates', match: (p) => p.startsWith('/template')},
-  {href: '/sessions', label: 'Sessions', match: (p) => p.startsWith('/sessions')},
-  {href: '/dashboard', label: 'Dashboard', match: (p) => p.startsWith('/dashboard')},
-  {href: '/assignments', label: 'Assignments', match: (p) => p.startsWith('/assignments')},
-  {href: '/roster', label: 'Roster', match: (p) => p.startsWith('/roster')},
-  {href: '/rotation', label: 'Rotation', match: (p) => p.startsWith('/rotation')},
-  {href: '/shoutouts', label: 'Shoutouts', match: (p) => p.startsWith('/shoutouts')},
-  {href: '/review', label: 'Review', match: (p) => p.startsWith('/review')},
+  {href: '/', label: 'Connect Google', section: 'Set up', match: (p) => p === '/'},
+  {href: '/template', label: 'Templates', section: 'Set up', match: (p) => p.startsWith('/template')},
+  {href: '/sessions', label: 'Sessions', section: 'Cohort', match: (p) => p.startsWith('/sessions')},
+  {href: '/dashboard', label: 'Dashboard', section: 'Cohort', match: (p) => p.startsWith('/dashboard')},
+  {href: '/assignments', label: 'Assignments', section: 'Cohort', match: (p) => p.startsWith('/assignments')},
+  {href: '/roster', label: 'Roster', section: 'Cohort', match: (p) => p.startsWith('/roster')},
+  {href: '/rotation', label: 'Rotation', section: 'Cohort', match: (p) => p.startsWith('/rotation')},
+  // All three hold something waiting on a staff decision, which is why they
+  // group: a queue is a different kind of errand from a screen you visit.
+  {href: '/shoutouts', label: 'Shoutouts', section: 'Queues', match: (p) => p.startsWith('/shoutouts')},
+  {href: '/review', label: 'Review', section: 'Queues', match: (p) => p.startsWith('/review')},
   // Only shown to the people allowed to open it. The server enforces the gate
   // regardless — this just stops the console offering a door that answers 403.
   {
     href: '/help-requests',
     label: 'Help requests',
+    section: 'Queues',
     match: (p) => p.startsWith('/help-requests'),
     requiresHelpAccess: true,
   },
 ]
+
+/** NAV as the rail draws it: the entries this user may open, gathered into
+ *  their sections. Runs of one section are contiguous in NAV, so the grouping
+ *  is the order the array is already written in. */
+function navSections(user) {
+  const sections = []
+  for (const item of NAV) {
+    if (item.requiresHelpAccess && !user.mayReadHelp) continue
+    const open = sections[sections.length - 1]
+    if (open && open.title === item.section) open.items.push(item)
+    else sections.push({title: item.section, items: [item]})
+  }
+  return sections
+}
 
 /** Plain form posts, kept for the same reason the sign-in screen keeps them:
  *  the server answers with 303s and owns the redirect. */
@@ -102,19 +121,24 @@ export function AppFrame({user, path = '/', fakeGoogle, noAllowlist, children}) 
     )
   }
 
-  // Only the screens this user may open. The server enforces the gate on every
-  // request regardless; this stops the console offering a door that answers 403.
-  const items = user ? NAV.filter((item) => !item.requiresHelpAccess || user.mayReadHelp) : []
-
+  // A rail, not a top bar: ten destinations do not fit across a laptop, and
+  // down the page is the direction there is room in. Below AppShell's md
+  // breakpoint the whole rail — heading, items and footer — becomes its drawer.
   const nav = (
-    <TopNav
-      label="Main"
-      heading={<TopNavHeading heading="CU check-in console" headingHref="/sessions" />}
-      endContent={
+    <SideNav
+      header={<SideNavHeading heading="CU check-in console" headingHref="/sessions" />}
+      footer={
         user ? (
-          <Stack direction="horizontal" gap={2} align="center">
-            <Text type="supporting">{user.email}</Text>
-            {user.isDevBypass ? <Text type="supporting" color="accent">dev bypass</Text> : null}
+          <Stack gap={2}>
+            {/* The footer slot is inset to where the item boxes start, not
+                where their labels do, so the two text lines take one more step
+                to land on the labels' line. The button is a box and already
+                sits on it. Most addresses are wider than the rail, so the whole
+                one goes to a tooltip. */}
+            <Stack gap={0.5} paddingInline={2}>
+              <Text type="supporting" maxLines={1}>{user.email}</Text>
+              {user.isDevBypass ? <Text type="supporting" color="accent">dev bypass</Text> : null}
+            </Stack>
             <PostForm action="/signout">
               <Button label="Sign out" size="sm" type="submit" />
             </PostForm>
@@ -122,42 +146,25 @@ export function AppFrame({user, path = '/', fakeGoogle, noAllowlist, children}) 
         ) : null
       }
     >
-      {/* Ten uppercase labels do not fit across a laptop, and a nav that wraps
-          onto the account block is worse than one that admits it ran out of
-          room. Whatever does not fit moves into a menu at the end. */}
-      {items.length ? (
-        <OverflowList
-          gap={1}
-          minVisibleItems={1}
-          behavior="observeParent"
-          overflowRenderer={(overflow) => (
-            <DropdownMenu
-              alignment="end"
-              button={{label: `+${overflow.length}`, variant: 'ghost', size: 'sm'}}
-              items={overflow.map(({index}) => ({
-                label: items[index].label,
-                onClick: () => {
-                  window.location.href = items[index].href
-                },
-              }))}
-            />
-          )}
-        >
-          {items.map((item) => (
-            <TopNavItem
-              key={item.href}
-              href={item.href}
-              label={item.label}
-              isSelected={item.match(path)}
-            />
-          ))}
-        </OverflowList>
-      ) : null}
-    </TopNav>
+      {user
+        ? navSections(user).map((section) => (
+            <SideNavSection key={section.title} title={section.title}>
+              {section.items.map((item) => (
+                <SideNavItem
+                  key={item.href}
+                  href={item.href}
+                  label={item.label}
+                  isSelected={item.match(path)}
+                />
+              ))}
+            </SideNavSection>
+          ))
+        : null}
+    </SideNav>
   )
 
   return (
-    <AppShell topNav={nav} banner={banners.length ? <Stack gap={0}>{banners}</Stack> : undefined}>
+    <AppShell sideNav={nav} banner={banners.length ? <Stack gap={0}>{banners}</Stack> : undefined}>
       <Layout
         contentWidth={960}
         padding={4}
