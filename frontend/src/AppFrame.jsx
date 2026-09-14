@@ -164,7 +164,11 @@ export function AppFrame({user, path = '/', fakeGoogle, noAllowlist, children}) 
   )
 
   return (
-    <AppShell sideNav={nav} banner={banners.length ? <Stack gap={0}>{banners}</Stack> : undefined}>
+    <AppShell
+      sideNav={nav}
+      variant="section"
+      banner={banners.length ? <Stack gap={0}>{banners}</Stack> : undefined}
+    >
       <Layout
         contentWidth={960}
         padding={4}
