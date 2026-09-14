@@ -88,6 +88,9 @@ def _settings(**extra: str):
         "SLACK_API_BASE_URL": "http://unused.invalid/api/",
         "CUFA_SLACK_COHORT": TEST_COHORT,
         "CUFA_SLACK_QA_CHANNELS": "q-and-a",
+        # doctor rejects the placeholder signing keys .env.example ships, so a
+        # fixture that means "properly configured" has to carry a real one.
+        "CUFA_CONSOLE_SECRET": "test-console-secret-not-a-placeholder",
         **extra,
     }
     env.pop("GEMINI_API_KEY", None)

@@ -338,10 +338,23 @@ def doctor(settings: Settings, *, out: Any = None) -> int:
          fix="CUFA_SLACK_ADMINS=<your work address>,<a colleague's>   (comma-separated)")
     # The fellow dashboard link the bot hands out is signed with this. On the
     # default, anyone who can read the repo can mint a link to any fellow's page.
-    half(settings.console_secret != "dev-insecure-secret",
-         "CUFA_CONSOLE_SECRET is not the default",
-         "" if settings.console_secret != "dev-insecure-secret"
-         else "`/dashboard` links would be FORGEABLE — the signing key is the one in .env.example",
+    # Every placeholder this has ever shipped with, not just one of them: the
+    # check used to compare against "dev-insecure-secret" while .env.example
+    # shipped "change-me-to-a-random-string", so it passed on the exact value it
+    # exists to catch. A short secret is no better than a known one.
+    PLACEHOLDER_SECRETS = {
+        "dev-insecure-secret",
+        "change-me-to-a-random-string",
+        "change-me",
+        "",
+    }
+    secret = (settings.console_secret or "").strip()
+    secret_ok = secret.lower() not in PLACEHOLDER_SECRETS and len(secret) >= 16
+    half(secret_ok,
+         "CUFA_CONSOLE_SECRET is not a placeholder",
+         "" if secret_ok
+         else "`/dashboard` links are FORGEABLE — this signing key is in the repo, so anyone "
+              "who can read it can mint a link to ANY fellow's page",
          fix="python -c \"import secrets; print(secrets.token_urlsafe(32))\"  → CUFA_CONSOLE_SECRET in .env")
     if second_half:
         # A loopback address is never right here. `/dashboard` hands the fellow
