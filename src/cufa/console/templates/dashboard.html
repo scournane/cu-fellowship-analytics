@@ -20,7 +20,7 @@
   </p>
 
   <div class="tiles">
-    <div class="tile"><div class="n">{{ (100 * (attendance.rate or 0))|round|int }}%</div><div class="l">overall attendance · {{ attendance.attended }} of {{ attendance.active_fellows }} × {{ attendance.sessions_held }} sessions</div></div>
+    <div class="tile"><div class="n">{% if attendance.rate is none %}—{% else %}{{ (100 * attendance.rate)|round|int }}%{% endif %}</div><div class="l">overall attendance{% if attendance.sessions_held %} · {{ attendance.attended }} of {{ attendance.active_fellows }} × {{ attendance.sessions_held }} sessions{% else %} · no sessions held yet{% endif %}</div></div>
     <div class="tile"><div class="n">{{ attendance.active_fellows }}</div><div class="l">active fellows</div></div>
     <div class="tile"><div class="n">{{ requests|length }}</div><div class="l">open check-in requests</div></div>
     <div class="tile"><div class="n">{{ alerts|length }}</div><div class="l">unrostered Slack accounts</div></div>

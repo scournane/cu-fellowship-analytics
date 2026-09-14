@@ -265,3 +265,43 @@ def test_transcript_ingest_is_idempotent_and_matches_names(db, cohort, tmp_path:
     assert silent_fellows(db, cohort["s1"]) == []
     with pytest.raises(CufaError):
         ingest_transcript(db, cohort["s1"], tmp_path / "missing.vtt") if False else ingest_transcript(db, "00000000-0000-0000-0000-000000000000", path)
+
+
+def test_attendance_rate_is_never_above_one_even_with_future_dated_sessions(db, cohort):
+    """F-03: the invariant that would have caught a staff dashboard reading 235%.
+
+    The numerator counted every attended check-in; the denominator counted only
+    sessions whose scheduled time had already passed. A session with check-ins
+    against it but a future timestamp — a makeup, one run early, one whose time
+    was corrected afterwards — landed in the numerator and not the denominator,
+    and nothing clamped the result.
+    """
+    make_session(db, title="Makeup, dated in the future", local=datetime(2027, 1, 20, 19, 0))
+
+    att = cohort_attendance(db, TEST_COHORT, now=NOW)
+    rate = att["rate"]
+    assert rate is None or 0.0 <= rate <= 1.0, (
+        f"attendance rate {rate} is not a proportion: {att['attended']} attended over "
+        f"{att['active_fellows']} fellows x {att['sessions_held']} sessions held"
+    )
+    assert att["sessions_held"] == 0 or att["attended"] <= att["active_fellows"] * att["sessions_held"], (
+        "more attendances than there were fellow-sessions to attend"
+    )
+
+
+def test_a_session_with_checkins_counts_as_held_whatever_its_timestamp_says(db, cohort):
+    """The other half of F-03: badges and attendance must agree with the report.
+
+    `report_html` has always counted a session as held when somebody checked in
+    to it. `cohort_attendance` counted only the calendar. That disagreement is
+    what let the two surfaces print 21% and 235% off one database.
+    """
+    before = cohort_attendance(db, TEST_COHORT, now=NOW)["sessions_held"]
+    future = make_session(db, title="Run early, still dated ahead", local=datetime(2027, 3, 1, 19, 0))
+    assert cohort_attendance(db, TEST_COHORT, now=NOW)["sessions_held"] == before, (
+        "a future session nobody attended is not held"
+    )
+    _checkin(db, "ada@example.invalid", str(future), NOW.isoformat())
+    assert cohort_attendance(db, TEST_COHORT, now=NOW)["sessions_held"] == before + 1, (
+        "a session somebody checked in to IS held, whatever its timestamp says"
+    )

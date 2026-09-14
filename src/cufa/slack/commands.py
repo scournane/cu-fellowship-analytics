@@ -329,7 +329,9 @@ def cmd_report(conn, client, ctx: Context, args: list[str]) -> Reply:
     lines = [f"*Report — cohort {cohort}* (as of {short_datetime(ctx.now)} UTC)"]
     lines.append(
         f"Sessions held: {att.get('sessions_held', 0)} · active fellows: {att.get('active_fellows', 0)} · "
-        f"overall attendance: {round(100 * (att.get('rate') or 0))}%"
+        # A rate of None means nothing has been held yet. Saying "0%" there is a
+        # claim about attendance; "—" is the truth.
+        f"overall attendance: {'—' if att.get('rate') is None else str(round(100 * att['rate'])) + '%'}"
     )
     lines.append(
         f"Check-ins: {t.get('checkins', 0)} (attended {t.get('attended', 0)}, needs review {t.get('needs_review', 0)}, "
