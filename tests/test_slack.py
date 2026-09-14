@@ -304,6 +304,9 @@ def _settings(api_base_url: str, **extra: str):
         "SLACK_API_BASE_URL": api_base_url,
         "CUFA_SLACK_COHORT": TEST_COHORT,
         "CUFA_SLACK_AUTOMATIONS": "0",
+        # A configured workspace has a real signing key. The placeholder path is
+        # exercised by the test that passes one deliberately.
+        "CUFA_CONSOLE_SECRET": "test-console-secret-not-a-placeholder",
         **extra,
     }
     return load_settings(env)
@@ -448,7 +451,7 @@ def test_doctor_passes_against_a_configured_workspace(db, ws, capsys):
             CUFA_SLACK_COHORT="cu-test",
             CUFA_SLACK_STAFF_CHANNEL="cohort-private",
             CUFA_SLACK_ADMINS="staff@example.invalid",
-            CUFA_CONSOLE_SECRET="not-the-default-secret",
+            CUFA_CONSOLE_SECRET="a-real-console-secret-long-enough",
         )
         assert doctor(settings) == 0
     finally:
@@ -508,7 +511,7 @@ def test_doctor_holds_the_second_half_to_account_once_it_is_switched_on(db, ws, 
         fake.stop()
     out = capsys.readouterr().out
     assert "MISS  CUFA_SLACK_ADMINS set" in out
-    assert "MISS  CUFA_CONSOLE_SECRET is not the default" in out
+    assert "MISS  CUFA_CONSOLE_SECRET is not a placeholder" in out
     assert "FORGEABLE" in out, "the consequence is named, not just the setting"
     assert "@" not in out
 
@@ -523,7 +526,7 @@ def test_doctor_warns_when_the_staff_channel_is_public(db, ws, capsys):
         settings = _settings(
             fake.api_base_url, SLACK_APP_TOKEN="xapp-test", CUFA_SLACK_COHORT="cu-test",
             CUFA_SLACK_STAFF_CHANNEL="general",
-            CUFA_SLACK_ADMINS="staff@example.invalid", CUFA_CONSOLE_SECRET="not-the-default-secret",
+            CUFA_SLACK_ADMINS="staff@example.invalid", CUFA_CONSOLE_SECRET="a-real-console-secret-long-enough",
         )
         assert doctor(settings) == 1
     finally:
@@ -543,7 +546,7 @@ def test_doctor_says_loudly_when_the_roster_is_empty(db, ws, capsys):
         settings = _settings(
             fake.api_base_url, SLACK_APP_TOKEN="xapp-test", CUFA_SLACK_COHORT="nobody-loaded-yet",
             CUFA_SLACK_STAFF_CHANNEL="cohort-private",
-            CUFA_SLACK_ADMINS="staff@example.invalid", CUFA_CONSOLE_SECRET="not-the-default",
+            CUFA_SLACK_ADMINS="staff@example.invalid", CUFA_CONSOLE_SECRET="a-real-console-secret-long-enough",
         )
         assert doctor(settings) == 0, "an empty roster is a warning, not a blocker"
     finally:

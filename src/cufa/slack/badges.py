@@ -109,7 +109,14 @@ def collect_evidence(conn: psycopg.Connection, cohort_id: str, *, now: datetime 
         str(r["session_id"])
         for r in fetch_all(
             conn,
-            'select session_id from "session" where cohort_id = %s and scheduled_at_utc <= %s order by scheduled_at_utc',
+            # Same "held" rule the report and cohort_attendance use: scheduled
+            # time passed OR somebody checked in. Using the date alone meant a
+            # makeup or rescheduled session never counted, so check-ins against
+            # it earned no `first_checkin`, `regular` or `streak` badge.
+            'select s.session_id from "session" s where s.cohort_id = %s and ('
+            "  s.scheduled_at_utc <= %s"
+            "  or exists (select 1 from checkin c where c.session_id = s.session_id)"
+            ") order by s.scheduled_at_utc",
             (cohort_id, now),
         )
     ]

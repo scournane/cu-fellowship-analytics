@@ -33,6 +33,12 @@ function percent(value) {
   return `${Math.round(100 * (value || 0))}%`
 }
 
+/** A rate with nothing behind it is not 0% — it is unknown, and printing 0%
+ *  invents a number nobody measured. (Upstream fix F-03, kept here.) */
+function rate(value) {
+  return value === null || value === undefined ? '—' : percent(value)
+}
+
 /** The "has anyone spoken to them?" toggle, one row's worth.
  *
  *  A note field on the way in and nothing but a clear button on the way out:
@@ -172,9 +178,13 @@ export function Dashboard({
 
       <Grid columns={{minWidth: 200, repeat: 'fit'}} gap={3}>
         <StatTile
-          value={percent(attendance.rate)}
+          value={rate(attendance.rate)}
           label="Overall attendance"
-          detail={`${attendance.attended} of ${attendance.active_fellows * attendance.sessions_held}: ${attendance.active_fellows} fellows across ${attendance.sessions_held} sessions`}
+          detail={
+            attendance.sessions_held
+              ? `${attendance.attended} of ${attendance.active_fellows * attendance.sessions_held}: ${attendance.active_fellows} fellows across ${attendance.sessions_held} sessions`
+              : 'no sessions held yet'
+          }
         />
         <StatTile value={attendance.active_fellows} label="Active fellows" />
         <StatTile value={requests.length} label="Open check-in requests" />

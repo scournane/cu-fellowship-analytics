@@ -321,7 +321,14 @@ def test_poll_lifecycle_counts_the_latest_vote_and_names_nobody(stack, ws, clien
     assert poll["message_ts"] and client.call_count("chat.postMessage") == 1
     posted = ws.posted[-1]
     assert posted["blocks"][1]["block_id"] == f"cufa_poll:{poll['poll_id']}"
-    assert all(e["action_id"] == POLL_ACTION_ID for e in posted["blocks"][1]["elements"])
+    # Slack rejects a message that repeats an action_id ("invalid_blocks:
+    # action_id … already exists"), which is what a poll with two options used
+    # to do — the fake server does not validate Block Kit, so nothing caught it.
+    # The contract is: every button is recognisably a poll vote, and no two
+    # buttons share an id.
+    action_ids = [e["action_id"] for e in posted["blocks"][1]["elements"]]
+    assert all(a.split(":", 1)[0] == POLL_ACTION_ID for a in action_ids)
+    assert len(set(action_ids)) == len(action_ids), "Slack requires unique action_ids"
 
     def vote(user, choice):
         body = ws.poll_vote_payload(user, general(ws), poll["poll_id"], choice, message_ts=poll["message_ts"])
@@ -426,3 +433,31 @@ def test_http_huddle_and_canvas_route_and_insights_has_no_addresses(db, ws, http
     data = r.json()
     assert data["huddles"]["joins"] == 1 and data["canvases"]["created"] == 1
     assert data["mentions_given"][0]["mentions_given"] == 1
+
+
+def test_bot_own_posts_are_not_participation_in_history(stack, ws, client):
+    """F-09: an app's own message carries `bot_id` and NO `subtype`.
+
+    The live event path skipped on `bot_id`; `sync.record_message` skipped on
+    `subtype == "bot_message"`, so the bot's digests, session summaries and Q&A
+    pointers were ingested as participation and inflated the very numbers the
+    bot reports. All three ingest paths now use the same rule.
+    """
+    from cufa.slack.client import SlackMessage
+    from cufa.slack.sync import record_message
+
+    human = SlackMessage.from_api("C0DEMO0001", {
+        "ts": "1789400000.000100", "user": "U0ADA", "text": "a real message"})
+    app_post = SlackMessage.from_api("C0DEMO0001", {
+        "ts": "1789400000.000200", "user": "U0DEMOBOT", "bot_id": "B0DEMO",
+        "text": "*Weekly digest* — posted by the bot"})
+    legacy_bot = SlackMessage.from_api("C0DEMO0001", {
+        "ts": "1789400000.000300", "user": "U0DEMOBOT",
+        "subtype": "bot_message", "text": "old-style bot post"})
+
+    assert app_post.bot_id == "B0DEMO", "bot_id must survive from_api"
+    assert app_post.subtype is None, "a modern app post carries no subtype"
+
+    assert record_message(stack, human, team_id=TEAM) is True
+    assert record_message(stack, app_post, team_id=TEAM) is False
+    assert record_message(stack, legacy_bot, team_id=TEAM) is False

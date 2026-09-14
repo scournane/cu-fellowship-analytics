@@ -132,7 +132,13 @@ def cohort_engagement(
         (
             fetch_one(
                 conn,
-                'select count(*) as n from "session" where cohort_id = %s and scheduled_at_utc <= %s',
+                # Same held rule as SESSION_HELD_SQL below and as report_html:
+                # scheduled time passed OR somebody checked in. The date alone
+                # rendered a fellow's attendance as "4/1".
+                'select count(*) as n from "session" s where s.cohort_id = %s and ('
+                "  s.scheduled_at_utc <= %s"
+                "  or exists (select 1 from checkin c where c.session_id = s.session_id)"
+                ")",
                 (cohort_id, now),
             )
             or {}
@@ -203,7 +209,9 @@ def cohort_engagement(
         # A session under review is neither attended nor missed, so it comes
         # out of the denominator rather than counting against the fellow.
         decidable = held - needs_review
-        attendance_rate = (attended / decidable) if decidable > 0 else None
+        # attended can only exceed decidable if the two were counted against
+        # different session sets; clamp so a fellow's rate stays a proportion.
+        attendance_rate = min(attended / decidable, 1.0) if decidable > 0 else None
         completeness = (int(b.get("answered") or 0) / int(b.get("available") or 0)) if submitted else None
         index, flags = attention_index(slack_share, attendance_rate, completeness)
         out.append(
@@ -283,14 +291,35 @@ def quiet_fellows(
     )
 
 
+#: A session counts as held when its scheduled time has passed **or** somebody
+#: checked in to it. The second half matters: a makeup session, one run early,
+#: or one whose timestamp was corrected later has check-ins against it while
+#: still being "in the future". Counting those check-ins in the numerator but
+#: not the session in the denominator is what produced an attendance rate of
+#: 235%. `report_html.py` has always used this rule; `cohort_attendance` and
+#: `badges.build_evidence` now use the same one, from here, so they cannot
+#: drift apart again.
+SESSION_HELD_SQL = """(
+    s.scheduled_at_utc <= %(now)s
+    or exists (select 1 from checkin c where c.session_id = s.session_id)
+)"""
+
+
 def cohort_attendance(conn: psycopg.Connection, cohort_id: str, *, now: datetime | None = None) -> dict[str, Any]:
-    """Overall attendance for the staff dashboard: attended over (fellows × sessions held)."""
+    """Overall attendance for the staff dashboard: attended over (fellows × sessions held).
+
+    ``rate`` is None when nothing has been held yet, and is never above 1: a
+    fraction over 1 is a bug, not a number, and callers render None as "—"
+    rather than inventing a percentage.
+    """
     now = now or datetime.now(timezone.utc)
     row = fetch_one(
         conn,
         """
         with held as (
-            select count(*) as n from "session" where cohort_id = %s and scheduled_at_utc <= %s
+            select count(*) as n from "session" s where s.cohort_id = %s and """
+        + SESSION_HELD_SQL.replace("%(now)s", "%s")
+        + """
         ), active as (
             select count(*) as n from fellow where cohort_id = %s and status = 'active'
         ), att as (
@@ -299,12 +328,20 @@ def cohort_attendance(conn: psycopg.Connection, cohort_id: str, *, now: datetime
              where cohort_id = %s and fellow_id is not null and status = 'attended'
         )
         select held.n as sessions_held, active.n as active_fellows, att.n as attended,
-               case when held.n * active.n > 0 then round(att.n::numeric / (held.n * active.n), 3) end as rate
+               case when held.n * active.n > 0
+                    then least(round(att.n::numeric / (held.n * active.n), 3), 1)
+               end as rate
           from held, active, att
         """,
         (cohort_id, now, cohort_id, cohort_id),
     ) or {}
-    return {k: (float(v) if k == "rate" and v is not None else v) for k, v in row.items()}
+    out = {k: (float(v) if k == "rate" and v is not None else v) for k, v in row.items()}
+    # Belt and braces: the SQL clamps, and so does this, because the invariant
+    # is worth more than either expression. A rate outside 0..1 must never reach
+    # a staff screen.
+    if out.get("rate") is not None:
+        out["rate"] = min(max(float(out["rate"]), 0.0), 1.0)
+    return out
 
 
 __all__ = [
