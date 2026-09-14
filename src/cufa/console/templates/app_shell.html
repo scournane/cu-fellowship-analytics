@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ title }} · CU check-in console</title>
+  <title>{{ title }} · {{ site }}</title>
   {% for href in css %}<link rel="stylesheet" href="{{ href }}">
   {% endfor %}
   <link rel="icon" href="data:,">
@@ -15,9 +15,10 @@
 <script type="application/json" id="__CUFA_STATE__">{{ state | tojson }}</script>
 {% for src in js %}<script type="module" src="{{ src }}"></script>
 {% endfor %}
+{# The message depends on who the page is for: staff have a command line that
+   does everything the console does, a fellow has Slack. render_spa picks it. #}
 <noscript>
-  <p>This screen needs JavaScript. The same actions are available from the
-     command line — see <code>docs/setup/console.md</code>.</p>
+  <p>{{ noscript }}</p>
 </noscript>
 </body>
 </html>

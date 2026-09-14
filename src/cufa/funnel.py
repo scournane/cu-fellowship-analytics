@@ -60,6 +60,19 @@ def _column(stage: str) -> str:
     return {"accepted": "accepted_at"}.get(stage, f"{stage}_at")
 
 
+def journey(funnel: FellowFunnel) -> list[dict[str, Any]]:
+    """Every stage in order, labelled, with when it was reached or None.
+
+    Here rather than in the caller so that which column holds which stage is
+    known in one place. A screen that worked it out from the stage name got it
+    right for four stages and wrong for ``accepted``.
+    """
+    return [
+        {"stage": stage, "label": STAGE_LABELS[stage], "at": getattr(funnel, _column(stage))}
+        for stage in STAGES
+    ]
+
+
 def fellow_funnel(conn: psycopg.Connection, fellow_id: str) -> FellowFunnel | None:
     row = fetch_one(conn, "select * from v_fellow_funnel where fellow_id = %s", (fellow_id,))
     return _row(row) if row else None
@@ -151,6 +164,7 @@ __all__ = [
     "cohort_funnel",
     "cohort_summary",
     "fellow_funnel",
+    "journey",
     "mark_completed",
     "render_fellow_text",
     "render_text",

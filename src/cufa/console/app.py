@@ -241,10 +241,54 @@ def _spa_assets() -> tuple[list[str], list[str]]:
     return css, js
 
 
+# How a page introduces itself, per frame: what it is called in the tab, and
+# what a reader with JavaScript switched off is told. Staff are in a console
+# and have a command line that does everything it does; a fellow has one page
+# and Slack, and is not in the console at all.
+FRAME_CHROME = {
+    "staff": {
+        "site": "CU check-in console",
+        "noscript": (
+            "This screen needs JavaScript. The same actions are available from "
+            "the command line — see docs/setup/console.md."
+        ),
+    },
+    "fellow": {
+        "site": "Civic Innovators fellowship",
+        "noscript": (
+            "This page needs JavaScript. Everything on it is also in Slack: /me "
+            "for your own record, /reminders and /badges for these settings."
+        ),
+    },
+}
+
+
+# Sign-in is drawn with no frame around it: there is no user yet, so there is
+# no nav to build and nobody to sign out.
+UNFRAMED_SCREENS = {"signin"}
+
+
 def render_spa(
-    request: Request, screen: str, *, status_code: int = 200, title: str, **state: Any
+    request: Request,
+    screen: str,
+    *,
+    status_code: int = 200,
+    title: str,
+    frame: str | None = None,
+    **state: Any,
 ) -> HTMLResponse:
-    """Render a React screen shell, handing it its data as JSON."""
+    """Render a React screen shell, handing it its data as JSON.
+
+    ``frame`` names the frame the bundle draws around the screen, and with it
+    who the page is for. It defaults to the staff console. ``"fellow"`` is a
+    page opened from a signed link by somebody who is not signed in to the
+    console at all, so it is handed the screen's own data and nothing else: who
+    may sign in, which sign-in doors exist and whether Google is faked are
+    staff configuration, and shipping them to a fellow's browser would disclose
+    a staff address list to every person holding a link.
+    """
+    if frame is None:
+        frame = "none" if screen in UNFRAMED_SCREENS else "staff"
     css, js = _spa_assets()
     if not js:
         raise ConfigError(
@@ -257,31 +301,44 @@ def render_spa(
         "screen": screen,
         "title": title,
         "path": request.url.path,
-        "fakeGoogle": settings.fake_google,
-        "devSignin": dev_signin_available(settings),
-        "noAllowlist": not settings.console_allowlist,
-        "allowlist": sorted(settings.console_allowlist),
-        "user": (
-            {
-                "email": user.email,
-                "isDevBypass": user.is_dev_bypass,
-                # Drives whether the nav shows the Help requests link at all. The
-                # server still enforces the gate on every request — this only
-                # stops the console offering a door that would answer 403.
-                "mayReadHelp": may_read_help(user, settings),
-            }
-            if user
-            else None
-        ),
-        **state,
+        "frame": frame,
     }
+    if frame != "fellow":
+        payload.update(
+            {
+                "fakeGoogle": settings.fake_google,
+                "devSignin": dev_signin_available(settings),
+                "noAllowlist": not settings.console_allowlist,
+                "allowlist": sorted(settings.console_allowlist),
+                "user": (
+                    {
+                        "email": user.email,
+                        "isDevBypass": user.is_dev_bypass,
+                        # Drives whether the nav shows the Help requests link at
+                        # all. The server still enforces the gate on every
+                        # request — this only stops the console offering a door
+                        # that would answer 403.
+                        "mayReadHelp": may_read_help(user, settings),
+                    }
+                    if user
+                    else None
+                ),
+            }
+        )
+    payload.update(state)
     # jsonable_encoder is what turns datetimes, UUIDs and the record objects into
     # something json.dumps will take. Markup is a str subclass, so the QR SVG
     # comes through as a string and the screen renders it as markup.
     return templates.TemplateResponse(
         request,
         "app_shell.html",
-        {"title": title, "state": jsonable_encoder(payload), "css": css, "js": js},
+        {
+            "title": title,
+            "state": jsonable_encoder(payload),
+            "css": css,
+            "js": js,
+            **FRAME_CHROME.get(frame, FRAME_CHROME["staff"]),
+        },
         status_code=status_code,
     )
 
@@ -2364,9 +2421,9 @@ __all__ = ["app"]
 
 
 # --------------------------------------------------------------------------
-# the staff dashboard and the fellow's own page — server-rendered, no bundle
+# the staff dashboard and the fellow's own page
 # --------------------------------------------------------------------------
 
 from .dashboard import register as _register_dashboard  # noqa: E402
 
-_register_dashboard(app, templates, require_user)
+_register_dashboard(app, render_spa, require_user)

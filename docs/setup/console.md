@@ -37,10 +37,17 @@ this repo deploys it.
 | `/rotation` | Which question each upcoming week will ask | `cufa rotation` |
 | `/shoutouts` | Names waiting for a human to link | `cufa shoutouts review` / `link` |
 | `/review` | Needs-review queue, AI decisions, unresolved addresses, straight-lining | `cufa review`, `cufa decide` |
+| `/dashboard` | Staff dashboard — attendance, the attention list and its outreach toggle, badges and ranks, assignments and scores, the funnel | `cufa report`, `/leaderboard` and `/score` in Slack |
+| `/dashboard/fellow/{id}` | One fellow as staff see them: the fellow's own page plus aliases, interventions and airtime | `/fellow <name\|id\|email>` in Slack |
 | `/help-requests` | **Access-gated.** Fellows who asked to be checked in with | `cufa help-requests list` / `ack` / `close` |
 
 `/healthz` reports whether the database is reachable, and
 `/sessions/{id}/responses.json` is what the live response counter polls.
+
+`/me/{token}` is the one page here that is **not** a staff screen: it shows one
+fellow their own record, is reached only through the signed, 7-day link the bot
+hands out with `/dashboard` in Slack, and carries none of the console's nav or
+configuration. There is no fellow login.
 
 **`/help-requests` has its own access list**, separate from the sign-in
 allowlist below — being able to use the console does not open it. See
