@@ -135,7 +135,8 @@ def main() -> int:
                 select distinct on (slack_user_id) slack_user_id, poll_choice
                   from slack_event where event_type = 'poll_vote'
                  order by slack_user_id, event_time_utc desc) t group by 1""")
-        check(f"poll counts each person's latest vote once ({', '.join(f'{r['poll_choice']}={r['n']}' for r in latest)})", sum(r["n"] for r in latest) == (votes.get("people") or 0))
+        tally = ", ".join(f"{r['poll_choice']}={r['n']}" for r in latest)
+        check(f"poll counts each person's latest vote once ({tally})", sum(r["n"] for r in latest) == (votes.get("people") or 0))
 
         # 11. The insights never rank received recognition or name emoji users.
         from cufa.slack.insights import emoji_mood, reply_graph

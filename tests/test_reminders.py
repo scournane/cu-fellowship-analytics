@@ -116,7 +116,7 @@ def test_preference_modes_have_deliberately_distinct_cadence():
         "later": (10,),
         "none": (),
     }
-    assert ASSIGNMENT_OFFSETS["all"] == (1440, 60)
+    assert ASSIGNMENT_OFFSETS["all"] == (1440, 60, 10)
     assert ASSIGNMENT_OFFSETS["fewer"] == (1440,)
     assert ASSIGNMENT_OFFSETS["later"] == (60,)
     assert len(NUDGE_OFFSETS["all"]) == 2

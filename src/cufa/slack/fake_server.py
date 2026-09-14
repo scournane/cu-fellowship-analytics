@@ -343,9 +343,15 @@ class FakeSlackHTTPServer:
         text = text or f"sorry if this was covered already — {first}"
         return self.act_qa_ask(user, text)
 
-    def act_mention(self, user: str, channel: str, text: str = "summary") -> dict[str, Any]:
+    def act_bot_mention(self, user: str, channel: str, text: str = "summary") -> dict[str, Any]:
         """``@bot …``. Slack delivers a message event AND an app_mention event
-        for the same post; so does this."""
+        for the same post; so does this.
+
+        Deliberately not ``act_mention``: that one is a fellow mentioning a
+        *peer* in an ordinary message, which is a participation signal rather
+        than a request to the bot. Both once carried the same name, and the
+        later definition shadowed the earlier one, so the "@bot summary" button
+        posted a peer mention and no summary was ever asked for."""
         channel = channel or self.qa_channel
         mention = self.ws.mention_event(user, channel, text)
         as_message = self.ws.message_event(user, channel, mention["text"], ts=mention["ts"])
@@ -521,8 +527,8 @@ class FakeSlackHTTPServer:
             return self.act_qa_accept(user)
         if action == "qa-again":
             return self.act_qa_again(user, text)
-        if action == "mention":
-            return self.act_mention(user, channel, text or "summary")
+        if action == "bot-mention":
+            return self.act_bot_mention(user, channel, text or "summary")
         return {"error": f"unknown action {action}"}
 
     def start_in_thread(self) -> "FakeSlackHTTPServer":
@@ -622,7 +628,7 @@ UI_PAGE = """<!doctype html>
       <button onclick="qa('qa-answer')">Answer it (in thread)</button>
       <button onclick="qa('qa-accept')">Mark the answer ✅</button>
       <button class="warn" onclick="qa('qa-again')">Ask the first question again</button>
-      <button onclick="qa('mention')">@bot summary</button>
+      <button onclick="qa('bot-mention')">@bot summary</button>
     </div>
     <p class="hint">Ask, answer, then <b>ask the first question again</b>: the bot replies in the new thread pointing at the earlier answer. <b>@bot summary</b> posts the session's Q&amp;A digest for the teacher. Both appear under "What the bot posted". The person selected above is the one acting.</p>
   </div>

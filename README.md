@@ -468,7 +468,7 @@ because a plausible-looking guess in any of them quietly becomes the policy.
 | [`docs/setup/slack-bot.md`](docs/setup/slack-bot.md) | The Slack bot: app setup, scopes, every command, the tick, the dashboards, aliases, Zoom transcripts, retention, the funnel |
 | [`docs/safeguarding.md`](docs/safeguarding.md) | The help-request path — **written for CU staff, not engineers** |
 | [`docs/google-api-traps.md`](docs/google-api-traps.md) | The five traps — **read this before touching the Google code** |
-| [`docs/decisions.md`](docs/decisions.md) | 28 ADRs: what was decided, what was rejected, and why |
+| [`docs/decisions.md`](docs/decisions.md) | 36 ADRs: what was decided, what was rejected, and why |
 
 ---
 

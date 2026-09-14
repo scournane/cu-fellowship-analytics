@@ -336,9 +336,10 @@ cufa assignment list --cohort cu-2026
 ```
 
 With the default `all` preference, session DMs go at 24 hours, 1 hour, and 10
-minutes and always include the Zoom link. Assignment DMs go at 24 hours and 1
-hour. The weekly digest goes Monday at 09:00 local time and includes this
-week's sessions, due work, and recently changed sessions or assignments.
+minutes and always include the Zoom link. Assignment DMs go at the same three
+offsets and carry the assignment link. The weekly digest goes Monday at 09:00
+local time and includes this week's sessions, due work, and recently changed
+sessions or assignments.
 
 Each fellow controls all personal delivery from Slack:
 

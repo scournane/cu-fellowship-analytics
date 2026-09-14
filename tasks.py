@@ -928,7 +928,7 @@ def task_demo_slack_batch() -> int:
         if pointers:
             print("    " + pointers[-1]["text"].splitlines()[0])
         banner("3c. the teacher asks for the session's Q&A summary")
-        _ui("mention", {"user": people[0], "channel": general, "text": "summary"})
+        _ui("bot-mention", {"user": people[0], "channel": general, "text": "summary"})
         posted = _ui_state()["posted"]
         summaries = [p for p in posted if p["text"].startswith("*Q&A summary")]
         print(f"  bot posted a summary in the thread: {'yes' if summaries else 'NO'}")
