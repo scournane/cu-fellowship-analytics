@@ -3,14 +3,28 @@ import {Banner} from '@astryxdesign/core/Banner'
 import {Button} from '@astryxdesign/core/Button'
 import {Card} from '@astryxdesign/core/Card'
 import {Divider} from '@astryxdesign/core/Divider'
+import {DropdownMenu} from '@astryxdesign/core/DropdownMenu'
 import {Heading} from '@astryxdesign/core/Heading'
 import {Layout, LayoutContent} from '@astryxdesign/core/Layout'
+import {OverflowList} from '@astryxdesign/core/OverflowList'
 import {Stack} from '@astryxdesign/core/Stack'
 import {Text} from '@astryxdesign/core/Text'
 import {TextInput} from '@astryxdesign/core/TextInput'
 import {Token} from '@astryxdesign/core/Token'
 import {TopNav, TopNavHeading, TopNavItem} from '@astryxdesign/core/TopNav'
+import {colorVars} from '@astryxdesign/core/theme/tokens.stylex'
+import * as stylex from '@stylexjs/stylex'
 import {useState} from 'react'
+
+// The one style this file sets by hand, and it sets it from a token.
+// Section headings are green in the theme's own words — the colour it
+// calls progress — but a Heading's colour comes from the component's own
+// StyleX class, which lands in a later cascade layer than any theme rule
+// can reach. `xstyle` is the documented way through, and it carries the
+// token rather than a hex, so the theme still owns the value.
+const styles = stylex.create({
+  sectionHeading: {color: colorVars['--color-accent']},
+})
 
 export const NAV = [
   // 'Google' rather than 'Connect Google': ten items is what fits across a
@@ -88,6 +102,10 @@ export function AppFrame({user, path = '/', fakeGoogle, noAllowlist, children}) 
     )
   }
 
+  // Only the screens this user may open. The server enforces the gate on every
+  // request regardless; this stops the console offering a door that answers 403.
+  const items = user ? NAV.filter((item) => !item.requiresHelpAccess || user.mayReadHelp) : []
+
   const nav = (
     <TopNav
       label="Main"
@@ -104,16 +122,37 @@ export function AppFrame({user, path = '/', fakeGoogle, noAllowlist, children}) 
         ) : null
       }
     >
-      {user
-        ? NAV.filter((item) => !item.requiresHelpAccess || user.mayReadHelp).map((item) => (
+      {/* Ten uppercase labels do not fit across a laptop, and a nav that wraps
+          onto the account block is worse than one that admits it ran out of
+          room. Whatever does not fit moves into a menu at the end. */}
+      {items.length ? (
+        <OverflowList
+          gap={1}
+          minVisibleItems={1}
+          behavior="observeParent"
+          overflowRenderer={(overflow) => (
+            <DropdownMenu
+              alignment="end"
+              button={{label: `+${overflow.length}`, variant: 'ghost', size: 'sm'}}
+              items={overflow.map(({index}) => ({
+                label: items[index].label,
+                onClick: () => {
+                  window.location.href = items[index].href
+                },
+              }))}
+            />
+          )}
+        >
+          {items.map((item) => (
             <TopNavItem
               key={item.href}
               href={item.href}
               label={item.label}
               isSelected={item.match(path)}
             />
-          ))
-        : null}
+          ))}
+        </OverflowList>
+      ) : null}
     </TopNav>
   )
 
@@ -215,7 +254,7 @@ export function FellowFrame({children}) {
 export function Region({title, description, children}) {
   return (
     <Stack gap={2}>
-      <Heading level={2}>{title}</Heading>
+      <Heading level={2} xstyle={styles.sectionHeading}>{title}</Heading>
       {description ? <Text type="supporting">{description}</Text> : null}
       {children}
     </Stack>

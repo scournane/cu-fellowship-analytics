@@ -40,3 +40,6 @@ out/
 # Bot runtime: live log, pid file and launcher. The log carries raw email
 # addresses at CUFA_LOG_LEVEL=DEBUG, so it must never reach git.
 run/
+
+# Scratch output from `npx astryx template/theme add`
+frontend/.astryx-tmp/

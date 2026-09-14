@@ -1,10 +1,15 @@
 import './layers.css'
 import '@astryxdesign/core/reset.css'
-import '@astryxdesign/theme-neutral/theme.css'
+// Bundled from node_modules, not fetched from a CDN: the console has to render
+// the same on a laptop with no network as on one with.
+import '@fontsource-variable/nunito'
+import '@fontsource-variable/nunito-sans'
 
-import {neutralTheme} from '@astryxdesign/theme-neutral/built'
 import {Theme} from '@astryxdesign/core/theme'
 import {createRoot} from 'react-dom/client'
+
+import {classroomTheme} from './theme/classroom.js'
+import './theme/classroom.css'
 
 import {AppFrame, FellowFrame} from './AppFrame.jsx'
 import {AssignmentForm} from './AssignmentForm.jsx'
@@ -71,8 +76,10 @@ const mount = document.getElementById('root')
 if (Screen && mount) {
   const screen = <Screen {...state} />
   const Frame = state.frame in FRAMES ? FRAMES[state.frame] : AppFrame
+  // Pinned to light: the theme is a light design, and a dark scheme derived
+  // from it would be a different design rather than this one after dark.
   createRoot(mount).render(
-    <Theme theme={neutralTheme}>
+    <Theme theme={classroomTheme} mode="light">
       {Frame ? (
         <Frame
           user={state.user}

@@ -22,7 +22,15 @@ export default defineConfig({
       input: resolve(here, 'src/main.jsx'),
       output: {
         entryFileNames: 'console.js',
-        assetFileNames: 'styles[extname]',
+        // The stylesheet keeps a name the server can find by globbing the
+        // output directory (see console.app._spa_assets). Everything else the
+        // bundle pulls in — the two bundled font files — goes to assets/ under
+        // its own name, rather than being handed the stylesheet's and taking a
+        // numeric suffix to avoid the collision.
+        assetFileNames: (asset) => {
+          const name = asset.names?.[0] ?? asset.name ?? ''
+          return name.endsWith('.css') ? 'styles[extname]' : 'assets/[name]-[hash][extname]'
+        },
       },
     },
   },
