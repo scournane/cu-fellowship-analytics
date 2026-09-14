@@ -31,6 +31,8 @@
 import {defineTheme} from '@astryxdesign/core/theme'
 import {neutralTheme} from '@astryxdesign/theme-neutral'
 
+import {classroomIcons} from './icons.js'
+
 // Straight from the reference's token table.
 const PAPER_WHITE = '#ffffff'
 const EAGER_GREEN = '#58cc02'
@@ -347,4 +349,8 @@ export const classroomTheme = defineTheme({
     'progressbar-track': {base: {backgroundColor: RULE_GRAY, borderRadius: '9999px'}},
     'progressbar-fill': {base: {backgroundColor: EAGER_GREEN, borderRadius: '9999px'}},
   },
+
+  // Every semantic name the design system looks up, drawn from one set —
+  // see icons.js for why Lucide and what each name maps to.
+  icons: classroomIcons,
 })

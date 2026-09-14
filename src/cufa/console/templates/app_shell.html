@@ -6,7 +6,15 @@
   <title>{{ title }} · {{ site }}</title>
   {% for href in css %}<link rel="stylesheet" href="{{ href }}">
   {% endfor %}
-  <link rel="icon" href="data:,">
+  {# The mark — "Ding", the check-in bell, from assets/logo — committed under
+     static/brand/ and served by this app, so the tab icon arrives the same way
+     the stylesheet and the fonts do and the page still needs no network.
+     The SVG is the mark itself and scales to whatever the browser asks for;
+     ding-32.png is the fallback for browsers that do not take an SVG icon, and
+     ding-180.png is what iOS uses when the console is saved to a home screen. #}
+  <link rel="icon" type="image/svg+xml" href="/static/brand/ding.svg">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/brand/ding-32.png">
+  <link rel="apple-touch-icon" href="/static/brand/ding-180.png">
 </head>
 <body>
 <div id="root"></div>

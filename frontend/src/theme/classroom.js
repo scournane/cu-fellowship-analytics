@@ -6,6 +6,7 @@
  * Core: @astryxdesign/core@0.4.7
  */
 
+import { classroomIcons } from './icons.js';
 /**
  * classroom theme — built by `npx astryx theme build`
  * Import the CSS file alongside this module:
@@ -580,5 +581,7 @@ export const classroomTheme = {
       "--color-accent": "var(--color-on-light)"
     }
   },
-
+  icons: classroomIcons,
 };
+
+export { classroomIcons };

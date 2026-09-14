@@ -13,6 +13,8 @@ import {Token} from '@astryxdesign/core/Token'
 import {TopNav, TopNavHeading} from '@astryxdesign/core/TopNav'
 import {colorVars} from '@astryxdesign/core/theme/tokens.stylex'
 import * as stylex from '@stylexjs/stylex'
+
+import {navIcons} from './theme/icons.js'
 import {useState} from 'react'
 
 // The one style this file sets by hand, and it sets it from a token.
@@ -32,23 +34,24 @@ const styles = stylex.create({
  *  out of step with the items. Screens that want only the destinations
  *  (Simple.jsx) still get a flat array. */
 export const NAV = [
-  {href: '/', label: 'Connect Google', section: 'Set up', match: (p) => p === '/'},
-  {href: '/template', label: 'Templates', section: 'Set up', match: (p) => p.startsWith('/template')},
-  {href: '/sessions', label: 'Sessions', section: 'Cohort', match: (p) => p.startsWith('/sessions')},
-  {href: '/dashboard', label: 'Dashboard', section: 'Cohort', match: (p) => p.startsWith('/dashboard')},
-  {href: '/assignments', label: 'Assignments', section: 'Cohort', match: (p) => p.startsWith('/assignments')},
-  {href: '/roster', label: 'Roster', section: 'Cohort', match: (p) => p.startsWith('/roster')},
-  {href: '/rotation', label: 'Rotation', section: 'Cohort', match: (p) => p.startsWith('/rotation')},
+  {href: '/', label: 'Connect Google', section: 'Set up', icon: navIcons.connect, match: (p) => p === '/'},
+  {href: '/template', label: 'Templates', section: 'Set up', icon: navIcons.templates, match: (p) => p.startsWith('/template')},
+  {href: '/sessions', label: 'Sessions', section: 'Cohort', icon: navIcons.sessions, match: (p) => p.startsWith('/sessions')},
+  {href: '/dashboard', label: 'Dashboard', section: 'Cohort', icon: navIcons.dashboard, match: (p) => p.startsWith('/dashboard')},
+  {href: '/assignments', label: 'Assignments', section: 'Cohort', icon: navIcons.assignments, match: (p) => p.startsWith('/assignments')},
+  {href: '/roster', label: 'Roster', section: 'Cohort', icon: navIcons.roster, match: (p) => p.startsWith('/roster')},
+  {href: '/rotation', label: 'Rotation', section: 'Cohort', icon: navIcons.rotation, match: (p) => p.startsWith('/rotation')},
   // All three hold something waiting on a staff decision, which is why they
   // group: a queue is a different kind of errand from a screen you visit.
-  {href: '/shoutouts', label: 'Shoutouts', section: 'Queues', match: (p) => p.startsWith('/shoutouts')},
-  {href: '/review', label: 'Review', section: 'Queues', match: (p) => p.startsWith('/review')},
+  {href: '/shoutouts', label: 'Shoutouts', section: 'Queues', icon: navIcons.shoutouts, match: (p) => p.startsWith('/shoutouts')},
+  {href: '/review', label: 'Review', section: 'Queues', icon: navIcons.review, match: (p) => p.startsWith('/review')},
   // Only shown to the people allowed to open it. The server enforces the gate
   // regardless — this just stops the console offering a door that answers 403.
   {
     href: '/help-requests',
     label: 'Help requests',
     section: 'Queues',
+    icon: navIcons.helpRequests,
     match: (p) => p.startsWith('/help-requests'),
     requiresHelpAccess: true,
   },
@@ -154,6 +157,7 @@ export function AppFrame({user, path = '/', fakeGoogle, noAllowlist, children}) 
                   key={item.href}
                   href={item.href}
                   label={item.label}
+                  icon={item.icon}
                   isSelected={item.match(path)}
                 />
               ))}

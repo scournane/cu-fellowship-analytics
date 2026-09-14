@@ -8,4 +8,6 @@
 
 /// <reference path="./classroom.variants.d.ts" />
 import type { DefinedTheme } from '@astryxdesign/core/theme';
+import type { IconRegistry } from '@astryxdesign/core/Icon';
+export declare const classroomIcons: IconRegistry;
 export declare const classroomTheme: DefinedTheme;
