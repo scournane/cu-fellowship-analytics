@@ -382,7 +382,7 @@ def _run(db, fake, settings, command, text="", user="US"):
 
 def test_staff_commands_are_refused_to_fellows(db, workspace, settings):
     sync_all(db, workspace)
-    for command in ("/report", "/fellow", "/attendance", "/leaderboard", "/assignment", "/zoom", "/alias", "/link", "/alerts", "/outreach", "/score", "/digest", "/sync"):
+    for command in ("/report", "/fellow", "/attendance", "/leaderboard", "/assignment", "/zoom", "/alias", "/link", "/alerts", "/outreach", "/score", "/digest", "/sync", "/admin-dashboard"):
         assert "staff command" in _run(db, workspace, settings, command, "x", user="U1"), command
     assert "staff command" not in _run(db, workspace, settings, "/report")
     assert "Staff" in _run(db, workspace, settings, "/help") and "Staff" not in _run(db, workspace, settings, "/help", user="U1")
@@ -445,6 +445,15 @@ def test_attendance_report_and_dashboard_commands(db, workspace, settings):
     assert "/me/" in link
     unknown = _run(db, workspace, settings, "/whatever")
     assert "don't know" in unknown
+
+
+def test_admin_dashboard_gives_the_address_and_never_the_password(db, workspace, settings):
+    """Staff get the console link over Slack. The shared password does not travel
+    this way: a DM is searchable, exportable and forwardable."""
+    sync_all(db, workspace)
+    reply = _run(db, workspace, settings, "/admin-dashboard")
+    assert settings.public_base_url.rstrip("/") + "/dashboard" in reply
+    assert (settings.console_password or "no-password-configured") not in reply
 
 
 def test_unlinked_fellow_gets_a_plain_answer_not_a_traceback(db, workspace, settings):

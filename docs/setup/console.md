@@ -62,10 +62,39 @@ CUFA_CONSOLE_SECRET=<a long random string>
 CUFA_HELP_ALLOWLIST=alice@civicsunplugged.org
 ```
 
-There is deliberately no password system. Passwords for an internal tool used by
-three people are an account-recovery problem and a credential-storage problem in
-exchange for nothing — the staff already have Google accounts, and the app
-already needs Google.
+Google is the door to prefer, because it is the only one that records *who*
+opened a fellow's page. Passwords for an internal tool used by three people are
+an account-recovery problem and a credential-storage problem, and the staff
+already have Google accounts.
+
+### The shared password, when Google is not an option
+
+A hosted deployment may have no Google OAuth client — the redirect URI has to be
+registered, and until it is, nobody can sign in at all. For that case there is
+one shared password:
+
+```
+CUFA_CONSOLE_PASSWORD=<a passphrase>
+```
+
+Blank, and the door does not exist: the sign-in screen does not draw the field
+and `POST /signin/password` answers 403 to everything, including an empty guess.
+Set, and anyone holding it gets a session — as `shared-password@console.local`,
+an address that is not a mailbox and is on no allowlist. That last part is
+load-bearing: `/help-requests` is gated on the **email** allowlist, so the shared
+password never opens it. A secret everyone knows cannot say who read a
+safeguarding record, so it does not get to read one.
+
+To rotate or revoke: change the line, or delete it. The password is re-checked on
+every request, so clearing it signs out everyone it let in, immediately — it does
+not wait for their cookies to expire.
+
+Nothing rate-limits the guesses beyond whatever is in front of the console. Use
+Google where Google is available.
+
+`/admin-dashboard` in Slack hands staff the console address. It never sends the
+password: a Slack message is searchable, exportable and forwardable, so whoever
+runs the install passes the password along some other way.
 
 `CUFA_CONSOLE_SECRET` signs the session cookie. Change it from the default; a
 known signing key means anyone can mint a session.

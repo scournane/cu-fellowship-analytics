@@ -137,6 +137,7 @@ end-to-end through Slack.
 | `/digest` | ✅ | Refuses clearly when no staff channel: *"⚠️ No staff channel the bot can find. Set CUFA_SLACK_STAFF_CHANNEL … and invite the bot to it."* |
 | `/sync` | ✅ | Reports users/channels/messages read and written |
 | **Non-admin refused a staff command** | ✅ | `⛔ /fellow is a staff command. Ask a workspace admin, or have your address added to CUFA_SLACK_ADMINS.` |
+| `/admin-dashboard` (added this run) | ✅ | Registered in the real app via `apps.manifest.update`; replies with the console URL and deliberately **not** the site password |
 
 ---
 
@@ -266,6 +267,30 @@ passes its acceptance checks and has never worked against Slack.
 **Fix:** `f"{POLL_ACTION_ID}:{i}"` per button. `parse_interaction` already
 resolves the poll from `block_id` and the option from `value`, so it only needs
 to match the action_id by prefix.
+
+---
+
+## Getting into the staff console (added this run)
+
+The hosted console had no working door: no Google client is registered for the
+Vercel origin, and the dev bypass is off whenever an allowlist exists. So one
+shared password was added, on purpose kept weaker and narrower than Google.
+
+| Feature | Result | Proof |
+|---|---|---|
+| Password door absent unless configured | ✅ | `passwordSignin: false`; `POST /signin/password` 403s, empty guess included |
+| Right password signs in (production) | ✅ | `303 → /dashboard`, then `200` with real cohort data |
+| Wrong password does not | ✅ | `403`, no cookie, screens still closed |
+| **Shared password never opens `/help-requests`** | ✅ | `403` on production with a valid password session, while `/dashboard` stays `200`. The session's identity is on no allowlist by construction |
+| Clearing the password signs everyone out | ✅ | Re-checked on every request, not at cookie expiry |
+| Constant-time comparison | ✅ | `hmac.compare_digest` |
+| `/admin-dashboard` hands staff the link | ✅ | Registered in Slack; staff-only; carries the URL and not the password |
+
+Known weakness, stated rather than buried: everyone who uses this password signs
+in as the same nobody, so nothing records *who* looked at a fellow's page, and
+nothing rate-limits guessing beyond the host. Registering a Google OAuth client
+for the deployed origin is the fix; this is the stopgap that makes the dashboard
+reachable meanwhile.
 
 ---
 

@@ -246,6 +246,75 @@ def test_removing_someone_from_the_allowlist_ends_their_session(
         reset_settings_cache()
 
 
+# --------------------------------------------------------------------------
+# the shared-password door
+# --------------------------------------------------------------------------
+
+SITE_PASSWORD = "correct-horse-battery-staple"
+
+
+@pytest.fixture
+def password_configured(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("CUFA_CONSOLE_PASSWORD", SITE_PASSWORD)
+    reset_settings_cache()
+    yield
+    monkeypatch.undo()
+    reset_settings_cache()
+
+
+def test_password_door_is_shut_unless_one_is_configured(client: TestClient) -> None:
+    """No CUFA_CONSOLE_PASSWORD, no door — not even an empty one that matches ''."""
+    assert boot_state(client.get("/signin"))["passwordSignin"] is False
+    assert client.post("/signin/password", data={"password": "", "next": "/"}).status_code == 403
+    assert client.get("/sessions").status_code == 303
+
+
+def test_the_right_password_opens_the_console(client: TestClient, password_configured) -> None:
+    assert boot_state(client.get("/signin"))["passwordSignin"] is True
+    response = client.post("/signin/password", data={"password": SITE_PASSWORD, "next": "/"})
+    assert response.status_code == 303
+    assert client.get("/sessions").status_code == 200
+
+
+def test_a_wrong_password_opens_nothing(client: TestClient, password_configured) -> None:
+    response = client.post(
+        "/signin/password", data={"password": SITE_PASSWORD + "x", "next": "/"}
+    )
+    assert response.status_code == 403
+    assert client.get("/sessions").status_code == 303
+
+
+def test_clearing_the_password_ends_the_sessions_it_issued(
+    client: TestClient, password_configured, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rotating the secret has to log people out now, not when their cookie ages out."""
+    assert client.post(
+        "/signin/password", data={"password": SITE_PASSWORD, "next": "/"}
+    ).status_code == 303
+    assert client.get("/sessions").status_code == 200
+
+    monkeypatch.setenv("CUFA_CONSOLE_PASSWORD", "")
+    reset_settings_cache()
+    try:
+        assert client.get("/sessions").status_code == 303
+    finally:
+        monkeypatch.undo()
+        reset_settings_cache()
+
+
+def test_the_shared_password_does_not_open_help_requests(
+    client: TestClient, password_configured
+) -> None:
+    """The whole point of keeping the email allowlist: a shared secret cannot
+    say who read a safeguarding record, so it does not get to read one."""
+    assert client.post(
+        "/signin/password", data={"password": SITE_PASSWORD, "next": "/"}
+    ).status_code == 303
+    response = client.get("/help-requests")
+    assert response.status_code == 403, response.status_code
+    assert client.get("/sessions").status_code == 200  # and nothing else was revoked
+
+
 def test_signout_clears_the_session(signed_in: TestClient) -> None:
     assert signed_in.post("/signout").status_code == 303
     assert signed_in.get("/sessions").status_code == 303

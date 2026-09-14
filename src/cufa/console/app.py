@@ -109,6 +109,7 @@ from ..timeutil import TimezoneError, get_zone
 from ..urls import optional_http_url
 from .auth import (
     COOKIE_NAME,
+    PASSWORD_IDENTITY,
     NotPermitted,
     PKCE_COOKIE_NAME,
     SESSION_MAX_AGE,
@@ -118,6 +119,8 @@ from .auth import (
     dev_signin_available,
     is_allowed,
     issue_session,
+    password_matches,
+    password_signin_available,
     read_code_verifier,
     read_session,
     read_state,
@@ -259,12 +262,14 @@ def render_spa(
         "path": request.url.path,
         "fakeGoogle": settings.fake_google,
         "devSignin": dev_signin_available(settings),
+        "passwordSignin": password_signin_available(settings),
         "noAllowlist": not settings.console_allowlist,
         "allowlist": sorted(settings.console_allowlist),
         "user": (
             {
                 "email": user.email,
                 "isDevBypass": user.is_dev_bypass,
+                "isSharedPassword": user.is_shared_password,
                 # Drives whether the nav shows the Help requests link at all. The
                 # server still enforces the gate on every request — this only
                 # stops the console offering a door that would answer 403.
@@ -399,6 +404,42 @@ def signin_dev(
     response = RedirectResponse(next or "/", status_code=303)
     _set_session_cookie(response, settings, user)
     log.info("console sign-in via dev bypass user=%s", user.masked_email)
+    return response
+
+
+@app.post("/signin/password")
+def signin_password(
+    request: Request, password: str = Form(""), next: str = Form("/")
+) -> Response:
+    """The shared-password door, for installs with no Google client configured.
+
+    Every wrong guess answers the same way and takes the same time to do it, so
+    the form says nothing about whether a password is even configured beyond
+    what the page already showed — an empty field included, which is why
+    ``password`` is optional here rather than a 422 that would answer
+    differently. Nothing rate-limits this beyond the host, which is the honest
+    reason to prefer Google where Google is available.
+    """
+    settings = get_settings()
+    if not password_signin_available(settings) or not password_matches(settings, password):
+        log.warning("console sign-in refused: shared password did not match")
+        return render_spa(
+            request,
+            "signin",
+            status_code=403,
+            title="Sign in",
+            nextPath=next,
+            googleReady=bool(settings.google_client_id and settings.google_client_secret),
+            error=(
+                "That password is not right. It is the one set as "
+                "CUFA_CONSOLE_PASSWORD on this install — ask whoever runs it."
+            ),
+        )
+
+    user = ConsoleUser(email=PASSWORD_IDENTITY, via="password")
+    response = RedirectResponse(next or "/", status_code=303)
+    _set_session_cookie(response, settings, user)
+    log.info("console sign-in via shared password")
     return response
 
 

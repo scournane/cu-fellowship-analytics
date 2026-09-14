@@ -170,3 +170,42 @@ select max(received_at) from slack_event;
 
 Plus: a `slack_bot` row in `load_run` still `running` with no newer run means
 the bot died without stopping cleanly.
+
+## 8 · Getting into the staff console
+
+The console has three doors, in descending order of how much you should like
+them.
+
+1. **Google.** The only one that records *who* opened a fellow's page. Needs
+   `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` and the origin registered as a
+   redirect URI. Address must be on `CUFA_CONSOLE_ALLOWLIST`.
+2. **One shared site password.** `CUFA_CONSOLE_PASSWORD=<passphrase>`. Set it
+   and the sign-in page grows a password field; leave it blank and the door does
+   not exist. Everyone who uses it signs in as the same nobody, so it never
+   opens `/help-requests` — that stays on the email allowlist.
+3. **Dev bypass.** Only when `CUFA_FAKE_GOOGLE=1` or no allowlist is set. Not
+   for anything reachable from a network.
+
+The deployed instance
+(`https://vercel-deploy-scournane-7328.vercel.app`) is on door 2, because no
+Google client is registered for that origin yet.
+
+**To rotate or revoke the password:** change or delete
+`CUFA_CONSOLE_PASSWORD` and redeploy. It is re-read on every request, so
+everyone it let in is signed out on their next click. On Vercel:
+
+```bash
+curl -X POST "https://api.vercel.com/v10/projects/<project_id>/env?upsert=true" \
+  -H "Authorization: Bearer $VERCEL_TOKEN" -H "Content-Type: application/json" \
+  -d '{"key":"CUFA_CONSOLE_PASSWORD","value":"<new>","type":"encrypted",
+       "target":["production","preview","development"]}'
+vercel deploy --prod
+```
+
+**`/admin-dashboard`** in Slack replies with the console address, to staff only.
+It never sends the password — a Slack message is searchable, exportable and
+forwardable, so the password travels some other way.
+
+**What this costs you:** no record of who read what, and no rate limit on
+guessing beyond whatever is in front of the console. Register a Google OAuth
+client for the deployed origin when there is time, and unset the password.

@@ -131,6 +131,8 @@ features:
       description: "Staff: post the weekly digest now"
     - command: /sync
       description: "Staff: pull Slack now"
+    - command: /admin-dashboard
+      description: "Staff: the link to the staff console"
 oauth_config:
   scopes:
     bot:

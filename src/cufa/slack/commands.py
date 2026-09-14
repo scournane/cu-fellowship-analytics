@@ -198,6 +198,7 @@ def cmd_help(conn, client, ctx: Context, args: list[str]) -> Reply:
             "`/link <@user> <fellow>` — attach a Slack account to a roster record",
             "`/alerts` · `/alerts resolve <@user> staff|ignored` — accounts that joined but are not on the roster",
             "`/digest` — post the weekly digest now · `/sync` — pull Slack now",
+            "`/admin-dashboard` — the staff console link",
         ]
     return Reply("\n".join(lines))
 
@@ -271,6 +272,28 @@ def cmd_dashboard(conn, client, ctx: Context, args: list[str]) -> Reply:
         return Reply("Your Slack account is not linked to the roster yet. A staff member can fix that with `/link`.")
     url = fellow_dashboard_url(ctx.settings, ctx.caller.fellow_id)
     return Reply(f"Your dashboard (private link, valid for 7 days): {url}")
+
+
+def cmd_admin_dashboard(conn, client, ctx: Context, args: list[str]) -> Reply:
+    """`/admin-dashboard` — where the staff console lives, for staff only.
+
+    Deliberately only the address. The password is not sent through Slack: a
+    Slack message is searchable, exportable and forwardable, and a secret that
+    everyone shares is exactly the kind that should not be lying in a DM
+    history. Whoever runs the install tells people the password another way.
+    """
+    base = (ctx.settings.public_base_url or "").rstrip("/")
+    if not base:
+        return Reply(
+            "No console address is configured on this install. Whoever runs it "
+            "needs to set `CUFA_PUBLIC_BASE_URL` in `.env` to where the console "
+            "is reachable, then restart the bot."
+        )
+    return Reply(
+        f"*Staff dashboard:* {base}/dashboard\n"
+        "Sign in with Google if it is configured here, or with the site password. "
+        "The password is not sent over Slack — ask whoever runs this install for it."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -515,6 +538,7 @@ HANDLERS: dict[str, Handler] = {
     # /mystats. "me" stays mapped for the offline driver and older installs.
     "mystats": cmd_mystats_alias,
     "dashboard": cmd_dashboard,
+    "admin-dashboard": cmd_admin_dashboard,
     "attendance": cmd_attendance,
     "fellow": cmd_fellow,
     "report": cmd_report,

@@ -33,6 +33,7 @@ ADMIN_COMMANDS = frozenset(
         "digest",
         "sync",
         "score",
+        "admin-dashboard",
     }
 )
 

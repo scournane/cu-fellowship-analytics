@@ -34,6 +34,12 @@ class Settings:
     encryption_key: str | None = None
 
     console_allowlist: tuple[str, ...] = ()
+    #: Shared password for the console, for installs with no Google OAuth client.
+    #: Weaker than per-person Google sign-in on purpose and by nature: everyone
+    #: who signs in this way is indistinguishable in the log, so it is a
+    #: self-hosted/testing door, not a substitute for identity on a real cohort.
+    #: Empty (the default) leaves the door closed entirely.
+    console_password: str = ""
     #: Who may open the help-requests screen. A SUBSET of console_allowlist, and
     #: deliberately a separate list: the general console allowlist is "CU staff
     #: who run lessons", and a record that a young person asked to be contacted
@@ -179,6 +185,7 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         database_url=env.get("CUFA_DATABASE_URL") or DEFAULT_DSN,
         encryption_key=(env.get("CUFA_ENCRYPTION_KEY") or "").strip() or None,
         console_allowlist=allowlist,
+        console_password=(env.get("CUFA_CONSOLE_PASSWORD") or "").strip(),
         help_allowlist=help_allowlist,
         console_secret=env.get("CUFA_CONSOLE_SECRET") or "dev-insecure-secret",
         console_host=env.get("CUFA_CONSOLE_HOST") or "127.0.0.1",

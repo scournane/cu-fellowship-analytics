@@ -210,3 +210,63 @@ for the Slack rows, then the Part A/B pipeline with the reset step stubbed out
 
 **Invariant violated:** 5.2's sibling — the *overall* attendance rate — is not
 bounded. `/report` and `/dashboard` both printed **235%**. Written up as F-03.
+
+---
+
+## Phase 7 · Getting into the staff dashboard from Slack
+
+The deployed console at `vercel-deploy-scournane-7328.vercel.app` had no way in:
+no Google OAuth client is configured for that origin, so `googleReady` was
+`false`, and `devSignin` was `false` too because an allowlist *is* set. Both
+doors shut. Samson asked for a site password and a `/admin-dashboard` command
+rather than standing up Google OAuth.
+
+### What was built
+
+* `CUFA_CONSOLE_PASSWORD` — one shared password for the whole console. Blank
+  (the default, and what `.env.example` ships) means the door does not exist.
+* `POST /signin/password` — mints the same signed session cookie the other two
+  doors do, carrying `via="password"` and the identity
+  `shared-password@console.local`.
+* The sign-in screen grows a password card when, and only when, the server says
+  `passwordSignin: true`.
+* `/admin-dashboard` — a staff-only slash command that replies with the console
+  address. It does **not** send the password.
+
+### The deliberate limits
+
+A shared password cannot say *who* signed in. So the session it issues is
+identified as an address that is on no allowlist, which means `/help-requests`
+— the safeguarding screen — stays shut to it. That is checked, not assumed
+(5 tests below). Rotation is the same lever as revocation: `read_session`
+re-reads the setting on every request, so clearing the variable ends every
+session it issued on the next click rather than when cookies age out.
+
+Nothing rate-limits guesses beyond the host. Said so in `docs/setup/console.md`
+and in the code, rather than leaving it to be discovered.
+
+### Checks
+
+| # | Check | Expected | Actual | Result |
+|---|---|---|---|---|
+| 7.1 | `passwordSignin` false with no password set | door absent | boot state `passwordSignin: false` | PASS |
+| 7.2 | `POST /signin/password` with the door shut | 403, no cookie | 403, no session, screens still closed | PASS |
+| 7.3 | empty password field | same 403, not a 422 | `Form("")` so an empty guess is answered identically | PASS |
+| 7.4 | wrong password (live, production) | 403 | 403 | PASS |
+| 7.5 | right password (live, production) | 303 → `/dashboard` | `303 → .../dashboard` | PASS |
+| 7.6 | `/dashboard` with that cookie (live) | 200, real data | 200 — 3 fellows, attention index, badges, leaderboards | PASS |
+| 7.7 | **`/help-requests` with that cookie (live)** | **403** | **403** | **PASS** |
+| 7.8 | clearing `CUFA_CONSOLE_PASSWORD` mid-session | signed out now | next request 303s to `/signin` | PASS |
+| 7.9 | constant-time comparison | `hmac.compare_digest` | yes; no early return on length | PASS |
+| 7.10 | `/admin-dashboard` registered with Slack | in the manifest | `apps.manifest.update` ok, export shows 21 commands incl. `/admin-dashboard`; Slack autocomplete offers it | PASS |
+| 7.11 | `/admin-dashboard` is staff-only | fellows refused | added to `ADMIN_COMMANDS`; the "staff command" test covers it | PASS |
+| 7.12 | the reply carries the URL and not the password | URL only | asserted in `test_admin_dashboard_gives_the_address_and_never_the_password` | PASS |
+| 7.13 | handler against the real database | real URL | `cufa slack cmd admin-dashboard --as U0BSA4CLU0P` → the live Vercel URL | PASS |
+| 7.14 | slash commands still reach the running bot | yes | `/sync` from Slack produced an off-cycle `channels=5 messages_read=2` sync line at 19:10:2x, distinct from the 60s tick's `channels=0` | PASS |
+| 7.15 | full suite | green | **606 passed**, 1 failure — F-13's `test_doctor_checks_the_qa_channels`, unrelated | PASS |
+
+**Not proved:** the rendered ephemeral reply to `/admin-dashboard` in the Slack
+client. The browser tab was backgrounded (`document.visibilityState: "hidden"`),
+so Slack's virtual message list stopped painting and no reply text could be read
+out of the DOM — including for `/alerts`, which 7.14's method shows *did* run.
+Every link in the chain is proved separately; the pixel is not.
