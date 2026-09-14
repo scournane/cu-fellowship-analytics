@@ -979,7 +979,7 @@ def preference_command(
             (fellow["fellow_id"], action),
         )
         explanations = {
-            "all": "session reminders at 24h, 1h, and 10min; assignment reminders at 24h and 1h",
+            "all": "session and assignment reminders at 24h, 1h, and 10min",
             "fewer": "one session reminder at 1h, one assignment reminder at 24h, and at most one Part B nudge",
             "later": "one session reminder at 10min, one assignment reminder at 1h, and later Part B nudges",
             "none": "no personal reminders, nudges, or weekly digests",
