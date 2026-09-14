@@ -269,11 +269,19 @@ def doctor(settings: Settings, *, out: Any = None) -> int:
     out = out or sys.stdout
     failures: list[str] = []
 
-    def line(ok: bool, label: str, detail: str = "", *, fix: str = "") -> None:
-        mark = "ok  " if ok else "MISS"
+    def line(ok: bool | str, label: str, detail: str = "", *, fix: str = "") -> None:
+        """``ok`` is True, False, or "warn".
+
+        "warn" is for a real fault that does not stop the bot recording — it is
+        printed so it cannot be missed, but it does not fail the preflight,
+        because refusing to start a bot that is collecting correctly over a
+        broken link would cost more than the link does.
+        """
+        mark = {True: "ok  ", False: "MISS", "warn": "WARN"}[ok]
         print(f"  {mark}  {label}" + (f"  — {detail}" if detail else ""), file=out)
-        if not ok:
-            failures.append(label)
+        if ok is not True:
+            if ok is False:
+                failures.append(label)
             if fix:
                 for row in fix.splitlines():
                     print(f"          {row}", file=out)
@@ -336,10 +344,21 @@ def doctor(settings: Settings, *, out: Any = None) -> int:
          else "`/dashboard` links would be FORGEABLE — the signing key is the one in .env.example",
          fix="python -c \"import secrets; print(secrets.token_urlsafe(32))\"  → CUFA_CONSOLE_SECRET in .env")
     if second_half:
-        local_url = "127.0.0.1" in settings.public_base_url or "localhost" in settings.public_base_url
-        line(True, "CUFA_PUBLIC_BASE_URL", settings.public_base_url + (
-            "  — a fellow cannot open this from their own machine, so `/dashboard` links will not work for them"
-            if local_url else ""))
+        # A loopback address is never right here. `/dashboard` hands the fellow
+        # this URL in a DM, and 127.0.0.1 means *their* machine, where nothing is
+        # listening — they get ERR_CONNECTION_REFUSED and no hint why. This used
+        # to pass with a note beside it; it fails now, because every other
+        # failure doctor reports is silent once the bot is running and so is
+        # this one.
+        local_url = any(
+            h in settings.public_base_url for h in ("127.0.0.1", "localhost", "0.0.0.0", "::1")
+        )
+        line("warn" if local_url else True, "CUFA_PUBLIC_BASE_URL", settings.public_base_url,
+             fix=("`/dashboard` DMs this URL to a fellow, and a loopback address resolves to\n"
+                  "THEIR machine — they get ERR_CONNECTION_REFUSED with no hint why.\n"
+                  "Fine while you are the only person clicking it. Before any fellow does,\n"
+                  "set it to a host they can actually reach."
+                  if local_url else ""))
         try:
             from ..retention import load_rubric
 
