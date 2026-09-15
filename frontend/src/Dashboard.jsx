@@ -1,5 +1,6 @@
 import {Button} from '@astryxdesign/core/Button'
 import {Card} from '@astryxdesign/core/Card'
+import {Divider} from '@astryxdesign/core/Divider'
 import {EmptyState} from '@astryxdesign/core/EmptyState'
 import {Grid} from '@astryxdesign/core/Grid'
 import {Heading} from '@astryxdesign/core/Heading'
@@ -52,38 +53,49 @@ function rate(value) {
   return value === null || value === undefined ? '—' : percent(value)
 }
 
-/** The saturated band a region opens with.
+/** A region of the screen: a heading, the line under it, then the content on
+ *  white.
  *
- *  `tone` names one of the theme's four lead variants — the only place this
- *  screen names a colour, and it names it rather than setting it. Everything
- *  written on the band asks for `color="inherit"`: a Text or Heading otherwise
- *  paints itself from its own StyleX class and would keep body ink on a
- *  saturated fill, so inheriting lets the card variant own both halves of the
- *  pair. Until the variant exists the card is an unfilled box and the same
- *  inherited ink stays readable on white, which is the fallback by design. */
-function Block({tone, eyebrow, title, description, children}) {
+ *  This used to open with a saturated band carrying an eyebrow as well. Six
+ *  bands down one page is wallpaper, so colour is now the exception: the four
+ *  stat blocks at the top keep it and are the only filled thing above the
+ *  primary buttons. The eyebrows were assembled counts — "QUEUE · 2 OPEN",
+ *  "6 FELLOWS" — and are gone rather than reworded; where a count earns its
+ *  place it is a sentence in the supporting line.
+ *
+ *  `AppFrame` exports a `Region` of its own, but it paints the heading accent
+ *  green, and six green headings down a page is the band's rhythm in a thinner
+ *  coat. Every other screen in the console writes a plain `Heading level={2}`,
+ *  which is what this is. */
+function Region({title, description, children}) {
   return (
     <Stack gap={3}>
-      <Card variant={`lead-${tone}`} padding={5}>
-        <Stack gap={1}>
-          {eyebrow ? <Text type="label" color="inherit">{eyebrow}</Text> : null}
-          <Heading level={2} color="inherit">{title}</Heading>
-          {description ? <Text color="inherit">{description}</Text> : null}
-        </Stack>
-      </Card>
+      <Stack gap={1}>
+        <Heading level={2}>{title}</Heading>
+        {description ? <Text type="supporting">{description}</Text> : null}
+      </Stack>
       {children}
     </Stack>
   )
 }
 
 /** One headline number on its own colour, what it counts, and how it was
- *  arrived at. Four of these open the screen. */
+ *  arrived at. Four of these open the screen, and they are the whole of its
+ *  colour.
+ *
+ *  `tone` names one of the theme's four lead variants — the only place this
+ *  screen names a colour, and it names it rather than setting it. Everything
+ *  written on the block asks for `color="inherit"`: a Text otherwise paints
+ *  itself from its own StyleX class and would keep body ink on a saturated
+ *  fill, so inheriting lets the card variant own both halves of the pair.
+ *  Until the variant exists the card is an unfilled box and the same inherited
+ *  ink stays readable on white, which is the fallback by design. */
 function StatBlock({tone, value, label, detail}) {
   return (
     <Card variant={`lead-${tone}`} padding={5}>
       <Stack gap={1}>
         <Text type="display-2" color="inherit" hasTabularNumbers>{value}</Text>
-        <Text type="label" color="inherit">{label}</Text>
+        <Text color="inherit">{label}</Text>
         {detail ? <Text type="supporting" color="inherit">{detail}</Text> : null}
       </Stack>
     </Card>
@@ -119,7 +131,7 @@ function Outreach({row, cohort}) {
       <input type="hidden" name="cohort" value={cohort || ''} />
       {row.reached_out ? (
         <>
-          <Token label="reached out" color="green" />
+          <Token label="reached out" />
           <input type="hidden" name="action" value="clear" />
           <Button label="Clear" size="sm" type="submit" />
         </>
@@ -142,17 +154,20 @@ function Outreach({row, cohort}) {
 /** One fellow in the attention list: the index and the name, the three
  *  measurements the index is made of, then the one action there is to take.
  *  A card rather than a table row, because seven columns is a shape that only
- *  exists on a wide screen. */
+ *  exists on a wide screen.
+ *
+ *  Four of the captions have gone. The number beside the name is the sort key
+ *  of a region headed "most attention-worthy first", and the paragraph under
+ *  that heading says what it is made of; the two bars label themselves; and
+ *  the Slack count says what it counts on the line under it, where a caption
+ *  over a number was saying it twice. Every number is still here. */
 function FellowCard({row, cohort}) {
   const flags = row.flags || []
   return (
     <Card padding={5}>
       <Stack gap={4}>
         <Stack direction="horizontal" gap={4} align="center" wrap="wrap">
-          <Stack gap={0}>
-            <Text type="display-3" hasTabularNumbers>{row.attention_index}</Text>
-            <Text type="label">Attention index</Text>
-          </Stack>
+          <Text type="display-3" hasTabularNumbers>{row.attention_index}</Text>
           <Stack gap={0.5}>
             <Link href={`/dashboard/fellow/${row.fellow_id}`} isStandalone>
               {row.full_name}
@@ -164,10 +179,10 @@ function FellowCard({row, cohort}) {
         {flags.length || row.open_check_in_requests ? (
           <Stack direction="horizontal" gap={1} wrap="wrap">
             {flags.map((flag) => (
-              <Token key={flag} label={flag} color="orange" size="sm" />
+              <Token key={flag} label={flag} size="sm" />
             ))}
             {row.open_check_in_requests ? (
-              <Token label="check-in request" color="orange" size="sm" />
+              <Token label="check-in request" size="sm" />
             ) : null}
           </Stack>
         ) : null}
@@ -190,10 +205,10 @@ function FellowCard({row, cohort}) {
             }
           />
           <Stack gap={1}>
-            <Text type="label">Slack (7 days)</Text>
             <Text type="display-3" hasTabularNumbers>{row.messages_7d}</Text>
             <Text type="supporting">
-              {row.messages} total · mean {row.cohort_mean_messages}
+              Slack messages in the last 7 days · {row.messages} total · mean{' '}
+              {row.cohort_mean_messages}
             </Text>
           </Stack>
         </Grid>
@@ -227,13 +242,14 @@ function ScoreCard({assignment, row, cohort}) {
               : 'Not handed in yet'}
           </Text>
         </Stack>
+        {/* No "Score" caption: the field under it is placeholdered "score",
+            and the region it sits in is headed "Assignments and scores". */}
         <Stack gap={0}>
           <Text type="display-3" hasTabularNumbers>
             {row.score === null || row.score === undefined
               ? '—'
               : `${row.score}${assignment.max_score ? ` / ${assignment.max_score}` : ''}`}
           </Text>
-          <Text type="label">Score</Text>
           {row.graded_by ? <Text type="supporting">entered by {row.graded_by}</Text> : null}
         </Stack>
         <PostForm action="/dashboard/score">
@@ -365,33 +381,33 @@ export function Dashboard({
       </Grid>
 
       {/* A heading with nothing under it is a stub, not an empty state: a
-          cohort that has never synced anything says so by this card not being
-          on the page. */}
+          cohort that has never synced anything says so by this region not
+          being on the page. */}
       {sources.length ? (
-        <Card>
-          <MetadataList columns="multi" title={<Text type="label">Last data in</Text>}>
+        <Region title="Last data in">
+          <MetadataList columns="multi">
             {sources.map(([source, at]) => (
               <MetadataListItem key={source} label={SOURCE_LABELS[source] || source}>
                 {at ? fmtStamp(at) : 'never'}
               </MetadataListItem>
             ))}
           </MetadataList>
-        </Card>
+        </Region>
       ) : null}
 
       {queue ? (
-        <Block
-          tone="orange"
-          eyebrow={`QUEUE · ${queue} OPEN`}
+        <Region
           title="Needs a human"
           description="Neither of these closes itself. A check-in request closes when somebody is marked as having reached out; an unrostered account closes in Slack."
         >
-          <Stack gap={3}>
+          <Stack gap={6}>
             {openRequests.map((row) => (
               <Card key={row.intervention_id} padding={5}>
                 <Stack gap={3}>
+                  {/* The horizontal stack is what stops a lone Token
+                      stretching to the card and reading as a bar. */}
                   <Stack direction="horizontal" gap={2} wrap="wrap">
-                    <Token label="check-in request" color="orange" />
+                    <Token label="check-in request" />
                   </Stack>
                   <Heading level={3}>{row.full_name} asked to be checked in on</Heading>
                   <Text type="supporting">
@@ -403,7 +419,6 @@ export function Dashboard({
                     <Button
                       label="Open their page"
                       size="sm"
-                      variant="primary"
                       href={`/dashboard/fellow/${row.fellow_id}`}
                     />
                   </Stack>
@@ -414,7 +429,7 @@ export function Dashboard({
               <Card key={row.alert_id} padding={5}>
                 <Stack gap={3}>
                   <Stack direction="horizontal" gap={2} wrap="wrap">
-                    <Token label="unrostered" color="orange" />
+                    <Token label="unrostered" />
                   </Stack>
                   <Heading level={3}>
                     {`${row.real_name || row.display_name || row.slack_user_id} joined Slack but is not on the roster`}
@@ -426,12 +441,10 @@ export function Dashboard({
               </Card>
             ))}
           </Stack>
-        </Block>
+        </Region>
       ) : null}
 
-      <Block
-        tone="blue"
-        eyebrow={`${fellows.length} FELLOWS`}
+      <Region
         title="Fellows, most attention-worthy first"
         description="The attention index combines Slack activity against the cohort mean, attendance, and how complete exit tickets are. It is a sorted list for a human, not a grade — the parts are shown so nobody has to trust the number. Asking for help never enters it, and neither do assignment scores."
       >
@@ -444,55 +457,51 @@ export function Dashboard({
             />
           </Card>
         ) : (
-          <Stack gap={3}>
+          <Stack gap={6}>
             {fellows.map((row) => (
               <FellowCard key={row.fellow_id} row={row} cohort={cohort_id} />
             ))}
           </Stack>
         )}
-      </Block>
+      </Region>
 
-      <Block
-        tone="purple"
-        eyebrow="LAST 7 DAYS"
+      {/* No card around the list: the heading above it already says what it
+          is, and the dividers already separate the rows. */}
+      <Region
         title="Most active this week"
         description="Fellow-facing channels only, over the last 7 days."
       >
-        <Card padding={5}>
-          {!active.length ? (
-            <Text type="supporting">No Slack messages in the last 7 days.</Text>
-          ) : (
-            <List hasDividers listStyle="decimal">
-              {active.map((row) => (
-                <ListItem
-                  key={row.fellow_id}
-                  label={row.full_name}
-                  endContent={
-                    <Text weight="bold" hasTabularNumbers>{row.messages} messages</Text>
-                  }
-                />
-              ))}
-            </List>
-          )}
-        </Card>
-      </Block>
+        {!active.length ? (
+          <Text type="supporting">No Slack messages in the last 7 days.</Text>
+        ) : (
+          <List hasDividers listStyle="decimal">
+            {active.map((row) => (
+              <ListItem
+                key={row.fellow_id}
+                label={row.full_name}
+                endContent={
+                  <Text weight="bold" hasTabularNumbers>{row.messages} messages</Text>
+                }
+              />
+            ))}
+          </List>
+        )}
+      </Region>
 
-      <Block
-        tone="green"
-        eyebrow={`${boards.length} LEADERBOARDS`}
+      {/* These cards stay: five leaderboards side by side in a grid are five
+          separate things, and the card is what tells one from the next. */}
+      <Region
         title="Badges and ranks"
         description="Staff view. Fellows see only their own badges, by DM, and can switch them off. Shoutouts are ranked by giving, not receiving."
       >
         {!boards.length ? (
-          <Card padding={5}>
-            <Text type="supporting">No data yet.</Text>
-          </Card>
+          <Text type="supporting">No data yet.</Text>
         ) : (
           <Grid columns={{minWidth: 280, repeat: 'fit'}} gap={3}>
             {boards.map(([key, rows]) => (
               <Card key={key} padding={5}>
                 <Stack gap={3}>
-                  <Text type="label">{rankNames[key] || key}</Text>
+                  <Heading level={4}>{rankNames[key] || key}</Heading>
                   {(rows || []).length ? (
                     <List hasDividers listStyle="decimal">
                       {(rows || []).map((row) => (
@@ -511,11 +520,9 @@ export function Dashboard({
             ))}
           </Grid>
         )}
-      </Block>
+      </Region>
 
-      <Block
-        tone="orange"
-        eyebrow={`${work.length} SET`}
+      <Region
         title="Assignments and scores"
         description="Scores are entered by staff against CU's own rubric. Nothing here is graded by the system."
       >
@@ -538,39 +545,32 @@ export function Dashboard({
             ))}
           </Stack>
         )}
-      </Block>
+      </Region>
 
-      <Block
-        tone="green"
-        eyebrow={`${total} FELLOWS`}
-        title="Funnel"
-        description={`Where ${total} fellows have got to.`}
-      >
-        <Card padding={5}>
-          {!stages.length ? (
-            <Text type="supporting">No stages to show yet.</Text>
-          ) : (
-            <Stack gap={5}>
-              {stages.map(([stage, label]) => (
-                <ProgressBar
-                  key={stage}
-                  label={label}
-                  value={((funnel || {}).counts || {})[stage] || 0}
-                  max={total || 1}
-                  hasValueLabel
-                  formatValueLabel={(value) => `${value} of ${total}`}
-                  xstyle={styles.meter}
-                />
-              ))}
-            </Stack>
-          )}
-        </Card>
+      {/* Two cards became none. The bars and the medians are two halves of one
+          region, so a divider parts them rather than a second border. */}
+      <Region title="Funnel" description={`Where ${total} fellows have got to.`}>
+        {!stages.length ? (
+          <Text type="supporting">No stages to show yet.</Text>
+        ) : (
+          <Stack gap={5}>
+            {stages.map(([stage, label]) => (
+              <ProgressBar
+                key={stage}
+                label={label}
+                value={((funnel || {}).counts || {})[stage] || 0}
+                max={total || 1}
+                hasValueLabel
+                formatValueLabel={(value) => `${value} of ${total}`}
+                xstyle={styles.meter}
+              />
+            ))}
+          </Stack>
+        )}
         {medians.length ? (
-          <Card padding={5}>
-            <MetadataList
-              columns="multi"
-              title={<Text type="label">Median days between stages</Text>}
-            >
+          <Stack gap={4}>
+            <Divider />
+            <MetadataList columns="multi" title="Median days between stages">
               {medians.map(([pair, days]) => {
                 const [from, to] = pair.split('->')
                 return (
@@ -583,9 +583,9 @@ export function Dashboard({
                 )
               })}
             </MetadataList>
-          </Card>
+          </Stack>
         ) : null}
-      </Block>
+      </Region>
     </Stack>
   )
 }

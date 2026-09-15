@@ -38,38 +38,48 @@ function percent(value) {
   return `${Math.round(100 * (value || 0))}%`
 }
 
-/** The saturated band a region opens with.
+/** A region of the screen: a heading, the line under it, then the content on
+ *  white.
  *
- *  `tone` names one of the theme's four lead variants — the only place this
- *  screen names a colour, and it names it rather than setting it. Everything
- *  written on the band asks for `color="inherit"`: a Text or Heading otherwise
- *  paints itself from its own StyleX class and would keep body ink on a
- *  saturated fill, so inheriting lets the card variant own both halves of the
- *  pair. Until the variant exists the card is an unfilled box and the same
- *  inherited ink stays readable on white, which is the fallback by design. */
-function Block({tone, eyebrow, title, description, children}) {
+ *  This used to open with a saturated band carrying an eyebrow as well — "6 SO
+ *  FAR", "3 EARNED", "ACCOUNTS". Six bands down one page is wallpaper, so
+ *  colour is now the exception: the stat blocks near the top keep it and
+ *  nothing below them is filled. The eyebrows were counts assembled to fill a
+ *  slot, and every one of them repeated something the list beneath it already
+ *  showed, so none of them needed rescuing into the supporting line.
+ *
+ *  `AppFrame` exports a `Region` of its own, but it paints the heading accent
+ *  green, and green headings all down a page is the band's rhythm in a thinner
+ *  coat. Every other screen in the console writes a plain `Heading level={2}`,
+ *  which is what this is. */
+function Region({title, description, children}) {
   return (
     <Stack gap={3}>
-      <Card variant={`lead-${tone}`} padding={5}>
-        <Stack gap={1}>
-          {eyebrow ? <Text type="label" color="inherit">{eyebrow}</Text> : null}
-          <Heading level={2} color="inherit">{title}</Heading>
-          {description ? <Text color="inherit">{description}</Text> : null}
-        </Stack>
-      </Card>
+      <Stack gap={1}>
+        <Heading level={2}>{title}</Heading>
+        {description ? <Text type="supporting">{description}</Text> : null}
+      </Stack>
       {children}
     </Stack>
   )
 }
 
 /** One headline number on its own colour, what it counts, and how it was
- *  arrived at. */
+ *  arrived at. These are the whole of the screen's colour.
+ *
+ *  `tone` names one of the theme's four lead variants — the only place this
+ *  screen names a colour, and it names it rather than setting it. Everything
+ *  written on the block asks for `color="inherit"`: a Text otherwise paints
+ *  itself from its own StyleX class and would keep body ink on a saturated
+ *  fill, so inheriting lets the card variant own both halves of the pair.
+ *  Until the variant exists the card is an unfilled box and the same inherited
+ *  ink stays readable on white, which is the fallback by design. */
 function StatBlock({tone, value, label, detail}) {
   return (
     <Card variant={`lead-${tone}`} padding={5}>
       <Stack gap={1}>
         <Text type="display-2" color="inherit" hasTabularNumbers>{value}</Text>
-        <Text type="label" color="inherit">{label}</Text>
+        <Text color="inherit">{label}</Text>
         {detail ? <Text type="supporting" color="inherit">{detail}</Text> : null}
       </Stack>
     </Card>
@@ -78,7 +88,12 @@ function StatBlock({tone, value, label, detail}) {
 
 /** Yes or not yet, in words rather than a mark that has to be decoded.
  *  Off a table there is no column heading to say what the yes is about, so
- *  both words carry the thing they are about. */
+ *  both words carry the thing they are about.
+ *
+ *  Green survives the trim here and nowhere else. This is the page a fellow
+ *  opens to see how they are doing, and on it the colour is the feedback —
+ *  the same reason the staff list, where eleven tinted pills were scanning
+ *  noise, keeps its pills plain. */
 function YesNo({value, yes = 'yes', no = 'not yet'}) {
   return value ? (
     <Token label={yes} color="green" size="sm" />
@@ -92,7 +107,7 @@ function YesNo({value, yes = 'yes', no = 'not yet'}) {
 function ReminderRow({kind, label, chosen = [], offsets = [], token}) {
   return (
     <Stack gap={2}>
-      <Text type="label">{label}</Text>
+      <Text weight="bold">{label}</Text>
       <Stack direction="horizontal" gap={2} wrap="wrap">
         {offsets.map((offset) => {
           const on = chosen.includes(offset)
@@ -129,14 +144,16 @@ function StaffSummary({fellow, engagement, aliases = []}) {
     <Card padding={5}>
       <Stack gap={4}>
         <Stack direction="horizontal" gap={4} align="center" wrap="wrap">
+          {/* The caption stays here, unlike on the dashboard: this number has
+              no region heading above it to say what it is. */}
           <Stack gap={0}>
             <Text type="display-3" hasTabularNumbers>{engagement.attention_index}</Text>
-            <Text type="label">Attention index</Text>
+            <Text type="supporting">Attention index</Text>
           </Stack>
           {flags.length ? (
             <Stack direction="horizontal" gap={1} wrap="wrap">
               {flags.map((flag) => (
-                <Token key={flag} label={flag} color="orange" size="sm" />
+                <Token key={flag} label={flag} size="sm" />
               ))}
             </Stack>
           ) : (
@@ -291,21 +308,19 @@ export function Fellow({
         </Grid>
       ) : null}
 
-      <Block tone="blue" eyebrow={`${held.length} SO FAR`} title="Sessions">
+      <Region title="Sessions">
         {held.length ? (
-          <Stack gap={3}>
+          <Stack gap={6}>
             {held.map((session) => (
               <SessionCard key={session.session_id} session={session} />
             ))}
           </Stack>
         ) : (
-          <Card padding={5}>
-            <Text type="supporting">No sessions yet.</Text>
-          </Card>
+          <Text type="supporting">No sessions yet.</Text>
         )}
-      </Block>
+      </Region>
 
-      <Block tone="purple" eyebrow={`${earned.length} EARNED`} title="Badges">
+      <Region title="Badges">
         {earned.length ? (
           <Grid columns={{minWidth: 300, repeat: 'fit'}} gap={3}>
             {earned.map((badge) => (
@@ -326,17 +341,15 @@ export function Fellow({
             ))}
           </Grid>
         ) : (
-          <Card padding={5}>
-            <Text type="supporting">
-              None yet — check in to a session and one appears.
-            </Text>
-          </Card>
+          <Text type="supporting">
+            None yet — check in to a session and one appears.
+          </Text>
         )}
-      </Block>
+      </Region>
 
       {set.length ? (
-        <Block tone="orange" eyebrow={`${set.length} SET`} title="Assignments">
-          <Stack gap={3}>
+        <Region title="Assignments">
+          <Stack gap={6}>
             {set.map((assignment) => (
               <Card key={assignment.assignment_id} padding={5}>
                 <Stack direction="horizontal" gap={4} wrap="wrap" justify="between" align="center">
@@ -355,89 +368,80 @@ export function Fellow({
                         ? '—'
                         : `${assignment.score}${assignment.max_score ? ` / ${assignment.max_score}` : ''}`}
                     </Text>
-                    <Text type="label">Score</Text>
+                    <Text type="supporting">Score</Text>
                   </Stack>
                 </Stack>
               </Card>
             ))}
           </Stack>
-        </Block>
+        </Region>
       ) : null}
 
-      <Block
-        tone="green"
-        eyebrow={steps.length ? `${reached} OF ${steps.length} DONE` : undefined}
-        title={staff_view ? 'Journey' : 'Your journey'}
-      >
-        <Card padding={5}>
-          <Stack gap={4}>
-            {steps.length ? (
-              <ProgressBar
-                label="Steps reached"
-                value={reached}
-                max={steps.length}
-                hasValueLabel
-                formatValueLabel={(value) => `${value} / ${steps.length}`}
-                xstyle={styles.meter}
-              />
-            ) : null}
-            {steps.length ? (
-              <List hasDividers>
-                {steps.map((step) => (
-                  <ListItem
-                    key={step.stage}
-                    label={step.label}
-                    endContent={
-                      step.at ? (
-                        <Text weight="bold" hasTabularNumbers>{fmtDate(step.at)}</Text>
-                      ) : (
-                        <Text type="supporting">not yet</Text>
-                      )
-                    }
-                  />
-                ))}
-              </List>
-            ) : (
-              <Text type="supporting">Nothing recorded yet.</Text>
-            )}
-          </Stack>
-        </Card>
-      </Block>
+      {/* The card this region used to sit in has gone: a heading with one card
+          under it was two containers doing one container's work, and the bar
+          and the list are already parted by the list's own dividers. */}
+      <Region title={staff_view ? 'Journey' : 'Your journey'}>
+        <Stack gap={4}>
+          {steps.length ? (
+            <ProgressBar
+              label="Steps reached"
+              value={reached}
+              max={steps.length}
+              hasValueLabel
+              formatValueLabel={(value) => `${value} / ${steps.length}`}
+              xstyle={styles.meter}
+            />
+          ) : null}
+          {steps.length ? (
+            <List hasDividers>
+              {steps.map((step) => (
+                <ListItem
+                  key={step.stage}
+                  label={step.label}
+                  endContent={
+                    step.at ? (
+                      <Text weight="bold" hasTabularNumbers>{fmtDate(step.at)}</Text>
+                    ) : (
+                      <Text type="supporting">not yet</Text>
+                    )
+                  }
+                />
+              ))}
+            </List>
+          ) : (
+            <Text type="supporting">Nothing recorded yet.</Text>
+          )}
+        </Stack>
+      </Region>
 
-      <Block tone="blue" eyebrow="ACCOUNTS" title="What is connected">
-        <Card padding={5}>
-          <MetadataList columns="multi">
-            <MetadataListItem label="Slack">
-              {/* align, or the token stretches to the column and stops
-                  reading as a pill. */}
-              <Stack gap={1} align="start">
-                <YesNo value={links.slack} yes="connected" no="not connected" />
-                {accounts.map((account) => (
-                  <Text key={account.slack_user_id} type="supporting">
-                    {account.real_name || account.display_name} · matched by{' '}
-                    {account.match_method}
-                    {account.tz ? ` · ${account.tz}` : ''}
-                  </Text>
-                ))}
-              </Stack>
-            </MetadataListItem>
-            <MetadataListItem label="Mid-session check-in form">
-              <YesNo value={links.forms_part_a} yes="connected" no="nothing yet" />
-            </MetadataListItem>
-            <MetadataListItem label="Exit ticket form">
-              <YesNo value={links.forms_part_b} yes="connected" no="nothing yet" />
-            </MetadataListItem>
-          </MetadataList>
-        </Card>
-      </Block>
+      <Region title="What is connected">
+        <MetadataList columns="multi">
+          <MetadataListItem label="Slack">
+            {/* align, or the token stretches to the column and stops
+                reading as a pill. */}
+            <Stack gap={1} align="start">
+              <YesNo value={links.slack} yes="connected" no="not connected" />
+              {accounts.map((account) => (
+                <Text key={account.slack_user_id} type="supporting">
+                  {account.real_name || account.display_name} · matched by{' '}
+                  {account.match_method}
+                  {account.tz ? ` · ${account.tz}` : ''}
+                </Text>
+              ))}
+            </Stack>
+          </MetadataListItem>
+          <MetadataListItem label="Mid-session check-in form">
+            <YesNo value={links.forms_part_a} yes="connected" no="nothing yet" />
+          </MetadataListItem>
+          <MetadataListItem label="Exit ticket form">
+            <YesNo value={links.forms_part_b} yes="connected" no="nothing yet" />
+          </MetadataListItem>
+        </MetadataList>
+      </Region>
 
       {staff_view && recordings.length ? (
-        <Block
-          tone="purple"
-          eyebrow={`${recordings.length} RECORDINGS`}
-          title="Airtime on recordings"
-        >
-          <Stack gap={3}>
+        <Region title="Airtime on recordings">
+          <Stack gap={6}>
             {recordings.map((row, index) => (
               <Card key={`${row.session}-${index}`} padding={5}>
                 <Stack
@@ -455,19 +459,19 @@ export function Fellow({
                   </Stack>
                   <Stack gap={0}>
                     <Text type="display-3" hasTabularNumbers>{percent(row.share)}</Text>
-                    <Text type="label">Share of speaking time</Text>
+                    <Text type="supporting">Share of speaking time</Text>
                   </Stack>
                 </Stack>
               </Card>
             ))}
           </Stack>
-        </Block>
+        </Region>
       ) : null}
 
       {staff_view ? (
-        <Block tone="orange" eyebrow={`${logged.length} LOGGED`} title="Interventions">
+        <Region title="Interventions">
           {logged.length ? (
-            <Stack gap={3}>
+            <Stack gap={6}>
               {logged.map((row) => (
                 <Card key={row.intervention_id} padding={5}>
                   <Stack gap={3}>
@@ -489,76 +493,71 @@ export function Fellow({
               ))}
             </Stack>
           ) : (
-            <Card padding={5}>
-              <Text type="supporting">None.</Text>
-            </Card>
+            <Text type="supporting">None.</Text>
           )}
-        </Block>
+        </Region>
       ) : null}
 
-      <Block tone="green" eyebrow="REMINDERS" title="Preferences">
-        <Card padding={5}>
-          {!preferences ? (
+      <Region title="Preferences">
+        {!preferences ? (
+          <Text type="supporting">
+            Join the Slack workspace to get reminders. Preferences live on the Slack account.
+          </Text>
+        ) : staff_view ? (
+          <MetadataList columns="multi">
+            <MetadataListItem label="Session reminders">
+              {preferences.session_reminders.length
+                ? preferences.session_reminders.map(offsetLabel).join(', ') + ' before'
+                : 'off'}
+            </MetadataListItem>
+            <MetadataListItem label="Assignment reminders">
+              {preferences.assignment_reminders.length
+                ? preferences.assignment_reminders.map(offsetLabel).join(', ') + ' before'
+                : 'off'}
+            </MetadataListItem>
+            <MetadataListItem label="Badge messages">
+              {preferences.gamification ? 'on' : 'off'}
+            </MetadataListItem>
+          </MetadataList>
+        ) : (
+          <Stack gap={4}>
+            <ReminderRow
+              kind="session"
+              label="Session reminders"
+              chosen={preferences.session_reminders}
+              offsets={offsets}
+              token={token}
+            />
+            <ReminderRow
+              kind="assignment"
+              label="Assignment reminders"
+              chosen={preferences.assignment_reminders}
+              offsets={offsets}
+              token={token}
+            />
+            {/* No caption over this one: the button says "Badge messages: on",
+                so a label above it was the same words twice. */}
+            <PostForm action={`/me/${token}/prefs`}>
+              <input type="hidden" name="kind" value="gamification" />
+              <input
+                type="hidden"
+                name="enabled"
+                value={preferences.gamification ? 'off' : 'on'}
+              />
+              <Button
+                label={`Badge messages: ${preferences.gamification ? 'on' : 'off'}`}
+                size="sm"
+                type="submit"
+                variant={preferences.gamification ? 'primary' : 'secondary'}
+              />
+            </PostForm>
             <Text type="supporting">
-              Join the Slack workspace to get reminders. Preferences live on the Slack account.
+              Each button turns that reminder on or off. The same settings are in Slack
+              with /reminders and /badges.
             </Text>
-          ) : staff_view ? (
-            <MetadataList columns="multi">
-              <MetadataListItem label="Session reminders">
-                {preferences.session_reminders.length
-                  ? preferences.session_reminders.map(offsetLabel).join(', ') + ' before'
-                  : 'off'}
-              </MetadataListItem>
-              <MetadataListItem label="Assignment reminders">
-                {preferences.assignment_reminders.length
-                  ? preferences.assignment_reminders.map(offsetLabel).join(', ') + ' before'
-                  : 'off'}
-              </MetadataListItem>
-              <MetadataListItem label="Badge messages">
-                {preferences.gamification ? 'on' : 'off'}
-              </MetadataListItem>
-            </MetadataList>
-          ) : (
-            <Stack gap={4}>
-              <ReminderRow
-                kind="session"
-                label="Session reminders"
-                chosen={preferences.session_reminders}
-                offsets={offsets}
-                token={token}
-              />
-              <ReminderRow
-                kind="assignment"
-                label="Assignment reminders"
-                chosen={preferences.assignment_reminders}
-                offsets={offsets}
-                token={token}
-              />
-              <Stack gap={2}>
-                <Text type="label">Badge messages</Text>
-                <PostForm action={`/me/${token}/prefs`}>
-                  <input type="hidden" name="kind" value="gamification" />
-                  <input
-                    type="hidden"
-                    name="enabled"
-                    value={preferences.gamification ? 'off' : 'on'}
-                  />
-                  <Button
-                    label={`Badge messages: ${preferences.gamification ? 'on' : 'off'}`}
-                    size="sm"
-                    type="submit"
-                    variant={preferences.gamification ? 'primary' : 'secondary'}
-                  />
-                </PostForm>
-              </Stack>
-              <Text type="supporting">
-                Each button turns that reminder on or off. The same settings are in Slack
-                with /reminders and /badges.
-              </Text>
-            </Stack>
-          )}
-        </Card>
-      </Block>
+          </Stack>
+        )}
+      </Region>
 
       {!staff_view ? (
         <Text type="supporting">
