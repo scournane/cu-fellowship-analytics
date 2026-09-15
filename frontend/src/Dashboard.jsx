@@ -1,3 +1,4 @@
+import {Blockquote} from '@astryxdesign/core/Blockquote'
 import {Button} from '@astryxdesign/core/Button'
 import {Card} from '@astryxdesign/core/Card'
 import {Divider} from '@astryxdesign/core/Divider'
@@ -15,6 +16,7 @@ import * as stylex from '@stylexjs/stylex'
 
 import {InlineField, Notices, PageHeader, PostForm} from './AppFrame.jsx'
 import {CohortFilter} from './CohortFilter.jsx'
+import {Mascot} from './Mascot.jsx'
 import {fmtDateTime, fmtStamp} from './format.js'
 
 // The one thing this screen sets by hand, and it sets a keyword rather than a
@@ -39,6 +41,22 @@ const SOURCE_LABELS = {
   part_b: 'Exit tickets (part B)',
 }
 
+/** What puts a name on each leaderboard, for the boards that have none yet.
+ *
+ *  An empty board used to say "No data yet.", which tells a staff member
+ *  nothing they could act on — five identical shrugs side by side. These say
+ *  what the board is waiting for, and they are one sentence each because the
+ *  card they sit in is a third of a column wide. Keyed by `ranks`' own keys
+ *  (`cufa.slack.badges.RANK_KEYS`); a board that set grows later still gets a
+ *  sentence, from the fallback at the point of use. */
+const RANK_WAITING_FOR = {
+  checkins: 'Fills as fellows check in to sessions.',
+  streak: 'Fills once somebody attends two sessions running.',
+  messages: 'Fills from the fellow-facing Slack channels.',
+  shoutouts_given: 'Fills when a fellow names someone who helped them.',
+  exit_tickets: 'Fills as end-of-session forms come in.',
+}
+
 function dashboardUrl({cohort} = {}) {
   return cohort ? `/dashboard?cohort=${encodeURIComponent(cohort)}` : '/dashboard'
 }
@@ -51,6 +69,86 @@ function percent(value) {
  *  invents a number nobody measured. (Upstream fix F-03, kept here.) */
 function rate(value) {
   return value === null || value === undefined ? '—' : percent(value)
+}
+
+/** "1 session" / "3 sessions". */
+function count(n, noun) {
+  return `${n} ${noun}${n === 1 ? '' : 's'}`
+}
+
+// ---- time, as a reader feels it ----------------------------------------
+//
+// Every stamp on this screen is printed absolute and labelled UTC, which is
+// right for a record and useless for the one question a queue asks: how long
+// has this been sitting there. So the same value is read a second way.
+//
+// The parsing is `format.js`'s, deliberately: the same five fields off the
+// front of the string, anchored to UTC, so the relative reading and the
+// printed stamp can never disagree about which instant they mean. Nothing
+// here uses the browser's clock — the comparison is always against the page's
+// own `now`, the instant the server rendered, so a tab left open overnight
+// does not quietly age its own numbers.
+
+const AT = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/
+
+/** One of the server's stamps as milliseconds, or null when it is not one. */
+function instant(value) {
+  const m = AT.exec(String(value == null ? '' : value))
+  if (!m) return null
+  return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]))
+}
+
+/** "2 days ago", from a millisecond reading. Null in, null out: a caller with
+ *  no answer says nothing rather than guessing at one. Whole units only —
+ *  "2 days" is the truth a person acts on, and "2.4 days" is a measurement
+ *  nobody asked for. */
+function since(ms, now) {
+  const end = instant(now)
+  if (ms === null || end === null) return null
+  const hours = Math.floor((end - ms) / 3600000)
+  if (hours < 1) return 'in the last hour'
+  if (hours < 24) return `${count(hours, 'hour')} ago`
+  return `${count(Math.floor(hours / 24), 'day')} ago`
+}
+
+/** "2 days ago", from one of the server's stamps. */
+function ago(then, now) {
+  return since(instant(then), now)
+}
+
+/** How long the oldest thing in a queue has been waiting. The rows arrive in
+ *  `created_at` order, but the minimum is taken rather than the first, so this
+ *  stays right if that order ever changes. */
+function oldest(rows, now) {
+  const times = rows.map((row) => instant(row.created_at)).filter((t) => t !== null)
+  return times.length ? since(Math.min(...times), now) : null
+}
+
+// ---- what the numbers mean ---------------------------------------------
+
+/** The line under the attendance percentage.
+ *
+ *  "67%" is accurate and says nothing about whether it is good, and there is
+ *  nothing in this data to say that with: no target, no previous week, no
+ *  other cohort. What there is, is the spread the average is hiding — the
+ *  per-fellow rates the list below is sorted by. A cohort on 67% where
+ *  everybody is on 67% and one where half the room is at 20% are the same
+ *  number and completely different Mondays, and that is the honest thing to
+ *  add. No names: this is the shape of the cohort, not a ranking of it. */
+function attendanceDetail(stats, fellows) {
+  if (!stats.sessions_held) {
+    return 'Nothing to measure until the first session is held.'
+  }
+  const possible = (stats.active_fellows || 0) * stats.sessions_held
+  const counted = `${stats.attended} of ${possible}: ${stats.active_fellows} fellows across ${count(stats.sessions_held, 'session')}`
+  const rates = fellows
+    .map((row) => row.attendance_rate)
+    .filter((value) => value !== null && value !== undefined)
+  if (!rates.length) return counted
+  const low = Math.min(...rates)
+  const high = Math.max(...rates)
+  if (low === high) return `${counted}. Every fellow is on ${percent(low)}.`
+  return `${counted}. Fellow by fellow it runs ${percent(low)} to ${percent(high)}.`
 }
 
 /** A region of the screen: a heading, the line under it, then the content on
@@ -75,6 +173,23 @@ function Region({title, description, children}) {
         {description ? <Text type="supporting">{description}</Text> : null}
       </Stack>
       {children}
+    </Stack>
+  )
+}
+
+/** What a region says when it has nothing in it.
+ *
+ *  An empty region is the first thing a staff member sees on a cohort's first
+ *  morning, and a bare "No data yet." tells them neither what goes here nor
+ *  whether something is broken. Two lines: what will fill this, and what they
+ *  can do about it now. Supporting type, because an empty region should not
+ *  shout louder than a full one. */
+function Waiting({children}) {
+  return (
+    <Stack gap={1}>
+      {[].concat(children).map((line) => (
+        <Text key={line} type="supporting">{line}</Text>
+      ))}
     </Stack>
   )
 }
@@ -160,7 +275,13 @@ function Outreach({row, cohort}) {
  *  of a region headed "most attention-worthy first", and the paragraph under
  *  that heading says what it is made of; the two bars label themselves; and
  *  the Slack count says what it counts on the line under it, where a caption
- *  over a number was saying it twice. Every number is still here. */
+ *  over a number was saying it twice. Every number is still here.
+ *
+ *  What is added is only ever an explanation of a nothing. On the cohort's
+ *  first morning every bar here reads "0 / 0" and the mean is 0, and a zero
+ *  denominator is not a bad score — it is a session nobody has held and a form
+ *  nobody has sent. The lines below say which, and say nothing at all once
+ *  there is something to count. */
 function FellowCard({row, cohort}) {
   const flags = row.flags || []
   return (
@@ -192,7 +313,13 @@ function FellowCard({row, cohort}) {
             label="Attendance"
             value={row.attended}
             max={row.sessions_held}
-            detail={row.needs_review ? `${row.needs_review} being checked` : undefined}
+            detail={
+              row.needs_review
+                ? `${row.needs_review} being checked`
+                : row.sessions_held
+                  ? undefined
+                  : 'no sessions held yet'
+            }
           />
           <Meter
             label="Exit tickets"
@@ -200,15 +327,19 @@ function FellowCard({row, cohort}) {
             max={row.forms_expected}
             detail={
               row.form_completeness === null || row.form_completeness === undefined
-                ? undefined
+                ? row.forms_expected
+                  ? undefined
+                  : 'no forms sent yet'
                 : `${percent(row.form_completeness)} complete`
             }
           />
           <Stack gap={1}>
             <Text type="display-3" hasTabularNumbers>{row.messages_7d}</Text>
             <Text type="supporting">
-              Slack messages in the last 7 days · {row.messages} total · mean{' '}
-              {row.cohort_mean_messages}
+              Slack messages in the last 7 days · {row.messages} total ·{' '}
+              {row.cohort_mean_messages
+                ? `mean ${row.cohort_mean_messages}`
+                : 'no cohort mean yet — nobody has posted'}
             </Text>
           </Stack>
         </Grid>
@@ -305,9 +436,98 @@ function Assignment({assignment, cohort}) {
           ))}
         </Grid>
       ) : (
-        <Text type="supporting">Nobody on the roster to score yet.</Text>
+        <Waiting>
+          {[
+            'Nobody on the roster to score yet.',
+            'Load the fellows and a card appears here for each of them, whether they have handed anything in or not.',
+          ]}
+        </Waiting>
       )}
     </Stack>
+  )
+}
+
+/** One open check-in request: somebody typed `/checkin` in Slack and asked to
+ *  be spoken to.
+ *
+ *  This is the most human object on the page and it used to be laid out like a
+ *  log line — the category chip first, then a heading, then a timestamp with
+ *  the person's own words trailing after an em dash. Three changes, none of
+ *  them colour and none of them a new control:
+ *
+ *  * The sentence comes first and the chip moves under it. A log leads with
+ *    what kind of row it is; a message to somebody leads with what happened.
+ *  * The note is the fellow's own writing — `cmd_checkin` records exactly what
+ *    they typed — so it is set as the quotation it is, attributed to them,
+ *    instead of being appended to a timestamp as metadata.
+ *  * It says how long it has been waiting. That is the one fact that makes a
+ *    queue feel like a queue, it is computed from the page's own `now`, and
+ *    the absolute stamp stays beside it for the record. */
+function CheckInRequest({row, now}) {
+  const waited = ago(row.created_at, now)
+  return (
+    <Card padding={5}>
+      <Stack gap={3}>
+        <Stack gap={1}>
+          <Heading level={3}>{row.full_name} asked to be checked in on</Heading>
+          {/* The horizontal stack is what stops a lone Token stretching to the
+              card and reading as a bar. */}
+          <Stack direction="horizontal" gap={2} align="center" wrap="wrap">
+            <Token label="check-in request" size="sm" />
+            <Text type="supporting">
+              {waited ? `asked ${waited} · ${fmtDateTime(row.created_at)}` : fmtDateTime(row.created_at)}
+            </Text>
+          </Stack>
+        </Stack>
+        {/* The cite names where it came from as well as who: `/checkin` is the
+            only thing that writes this note, so saying so is what tells a
+            staff member they are reading the fellow rather than reading a
+            colleague's summary of the fellow. */}
+        {row.note ? (
+          <Blockquote cite={`${row.full_name}, /checkin in Slack`}>{row.note}</Blockquote>
+        ) : null}
+        <Stack direction="horizontal" gap={2} wrap="wrap">
+          <Button
+            label="Open their page"
+            size="sm"
+            href={`/dashboard/fellow/${row.fellow_id}`}
+          />
+        </Stack>
+      </Stack>
+    </Card>
+  )
+}
+
+/** One Slack account nobody on the roster answers to.
+ *
+ *  Same shape as the request above, for the same reason, and the two ways of
+ *  closing it are written as the choice they are rather than as one string of
+ *  slash commands. Both commands are still here, spelled exactly as they were.
+ *  The stamp is when they joined, which is what the heading is about. */
+function UnrosteredAlert({row, now}) {
+  const who = row.real_name || row.display_name || row.slack_user_id
+  const joined = ago(row.joined_at_utc || row.created_at, now)
+  const seen = row.joined_at_utc || row.created_at
+  return (
+    <Card padding={5}>
+      <Stack gap={3}>
+        <Stack gap={1}>
+          <Heading level={3}>{who} joined Slack but is not on the roster</Heading>
+          <Stack direction="horizontal" gap={2} align="center" wrap="wrap">
+            <Token label="unrostered" size="sm" />
+            <Text type="supporting">
+              {[row.email, joined ? `joined ${joined}` : null, fmtDateTime(seen)]
+                .filter(Boolean)
+                .join(' · ')}
+            </Text>
+          </Stack>
+        </Stack>
+        <Text type="supporting">
+          In Slack: /link @them &lt;fellow&gt; to put them on a roster row, or /alerts resolve
+          @them staff to close this without counting anything.
+        </Text>
+      </Stack>
+    </Card>
   )
 }
 
@@ -339,12 +559,15 @@ export function Dashboard({
   const work = assignments || []
   const stats = attendance || {}
   const rankNames = rank_labels || {}
+  const arrivals = received || {}
   const boards = Object.entries(ranks || {})
   const stages = Object.entries(stage_labels || {})
-  const sources = Object.entries(received || {})
+  const sources = Object.entries(arrivals)
   const medians = Object.entries((funnel || {}).median_days || {})
   const total = (funnel || {}).fellows || 0
   const queue = openRequests.length + openAlerts.length
+  const waitingRequest = oldest(openRequests, now)
+  const syncedAgo = ago(arrivals.slack_sync, now)
 
   return (
     <Stack gap={6}>
@@ -364,33 +587,73 @@ export function Dashboard({
         <Button label="Export CSV" href={`/dashboard/export.csv?cohort=${cohort_id}`} />
       </Stack>
 
+      {/* The four numbers, each with the sentence that says what it means.
+          None of them claims a trend: there is no previous week in this data
+          and no target to be under, so the detail lines say what the number is
+          made of, what it hides, or what it is costing — never whether anyone
+          should be pleased. */}
       <Grid columns={{minWidth: 320, repeat: 'fit'}} gap={3}>
         <StatBlock
           tone="green"
           value={rate(stats.rate)}
           label="Overall attendance"
+          detail={attendanceDetail(stats, fellows)}
+        />
+        <StatBlock
+          tone="blue"
+          value={stats.active_fellows}
+          label="Active fellows"
           detail={
-            stats.sessions_held
-              ? `${stats.attended} of ${stats.active_fellows * stats.sessions_held}: ${stats.active_fellows} fellows across ${stats.sessions_held} sessions`
-              : 'no sessions held yet'
+            stats.active_fellows
+              ? 'The cohort every rate and mean below is measured against.'
+              : 'Nothing below has a denominator until somebody is on the roster.'
           }
         />
-        <StatBlock tone="blue" value={stats.active_fellows} label="Active fellows" />
-        <StatBlock tone="purple" value={openRequests.length} label="Open check-in requests" />
-        <StatBlock tone="orange" value={openAlerts.length} label="Unrostered Slack accounts" />
+        <StatBlock
+          tone="purple"
+          value={openRequests.length}
+          label="Open check-in requests"
+          detail={
+            openRequests.length
+              ? waitingRequest
+                ? openRequests.length === 1
+                  ? `Asked ${waitingRequest}.`
+                  : `The oldest was asked ${waitingRequest}.`
+                : undefined
+              : 'Nobody is waiting to be checked in on.'
+          }
+        />
+        <StatBlock
+          tone="orange"
+          value={openAlerts.length}
+          label="Unrostered Slack accounts"
+          detail={
+            openAlerts.length
+              ? 'Their messages count towards nobody here until each is linked to a fellow.'
+              : arrivals.slack_sync
+                ? 'Every Slack account the bot has seen answers to a roster row.'
+                : 'Nothing has come from Slack yet, so there is nothing to match.'
+          }
+        />
       </Grid>
 
       {/* A heading with nothing under it is a stub, not an empty state: a
           cohort that has never synced anything says so by this region not
-          being on the page. */}
+          being on the page.
+
+          Each stamp is read twice — printed absolute for the record, and again
+          as an age, which is the question this region is actually asked. */}
       {sources.length ? (
         <Region title="Last data in">
           <MetadataList columns="multi">
-            {sources.map(([source, at]) => (
-              <MetadataListItem key={source} label={SOURCE_LABELS[source] || source}>
-                {at ? fmtStamp(at) : 'never'}
-              </MetadataListItem>
-            ))}
+            {sources.map(([source, at]) => {
+              const age = ago(at, now)
+              return (
+                <MetadataListItem key={source} label={SOURCE_LABELS[source] || source}>
+                  {at ? [fmtStamp(at), age].filter(Boolean).join(' · ') : 'never'}
+                </MetadataListItem>
+              )
+            })}
           </MetadataList>
         </Region>
       ) : null}
@@ -398,47 +661,14 @@ export function Dashboard({
       {queue ? (
         <Region
           title="Needs a human"
-          description="Neither of these closes itself. A check-in request closes when somebody is marked as having reached out; an unrostered account closes in Slack."
+          description={`${queue === 1 ? 'One thing is' : `${queue} things are`} waiting on a person here. Neither of these closes itself: a check-in request closes when somebody is marked as having reached out; an unrostered account closes in Slack.`}
         >
           <Stack gap={6}>
             {openRequests.map((row) => (
-              <Card key={row.intervention_id} padding={5}>
-                <Stack gap={3}>
-                  {/* The horizontal stack is what stops a lone Token
-                      stretching to the card and reading as a bar. */}
-                  <Stack direction="horizontal" gap={2} wrap="wrap">
-                    <Token label="check-in request" />
-                  </Stack>
-                  <Heading level={3}>{row.full_name} asked to be checked in on</Heading>
-                  <Text type="supporting">
-                    {row.note
-                      ? `${fmtDateTime(row.created_at)} — ${row.note}`
-                      : fmtDateTime(row.created_at)}
-                  </Text>
-                  <Stack direction="horizontal" gap={2} wrap="wrap">
-                    <Button
-                      label="Open their page"
-                      size="sm"
-                      href={`/dashboard/fellow/${row.fellow_id}`}
-                    />
-                  </Stack>
-                </Stack>
-              </Card>
+              <CheckInRequest key={row.intervention_id} row={row} now={now} />
             ))}
             {openAlerts.map((row) => (
-              <Card key={row.alert_id} padding={5}>
-                <Stack gap={3}>
-                  <Stack direction="horizontal" gap={2} wrap="wrap">
-                    <Token label="unrostered" />
-                  </Stack>
-                  <Heading level={3}>
-                    {`${row.real_name || row.display_name || row.slack_user_id} joined Slack but is not on the roster`}
-                  </Heading>
-                  <Text type="supporting">
-                    {`${row.email ? `${row.email} · ` : ''}In Slack: /link @them <fellow>, or /alerts resolve @them staff`}
-                  </Text>
-                </Stack>
-              </Card>
+              <UnrosteredAlert key={row.alert_id} row={row} now={now} />
             ))}
           </Stack>
         </Region>
@@ -449,10 +679,18 @@ export function Dashboard({
         description="The attention index combines Slack activity against the cohort mean, attendance, and how complete exit tickets are. It is a sorted list for a human, not a grade — the parts are shown so nobody has to trust the number. Asking for help never enters it, and neither do assignment scores."
       >
         {!fellows.length ? (
+          // The one place Ding appears, and the only state in which he can:
+          // with no roster there is no queue, no leaderboard, no assignment and
+          // no funnel either, so this is not a gap in a working screen — it is
+          // the whole screen, and there is nothing here for a bell to get in
+          // the way of. He is decoration beside a heading that already carries
+          // the message, so `alt=""` keeps him out of the reading order rather
+          // than announcing a second title.
           <Card padding={5}>
             <EmptyState
+              icon={<Mascot size={120} alt="" />}
               title="Nobody on the roster yet"
-              description="Load one with cufa load-roster --csv <path> --cohort <id>."
+              description="Every number on this page is built out of the roster, so this is the first thing to do. Load one with cufa load-roster --csv <path> --cohort <id>."
               headingLevel={3}
             />
           </Card>
@@ -472,7 +710,23 @@ export function Dashboard({
         description="Fellow-facing channels only, over the last 7 days."
       >
         {!active.length ? (
-          <Text type="supporting">No Slack messages in the last 7 days.</Text>
+          // Empty here has two quite different causes and the staff member
+          // cannot tell them apart by looking: a quiet week, or a bot that is
+          // not in the channels. `received.slack_sync` is the one fact that
+          // separates them, so it is on the page rather than left to be
+          // guessed at. It reports the sync's age and stops there — whether
+          // that age is too old is the reader's call, not this screen's.
+          <Waiting>
+            {arrivals.slack_sync
+              ? [
+                  'Nobody has posted in a fellow-facing channel in the last 7 days.',
+                  `Slack itself last synced ${syncedAgo || fmtStamp(arrivals.slack_sync)} — if that is older than you expect, run cufa slack doctor.`,
+                ]
+              : [
+                  'Nothing has come from Slack yet.',
+                  'This fills once the bot is in the fellow-facing channels — cufa slack doctor checks it can see them.',
+                ]}
+          </Waiting>
         ) : (
           <List hasDividers listStyle="decimal">
             {active.map((row) => (
@@ -495,7 +749,12 @@ export function Dashboard({
         description="Staff view. Fellows see only their own badges, by DM, and can switch them off. Shoutouts are ranked by giving, not receiving."
       >
         {!boards.length ? (
-          <Text type="supporting">No data yet.</Text>
+          <Waiting>
+            {[
+              'Nothing to rank yet.',
+              'The first check-in, message, shoutout or exit ticket puts a name on a board.',
+            ]}
+          </Waiting>
         ) : (
           <Grid columns={{minWidth: 280, repeat: 'fit'}} gap={3}>
             {boards.map(([key, rows]) => (
@@ -513,7 +772,9 @@ export function Dashboard({
                       ))}
                     </List>
                   ) : (
-                    <Text type="supporting">No data yet.</Text>
+                    <Text type="supporting">
+                      {RANK_WAITING_FOR[key] || 'Nothing on this board yet.'}
+                    </Text>
                   )}
                 </Stack>
               </Card>
@@ -530,8 +791,9 @@ export function Dashboard({
           <Card padding={5}>
             <EmptyState
               title="No assignments yet"
-              description="Create one in Slack with /assignment create, or from the command line with cufa assignment create."
+              description="Set one and every fellow gets a card here to score, handed in or not. /assignment create in Slack, or cufa assignment create."
               headingLevel={3}
+              actions={<Button label="New assignment" href="/assignments/new" />}
             />
           </Card>
         ) : (
@@ -549,9 +811,23 @@ export function Dashboard({
 
       {/* Two cards became none. The bars and the medians are two halves of one
           region, so a divider parts them rather than a second border. */}
-      <Region title="Funnel" description={`Where ${total} fellows have got to.`}>
+      <Region
+        title="Funnel"
+        description={
+          total === 1
+            ? 'Where the one fellow in this cohort has got to.'
+            : total
+              ? `Where ${total} fellows have got to.`
+              : 'Nobody is in this cohort yet, so there is nowhere to have got to. It fills in from the roster.'
+        }
+      >
         {!stages.length ? (
-          <Text type="supporting">No stages to show yet.</Text>
+          <Waiting>
+            {[
+              'No stages came back for this cohort.',
+              'The five stages are the same for every cohort, so this is the query finding nothing rather than a cohort that has not started.',
+            ]}
+          </Waiting>
         ) : (
           <Stack gap={5}>
             {stages.map(([stage, label]) => (

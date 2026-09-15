@@ -1,0 +1,63 @@
+/* Motion, in the one layer that can carry it.
+   ----------------------------------------------------------------------
+   The theme cannot author any of this. `defineTheme` compiles to `:scope`
+   token declarations and flat `.astryx-*` rules and emits no at-rules at
+   all — a `@keyframes` key compiles to the literal string
+   `@keyframes: [object Object];`, which the browser drops, and a
+   `@media (prefers-reduced-motion: reduce)` key goes the same way. So a
+   transition written in the theme would have no way to switch itself off,
+   which is disqualifying: reduced motion is a stated need, not a taste.
+
+   Here it works, and it works for a specific reason. StyleX's atomics sit
+   in `@layer priority1…priority10`, declared after `product`, so anything
+   StyleX sets beats this file. What is left is what StyleX does not set,
+   and both rules below are in that set: `animation-*` on a progress bar's
+   fill, and every transition property on a nav row. Adding a property to a
+   declaration StyleX owns — `transition-property` on a Button, say — is not
+   possible from here and is not attempted.
+
+   Every rule is paired with its `reduce` branch, and the branch disables
+   the motion rather than shortening it: the bar is born at its width, the
+   nav row changes colour on the frame the pointer arrives. */
+
+@layer product {
+  /* A bar arriving at its value.
+     The implicit `from` is the only thing declared; the `to` resolves to
+     the element's own inline width, so nothing here has to know the number.
+     One run, no fill mode: the moment it finishes, the bar is an ordinary
+     bar at its real width, and a re-render cannot leave it stuck anywhere
+     else. */
+  @keyframes cufa-bar-grow {
+    from {
+      width: 0%;
+    }
+  }
+
+  .astryx-progressbar-fill {
+    animation: cufa-bar-grow var(--duration-medium, 300ms) var(--ease-standard, ease-out) 1;
+  }
+
+  /* Hover on a nav row. StyleX gives the row its hover colour but no
+     transition at all, so the background snaps between transparent and
+     6% black. This is the cheapest liveliness in the console: ten rows, one
+     rule, and it only ever plays under a pointer that is already moving. */
+  .astryx-side-nav-item {
+    transition-property: background-color;
+    transition-duration: var(--duration-fast, 125ms);
+    transition-timing-function: var(--ease-standard, ease-out);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .astryx-progressbar-fill {
+      animation: none;
+    }
+
+    /* `none` is what actually disables it; the `0s` is so that a computed
+       style read back in a browser says so without having to reason about
+       which properties a duration applies to. */
+    .astryx-side-nav-item {
+      transition-property: none;
+      transition-duration: 0s;
+    }
+  }
+}

@@ -39,7 +39,7 @@ The theme is `src/theme/classroomTheme.js`, built by `npm run theme` into
 source). It is what the `theme add`/`theme list` instructions above are for; the
 console does not use a published theme package directly, it extends neutral.
 
-Two things the CLI's advice does not cover here:
+Three things the CLI's advice does not cover here:
 
 * A component's own colour comes from a StyleX class in a later cascade layer
   than any theme rule, so a theme override that sets `color` on a component can
@@ -48,4 +48,13 @@ Two things the CLI's advice does not cover here:
   (`colorVars['--color-accent']`) rather than reaching for a hex.
 * Fonts named in the theme have to be loaded by the app. Ours are bundled from
   `node_modules` in `main.jsx`; nothing is fetched from a CDN at page load.
+* Motion cannot live in the theme. `defineTheme` emits no at-rules, so a theme
+  has no `@keyframes` and no way to write the
+  `@media (prefers-reduced-motion: reduce)` branch that would switch its own
+  transitions off — one was built and measured still running at 125ms under the
+  emulated preference. It lives in `src/motion.css`, in the `product` layer,
+  which can only set properties StyleX does not (`animation-*` on a progress
+  fill, `transition-*` on a nav row); `transition-property` on a Button is
+  StyleX's and cannot be extended from there. The header of
+  `src/theme/classroomTheme.js` records the measurements.
 

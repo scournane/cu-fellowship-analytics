@@ -10,6 +10,8 @@ import {createRoot} from 'react-dom/client'
 
 import {classroomTheme} from './theme/classroom.js'
 import './theme/classroom.css'
+// The motion the theme cannot author; see the file for why it has to be here.
+import './motion.css'
 
 import {AppFrame, FellowFrame} from './AppFrame.jsx'
 import {AssignmentForm} from './AssignmentForm.jsx'

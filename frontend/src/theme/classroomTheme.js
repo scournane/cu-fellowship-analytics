@@ -74,6 +74,64 @@
  * Anything changed here must be checked in a browser with `getComputedStyle`.
  * A rule that compiles is not a rule that applied.
  *
+ *
+ * MOTION — why there is none in this file, and where it has to go instead
+ * ----------------------------------------------------------------------
+ * `defineTheme` emits two kinds of CSS: token declarations on `:scope`, and
+ * `.astryx-*` rules whose only nesting is a key beginning with `:`. There are
+ * no at-rules. A `'@media (prefers-reduced-motion: reduce)'` key is not a
+ * pseudo, so it is emitted as a declaration — the generated file gets the
+ * literal `@media (prefers-reduced-motion: reduce): [object Object];` and the
+ * browser drops it. `'@starting-style'` goes the same way. Both built and read
+ * back before this was written.
+ *
+ * Two things follow, and between them they rule out every animation this
+ * console would obviously like — a funnel bar growing from zero on load, a
+ * notice arriving, a focus ring that fades up:
+ *
+ *   * An animation needs keyframes and the theme cannot write any. Setting
+ *     `animation-name` from here binds to nothing; the only `@keyframes` in
+ *     the bundle are StyleX's, under hashed names like `astryxv1hr86-B`. Built
+ *     it and measured: the declaration lands on all 19 bars and
+ *     `element.getAnimations()` returns 0.
+ *   * A transition written here is NOT switched off by reduced motion. Every
+ *     core component that moves carries its own guard as a StyleX atomic —
+ *     `transition-duration: 0s` inside the media query — in a layer above this
+ *     one, and the theme has no equivalent: a token it sets cannot be
+ *     conditional, and `transition-duration` on a component that declares its
+ *     own loses to the layer. Tried `transition-property: background-color` +
+ *     `var(--duration-fast)` on `side-nav-item`, which is the one clickable
+ *     row in the console that still snaps. It lands on all ten rows — and with
+ *     `prefers-reduced-motion: reduce` emulated it still measures 0.125s.
+ *
+ * So a new moment of motion lives in `src/motion.css`, in the `product` layer,
+ * where a real `@media (prefers-reduced-motion: reduce)` block can switch it
+ * off — that file carries the bar's grow-in and the nav row's hover, both
+ * measured on and off under an emulated preference. A screen's own `xstyle`
+ * works too where the element is one the screen renders, but it lands on a
+ * component's outer container and often cannot reach the part that moves: a
+ * ProgressBar's fill is inside it, which is why the bars are in the stylesheet
+ * rather than in `Dashboard.jsx`. Neither of them is here, and a transition
+ * added here would ship past the preference.
+ *
+ * The one motion lever this file does have is the whole scale at once —
+ * `motion: {fast, medium, slow, ratio}`. It is deliberately not set, so the
+ * console inherits neutral's {125, 300, 700} rather than the system's own
+ * {175, 410, 975}. Raising it would hand every guarded transition the
+ * documented band, but core leaves `Link`, `Collapsible`'s chevron and
+ * `ProgressBar`'s fill unguarded — measured on the dashboard under `reduce` as
+ * 7 links, 1 chevron and 19 bars still transitioning — so raising the scale
+ * lengthens motion for exactly the people who asked for less of it. The scale
+ * moves when those three are guarded upstream, and not before.
+ *
+ * What is already here and already correct, measured on the dashboard with no
+ * preference set: 15 buttons and 16 text inputs transition on `--ease-standard`
+ * at 125ms — the button's hover and its `scale(0.98)` press, the input's focus
+ * edge — and every one of them drops to 0s under `reduce`. The 4px drop onto
+ * the bevel is not among them: `translate` is not in Button's
+ * `transition-property`, and that list is StyleX's, so this file cannot add to
+ * it. The drop is instant by construction, not by choice.
+ *
  * This is the SOURCE. `npm run theme` compiles it to `classroom.js` and
  * `classroom.css`, which are what the app imports; edit this file, never those.
  */
