@@ -1,7 +1,9 @@
 import {Button} from '@astryxdesign/core/Button'
 import {Card} from '@astryxdesign/core/Card'
+import {EmptyState} from '@astryxdesign/core/EmptyState'
 import {Grid} from '@astryxdesign/core/Grid'
 import {Heading} from '@astryxdesign/core/Heading'
+import {Icon} from '@astryxdesign/core/Icon'
 import {Link} from '@astryxdesign/core/Link'
 import {List, ListItem} from '@astryxdesign/core/List'
 import {MetadataList, MetadataListItem} from '@astryxdesign/core/MetadataList'
@@ -13,6 +15,7 @@ import * as stylex from '@stylexjs/stylex'
 
 import {InlineField, PageHeader, PostForm} from './AppFrame.jsx'
 import {fmtDate, fmtDateTime, fmtStamp} from './format.js'
+import {Mascot} from './Mascot.jsx'
 
 // The one thing this screen sets by hand, and it sets a keyword rather than a
 // measurement. The theme's chunky bar puts its height on the progress bar's
@@ -64,6 +67,23 @@ function Region({title, description, children}) {
   )
 }
 
+/** What a region says when it is holding nothing.
+ *
+ *  A fellow's first visit is a page of these — no sessions, no badges, no
+ *  journey — so they are not an edge case on this screen, they are the
+ *  welcome. Each one names what will fill it and the one thing that puts
+ *  something there, and every word the bare line carried is carried on.
+ *
+ *  Staff keep the bare line. `/dashboard/fellow/<id>` renders this same
+ *  component, and there the empty regions are read down a column of twenty
+ *  fellows on a Monday morning: second person is wrong about somebody else,
+ *  and an illustrated panel per empty region would make the fellows with the
+ *  least on file the loudest thing on the screen. */
+function Nothing({staff, line, title, description, icon}) {
+  if (staff) return <Text type="supporting">{line}</Text>
+  return <EmptyState icon={icon} title={title} description={description} />
+}
+
 /** One headline number on its own colour, what it counts, and how it was
  *  arrived at. These are the whole of the screen's colour.
  *
@@ -73,14 +93,23 @@ function Region({title, description, children}) {
  *  itself from its own StyleX class and would keep body ink on a saturated
  *  fill, so inheriting lets the card variant own both halves of the pair.
  *  Until the variant exists the card is an unfilled box and the same inherited
- *  ink stays readable on white, which is the fallback by design. */
-function StatBlock({tone, value, label, detail}) {
+ *  ink stays readable on white, which is the fallback by design.
+ *
+ *  `note` is the block noticing that its own two numbers have met. It sits
+ *  under `detail` rather than replacing it, so the how-it-was-arrived-at line
+ *  is never spent on the compliment, and it is bold because a faint line
+ *  under a faint line is a line nobody reads. The caller decides when it is
+ *  true; see `everySession` / `everyTicket`. */
+function StatBlock({tone, value, label, detail, note}) {
   return (
     <Card variant={`lead-${tone}`} padding={5}>
       <Stack gap={1}>
         <Text type="display-2" color="inherit" hasTabularNumbers>{value}</Text>
         <Text color="inherit">{label}</Text>
         {detail ? <Text type="supporting" color="inherit">{detail}</Text> : null}
+        {note ? (
+          <Text type="supporting" color="inherit" weight="bold">{note}</Text>
+        ) : null}
       </Stack>
     </Card>
   )
@@ -104,13 +133,18 @@ function YesNo({value, yes = 'yes', no = 'not yet'}) {
 
 /** One reminder kind, and a button per lead time that posts the opposite of
  *  what it currently is. The state is in the label, not only in the colour. */
-function ReminderRow({kind, label, chosen = [], offsets = [], token}) {
+function ReminderRow({kind, label, chosen, offsets, token}) {
+  // Read through `|| []` rather than a default parameter, the same way the
+  // screen's own lists are: a default only catches `undefined`, and a server
+  // with nothing to say about a list is as likely to send a null.
+  const times = offsets || []
+  const picked = chosen || []
   return (
     <Stack gap={2}>
       <Text weight="bold">{label}</Text>
       <Stack direction="horizontal" gap={2} wrap="wrap">
-        {offsets.map((offset) => {
-          const on = chosen.includes(offset)
+        {times.map((offset) => {
+          const on = picked.includes(offset)
           return (
             <PostForm key={offset} action={`/me/${token}/prefs`}>
               <input type="hidden" name="kind" value={kind} />
@@ -258,19 +292,49 @@ export function Fellow({
   const links = connected || {}
   const reached = steps.filter((step) => step.at).length
 
+  // The two things on this page worth being glad about, and each is no more
+  // than what its own pair of numbers already says. The guards are here rather
+  // than inside StatBlock so they sit beside the numbers they guard: a fellow
+  // before the first session is at 0 of 0 and has not attended everything, a
+  // fellow with a check-in still being adjudicated does not yet know whether
+  // they have, and a fellow at 2 of 5 is told nothing at all. Staff see
+  // neither — a triage screen congratulating somebody is reading the record
+  // back to the wrong person.
+  const everySession =
+    !staff_view &&
+    !!engagement &&
+    engagement.sessions_held > 0 &&
+    !engagement.needs_review &&
+    engagement.attended === engagement.sessions_held
+  const everyTicket =
+    !staff_view &&
+    !!engagement &&
+    engagement.forms_expected > 0 &&
+    engagement.forms_submitted === engagement.forms_expected
+
   return (
     <Stack gap={6}>
-      <PageHeader title={fellow.full_name}>
-        {staff_view
-          ? `${fellow.fellow_id} · ${fellow.status} · ${fellow.primary_email} · as of ${fmtStamp(now)}`
-          : `Your fellowship so far, as of ${fmtStamp(now)}.`}
-      </PageHeader>
-
-      {!staff_view ? (
-        <Stack direction="horizontal" gap={3} wrap="wrap">
-          <Button label="Export my data (CSV)" href={`/me/${token}/export.csv`} />
+      {staff_view ? (
+        <PageHeader title={fellow.full_name}>
+          {`${fellow.fellow_id} · ${fellow.status} · ${fellow.primary_email} · as of ${fmtStamp(now)}`}
+        </PageHeader>
+      ) : (
+        // Ding, once, beside the name — the same bell that pings them in
+        // Slack, on the page that bell's link opens. It is decoration next to
+        // a heading that is the reader's own name, so `alt=""`: a screen
+        // reader announcing the mascot before the person is the mascot
+        // talking over the page.
+        //
+        // Wrapping is what keeps this safe at 390: the heading's longest word
+        // is far narrower than the column, so a long name drops under the bell
+        // rather than pushing the page sideways.
+        <Stack direction="horizontal" gap={3} align="center" wrap="wrap">
+          <Mascot size={56} alt="" />
+          <PageHeader title={fellow.full_name}>
+            {`Your fellowship so far, as of ${fmtStamp(now)}.`}
+          </PageHeader>
         </Stack>
-      ) : null}
+      )}
 
       {staff_view && engagement ? (
         <StaffSummary fellow={fellow} engagement={engagement} aliases={aliases || []} />
@@ -287,6 +351,7 @@ export function Fellow({
                 ? `${engagement.needs_review} still being checked`
                 : undefined
             }
+            note={everySession ? 'You have not missed one.' : undefined}
           />
           <StatBlock
             tone="blue"
@@ -298,6 +363,7 @@ export function Fellow({
                 ? undefined
                 : `${percent(engagement.form_completeness)} of the fields answered`
             }
+            note={everyTicket ? 'You have handed in every one.' : undefined}
           />
           <StatBlock
             tone="purple"
@@ -316,7 +382,13 @@ export function Fellow({
             ))}
           </Stack>
         ) : (
-          <Text type="supporting">No sessions yet.</Text>
+          <Nothing
+            staff={staff_view}
+            line="No sessions yet."
+            icon={<Icon icon="calendar" size="lg" />}
+            title="Your first session is still ahead"
+            description="Check in when it starts and it appears here — whether you made it, and whether your exit ticket is in."
+          />
         )}
       </Region>
 
@@ -327,7 +399,19 @@ export function Fellow({
               <Card key={badge.badge_key} padding={5}>
                 <Stack gap={3}>
                   <Stack gap={0.5}>
-                    <Heading level={3}>{badge.label}</Heading>
+                    {/* A badge with every level taken renders exactly like a
+                        badge one third of the way up — a full bar, and a
+                        "level 3 of 3" a reader has to compare against itself.
+                        The pill is the page saying the two numbers have met.
+                        It is a restatement, not a compliment, which is why it
+                        is the one piece of this work staff see too: which
+                        badges are finished is part of the record. */}
+                    <Stack direction="horizontal" gap={2} align="center" wrap="wrap">
+                      <Heading level={3}>{badge.label}</Heading>
+                      {badge.max_level >= 1 && badge.level >= badge.max_level ? (
+                        <Token label="top level" color="green" size="sm" />
+                      ) : null}
+                    </Stack>
                     <Text type="supporting">{badge.description}</Text>
                   </Stack>
                   <ProgressBar
@@ -341,9 +425,20 @@ export function Fellow({
             ))}
           </Grid>
         ) : (
-          <Text type="supporting">
-            None yet — check in to a session and one appears.
-          </Text>
+          // The one place Ding stands in a region rather than beside a
+          // heading: it is holding the space the first badge will take, and
+          // this is the gladdest thing on the page to be waiting for. It is
+          // also a screen away from the bell in the header, so a fellow with
+          // nothing on file yet meets the mascot twice at most and never
+          // twice at once. EmptyState marks its icon slot decorative, and
+          // the title beside it already carries the message, so `alt=""`.
+          <Nothing
+            staff={staff_view}
+            line="None yet — check in to a session and one appears."
+            icon={<Mascot size={96} alt="" />}
+            title="Your first badge is one check-in away"
+            description="Badges arrive on their own as you show up and hand things in. Check in to a session and the first one appears here."
+          />
         )}
       </Region>
 
@@ -409,7 +504,13 @@ export function Fellow({
               ))}
             </List>
           ) : (
-            <Text type="supporting">Nothing recorded yet.</Text>
+            <Nothing
+              staff={staff_view}
+              line="Nothing recorded yet."
+              icon={<Icon icon="clock" size="lg" />}
+              title="Nothing on your journey yet"
+              description="The steps from being accepted to finishing the fellowship land here one at a time, each with the date it happened."
+            />
           )}
         </Stack>
       </Region>
@@ -505,14 +606,17 @@ export function Fellow({
           </Text>
         ) : staff_view ? (
           <MetadataList columns="multi">
+            {/* Both read through `|| []`, like every other list on this
+                screen: a server with nothing to say about one may send a
+                null, and `.length` on a null takes the whole page down. */}
             <MetadataListItem label="Session reminders">
-              {preferences.session_reminders.length
-                ? preferences.session_reminders.map(offsetLabel).join(', ') + ' before'
+              {(preferences.session_reminders || []).length
+                ? (preferences.session_reminders || []).map(offsetLabel).join(', ') + ' before'
                 : 'off'}
             </MetadataListItem>
             <MetadataListItem label="Assignment reminders">
-              {preferences.assignment_reminders.length
-                ? preferences.assignment_reminders.map(offsetLabel).join(', ') + ' before'
+              {(preferences.assignment_reminders || []).length
+                ? (preferences.assignment_reminders || []).map(offsetLabel).join(', ') + ' before'
                 : 'off'}
             </MetadataListItem>
             <MetadataListItem label="Badge messages">
@@ -560,10 +664,19 @@ export function Fellow({
       </Region>
 
       {!staff_view ? (
-        <Text type="supporting">
-          This page shows your own data and nobody else&apos;s. The link expires after
-          7 days; ask the bot for a new one with /dashboard.
-        </Text>
+        // The export moved down here from under the title. Nothing about it
+        // changed except the company it keeps: it is the same control, and it
+        // belongs beside the sentence about whose data this is rather than
+        // being the first thing a fellow meets under their own name.
+        <Stack gap={3}>
+          <Text type="supporting">
+            This page shows your own data and nobody else&apos;s. The link expires after
+            7 days; ask the bot for a new one with /dashboard.
+          </Text>
+          <Stack direction="horizontal" gap={3} wrap="wrap">
+            <Button label="Export my data (CSV)" href={`/me/${token}/export.csv`} />
+          </Stack>
+        </Stack>
       ) : (
         <Text type="supporting">
           <Link href={`/dashboard?cohort=${fellow.cohort_id}`}>Back to the staff dashboard</Link>
