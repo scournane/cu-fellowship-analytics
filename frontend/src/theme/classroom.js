@@ -626,7 +626,6 @@ export const classroomTheme = {
     },
     "table-header-cell": {
       "base": {
-        "--text-label-size": "13px",
         "--font-weight-semibold": "600",
         "--color-text-secondary": "#777777",
         "--border-width": "1px"

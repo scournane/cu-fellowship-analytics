@@ -622,7 +622,10 @@ export const classroomTheme = defineTheme({
     // which is now the only rule weight in the file.
     'table-header-cell': {
       base: {
-        '--text-label-size': '13px',
+        // No size of its own. The 13px here was sized against tracked caps,
+        // which take more room than they need; in sentence case it read as
+        // fine print under 17px body copy, so the heading takes the label
+        // size like every other label on the page.
         '--font-weight-semibold': '600',
         '--color-text-secondary': PENCIL_GRAY,
         '--border-width': HAIRLINE,
