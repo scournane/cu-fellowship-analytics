@@ -31,31 +31,31 @@ export const classroomTheme = {
     "--font-size-4xl": "3.25rem",
     "--font-size-5xl": "4.0625rem",
     "--text-heading-1-size": "var(--font-size-2xl)",
-    "--text-heading-1-weight": 800,
+    "--text-heading-1-weight": 700,
     "--text-heading-1-leading": "1.2121",
     "--text-heading-2-size": "var(--font-size-xl)",
-    "--text-heading-2-weight": 800,
+    "--text-heading-2-weight": 700,
     "--text-heading-2-leading": "1.3333",
     "--text-heading-3-size": "var(--font-size-lg)",
-    "--text-heading-3-weight": 800,
+    "--text-heading-3-weight": 700,
     "--text-heading-3-leading": "1.3333",
     "--text-heading-4-size": "var(--font-size-base)",
-    "--text-heading-4-weight": 800,
+    "--text-heading-4-weight": 700,
     "--text-heading-4-leading": "1.4118",
     "--text-heading-5-size": "var(--font-size-sm)",
-    "--text-heading-5-weight": 800,
+    "--text-heading-5-weight": 700,
     "--text-heading-5-leading": "1.4286",
     "--text-heading-6-size": "var(--font-size-xs)",
-    "--text-heading-6-weight": 800,
+    "--text-heading-6-weight": 700,
     "--text-heading-6-leading": "1.4545",
     "--text-body-size": "var(--font-size-base)",
-    "--text-body-weight": 500,
+    "--text-body-weight": 400,
     "--text-body-leading": "1.4118",
     "--text-large-size": "var(--font-size-lg)",
     "--text-large-weight": "var(--font-weight-semibold)",
     "--text-large-leading": "1.3333",
     "--text-label-size": "15px",
-    "--text-label-weight": "800",
+    "--text-label-weight": "600",
     "--text-label-leading": "1.4118",
     "--text-code-size": "var(--font-size-base)",
     "--text-code-weight": "var(--font-weight-normal)",
@@ -190,9 +190,9 @@ export const classroomTheme = {
     "--shadow-inset-error": "inset 0 0 0 2px #ff4b4b80",
     "--radius-chat": "28px",
     "--color-background-inverted": "#4b4b4b",
-    "--font-weight-medium": "700",
-    "--font-weight-semibold": "800",
-    "--font-weight-bold": "800",
+    "--font-weight-medium": "600",
+    "--font-weight-semibold": "700",
+    "--font-weight-bold": "700",
     "--section-heading-ink": "#3a8701",
     "--accent-bevel": "#46a302",
     "--size-element-sm": "32px",
@@ -274,9 +274,7 @@ export const classroomTheme = {
       "type:label": {
         "fontFamily": "var(--font-family-body)",
         "fontSize": "var(--text-label-size)",
-        "lineHeight": "var(--text-label-leading)",
-        "textTransform": "uppercase",
-        "letterSpacing": "0.053em"
+        "lineHeight": "var(--text-label-leading)"
       },
       "type:code": {
         "fontFamily": "var(--font-family-code)",
@@ -308,13 +306,6 @@ export const classroomTheme = {
       "variant:destructive": {
         "backgroundColor": "var(--color-error-muted)",
         "color": "var(--color-error)",
-        "--button-bevel": "#e03d3d"
-      },
-      "base": {
-        "borderRadius": "12px",
-        "textTransform": "uppercase",
-        "letterSpacing": "0.053em",
-        "--button-bevel": "#afafaf",
         "::after": {
           "content": "\"\"",
           "position": "absolute",
@@ -322,7 +313,7 @@ export const classroomTheme = {
           "insetInlineEnd": "0",
           "top": "100%",
           "height": "4px",
-          "backgroundColor": "var(--button-bevel)",
+          "backgroundColor": "#e03d3d",
           "borderEndStartRadius": "12px",
           "borderEndEndRadius": "12px",
           "pointerEvents": "none"
@@ -334,31 +325,47 @@ export const classroomTheme = {
           "height": "0px"
         }
       },
+      "base": {
+        "borderRadius": "12px",
+        "textTransform": "uppercase",
+        "letterSpacing": "0.053em"
+      },
       "variant:primary": {
-        "--button-bevel": "var(--accent-bevel)"
+        "::after": {
+          "content": "\"\"",
+          "position": "absolute",
+          "insetInlineStart": "0",
+          "insetInlineEnd": "0",
+          "top": "100%",
+          "height": "4px",
+          "backgroundColor": "var(--accent-bevel)",
+          "borderEndStartRadius": "12px",
+          "borderEndEndRadius": "12px",
+          "pointerEvents": "none"
+        },
+        ":active": {
+          "translate": "0 4px"
+        },
+        ":active::after": {
+          "height": "0px"
+        }
       },
       "variant:secondary": {
         "--color-neutral": "#ffffff",
         "--color-text-primary": "#077db5",
         "--color-icon-primary": "#077db5",
-        "--button-bevel": "#afafaf",
         "::before": {
           "content": "\"\"",
           "position": "absolute",
           "inset": "0",
           "borderRadius": "inherit",
-          "borderWidth": "2px",
+          "borderWidth": "1px",
           "borderStyle": "solid",
-          "borderColor": "#afafaf",
+          "borderColor": "#777777",
           "pointerEvents": "none"
         }
       },
-      "variant:ghost": {
-        "--button-bevel": "transparent",
-        ":active": {
-          "translate": "0 0"
-        }
-      }
+      "variant:ghost": {}
     },
     "badge": {
       "variant:info": {
@@ -423,7 +430,7 @@ export const classroomTheme = {
       },
       "base": {
         "--radius-inner": "12px",
-        "--font-weight-medium": "700"
+        "--font-weight-medium": "600"
       }
     },
     "statusdot": {
@@ -464,7 +471,7 @@ export const classroomTheme = {
       },
       "base": {
         "borderRadius": "16px",
-        "--border-width": "2px"
+        "--border-width": "1px"
       }
     },
     "switch": {
@@ -475,8 +482,8 @@ export const classroomTheme = {
     "progressbar": {
       "base": {
         "--color-background-muted": "var(--color-border-emphasized)",
-        "--font-weight-medium": "800",
-        "--font-weight-normal": "800"
+        "--font-weight-medium": "600",
+        "--font-weight-normal": "500"
       },
       "variant:accent": {
         "--color-accent": "#0074e2"
@@ -495,7 +502,7 @@ export const classroomTheme = {
       "base": {
         "padding": "20px",
         "borderRadius": "16px",
-        "--border-width": "2px"
+        "--border-width": "0px"
       },
       "variant:lead-green": {
         "backgroundColor": "#3a8701",
@@ -587,42 +594,40 @@ export const classroomTheme = {
     "text-input": {
       "base": {
         "borderRadius": "12px",
-        "--border-width": "2px",
-        "--color-border": "#e5e5e5"
+        "--border-width": "1px",
+        "--color-border-emphasized": "#777777"
       }
     },
     "selector": {
       "base": {
         "borderRadius": "12px",
-        "--border-width": "2px",
-        "--color-border": "#e5e5e5"
+        "--border-width": "1px",
+        "--color-border-emphasized": "#777777"
       }
     },
     "textarea": {
       "base": {
         "borderRadius": "12px",
-        "--border-width": "2px",
-        "--color-border": "#e5e5e5"
+        "--border-width": "1px",
+        "--color-border-emphasized": "#777777"
       }
     },
     "field-label": {
       "base": {
-        "--font-weight-medium": "700",
+        "--font-weight-medium": "600",
         "--color-text-secondary": "#777777"
       }
     },
     "token": {
       "base": {
         "--radius-inner": "12px",
-        "--font-weight-medium": "700"
+        "--font-weight-medium": "600"
       }
     },
     "table-header-cell": {
       "base": {
-        "textTransform": "uppercase",
-        "letterSpacing": "0.053em",
         "--text-label-size": "13px",
-        "--font-weight-semibold": "800",
+        "--font-weight-semibold": "600",
         "--color-text-secondary": "#777777",
         "--border-width": "1px"
       }
@@ -641,7 +646,7 @@ export const classroomTheme = {
       "base": {
         "backgroundColor": "#ffffff",
         "fontFamily": "var(--font-family-heading)",
-        "borderInlineEndWidth": "2px",
+        "borderInlineEndWidth": "1px",
         "borderInlineEndStyle": "solid",
         "borderInlineEndColor": "#e5e5e5"
       }
@@ -649,27 +654,14 @@ export const classroomTheme = {
     "side-nav-item": {
       "base": {
         "borderRadius": "12px",
-        "textTransform": "uppercase",
-        "letterSpacing": "0.053em",
-        "position": "relative",
         "--text-label-size": "15px",
-        "--font-weight-normal": "700",
+        "--font-weight-normal": "600",
         "--color-text-primary": "#777777"
       },
       "selected": {
         "--color-neutral": "#d7ffb8",
         "--color-text-primary": "#3d7000",
-        "--font-weight-medium": "800",
-        "::before": {
-          "content": "\"\"",
-          "position": "absolute",
-          "inset": "0",
-          "borderRadius": "inherit",
-          "borderWidth": "2px",
-          "borderStyle": "solid",
-          "borderColor": "#a5ed6e",
-          "pointerEvents": "none"
-        }
+        "--font-weight-medium": "700"
       }
     },
     "side-nav-heading": {
@@ -677,16 +669,14 @@ export const classroomTheme = {
         "letterSpacing": "-0.01em",
         "--text-large-size": "17px",
         "--text-large-leading": "1.3",
-        "--font-weight-semibold": "800",
+        "--font-weight-semibold": "700",
         "--color-text-primary": "#4b4b4b"
       }
     },
     "side-nav-section": {
       "base": {
-        "textTransform": "uppercase",
-        "letterSpacing": "0.053em",
         "--text-supporting-size": "12px",
-        "--font-weight-semibold": "800",
+        "--font-weight-semibold": "700",
         "--color-text-secondary": "#777777"
       }
     },
@@ -694,7 +684,7 @@ export const classroomTheme = {
       "base": {
         "backgroundColor": "#ffffff",
         "fontFamily": "var(--font-family-heading)",
-        "borderBottomWidth": "2px",
+        "borderBottomWidth": "1px",
         "borderBottomStyle": "solid",
         "borderBottomColor": "#e5e5e5"
       }
@@ -702,10 +692,8 @@ export const classroomTheme = {
     "top-nav-item": {
       "base": {
         "borderRadius": "12px",
-        "textTransform": "uppercase",
-        "letterSpacing": "0.053em",
         "--text-label-size": "15px",
-        "--font-weight-normal": "700",
+        "--font-weight-normal": "600",
         "--color-text-primary": "#777777"
       },
       "selected": {
@@ -715,7 +703,7 @@ export const classroomTheme = {
     },
     "top-nav-heading": {
       "base": {
-        "--font-weight-semibold": "800"
+        "--font-weight-semibold": "700"
       }
     },
     "progressbar-track": {

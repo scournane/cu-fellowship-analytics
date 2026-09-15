@@ -4,19 +4,20 @@
  * Built to the app the team is copying, not its marketing page. Three things
  * carry that look, and everything else here is in service of them:
  *
- *   * Controls sit on a solid bevel. A filled green button has a 4px band of
- *     darker green directly beneath it, square-cut, no blur; pressing drops the
- *     face onto the band. A white outlined button does the same on gray. This
- *     is the most recognisable element on those screens.
+ *   * The primary action sits on a solid bevel. A filled green button has a 4px
+ *     band of darker green directly beneath it, square-cut, no blur; pressing
+ *     drops the face onto the band. This is the most recognisable element on
+ *     those screens, and it is the *primary* action's signature — see "THE
+ *     TRIM" below for why nothing else gets one.
  *   * A region opens with a block of one saturated colour carrying white text
  *     — `<Card variant="lead-green">` and its blue, purple and orange siblings.
  *     Not a tint: the fill is the hue at full strength, stepped down in value
  *     only as far as white needs to stay readable on it (see LEAD_* below).
- *   * Type is heavy. Rounded display for numbers and headings, bold for every
- *     label, uppercase with tracking on the labels that name things.
+ *   * The rounded display face carries the numbers and the headings. Those are
+ *     the page's loud voice; everything around them is quiet.
  *
- * Surfaces stay flat otherwise: white cards, 16px corners, a 2px outline, and
- * no drop shadows anywhere. The bevel is the one exception, and it is a solid
+ * Surfaces stay flat otherwise: white cards, 16px corners, no outline, and no
+ * drop shadows anywhere. The bevel is the one exception, and it is a solid
  * offset rather than a blur, which is why `--shadow-*` are all still `none`.
  *
  * Green is for progress — the funnel, the primary action, the selected page.
@@ -24,6 +25,32 @@
  *
  * Light only. The reference is a light design, so `main.jsx` pins `mode="light"`
  * and every token below is a single value.
+ *
+ *
+ * THE TRIM — what this theme deliberately does NOT do
+ * ---------------------------------------------------
+ * The first cut of this file put chrome on everything at once: caps with
+ * tracking on nav rows, column headings, stat captions and buttons; a 2px
+ * outline on cards, inputs and the rail; a bevel under every button; and 700–800
+ * from the rail to the field labels. Four of each on one screen, and none of
+ * them meant anything any more. The ornament now has one home each:
+ *
+ *   * UPPERCASE + tracking: buttons only. A nav row, a column heading and a
+ *     stat caption read better in sentence case, and the tracking that makes
+ *     caps legible is most of what made the page feel loud.
+ *   * BORDERS: one weight — 1px — and only where an edge does work. Inputs get
+ *     one (you have to aim at them, so it is also the one neutral dark enough
+ *     to clear 3:1). The rail keeps a hairline because the page scrolls under
+ *     it. Table rules stay hairline. Cards get none: a white card on a white
+ *     page beside other white cards is separated by the gap between them.
+ *   * THE BEVEL: `variant="primary"` and `variant="destructive"`. A secondary,
+ *     a "Clear" and a preference toggle raised off the page at the same time
+ *     are four objects competing for the one press.
+ *   * WEIGHT: the display numbers and the section headings are heavy; nothing
+ *     else is. Body copy sits at the face's own 400 so there is light material
+ *     to rest on, and labels, tokens and nav rows sit at 600.
+ *
+ * Adding any of these back somewhere new means taking it off somewhere else.
  *
  *
  * HOW THIS FILE HAS TO BE WRITTEN — read before editing
@@ -73,11 +100,24 @@ const FADED_GRAY = '#afafaf'
 // Derived, and marked as such. The reference gives one border colour, #afafaf,
 // and specifies it for buttons and pills. Ruling every table row and card at
 // that weight would draw the eye to the furniture instead of the data, so
-// surfaces get a lighter step of the same neutral and #afafaf stays on the
-// controls it was specified for.
+// surfaces get a lighter step of the same neutral. #afafaf is now the wash
+// under a pressed control rather than a line: at 2.19:1 on paper it is not a
+// border you can find, so the edges that have to be aimed at (an input, an
+// outlined button) take PENCIL_GRAY instead — see CONTROL_EDGE below.
 const RULE_GRAY = '#e5e5e5'
 const WASH_GRAY = '#f7f7f7'
 const TRACK_GRAY = '#e5e5e5'
+
+// The one border weight. Anything in this file that still draws a line draws
+// it at this width; there is no second, heavier rule any more.
+const HAIRLINE = '1px'
+
+// The edge of something you have to aim at — a text field, an outlined button.
+// It is the only place a line has to be findable rather than decorative, which
+// is a 3:1 job, and PENCIL_GRAY is the lightest neutral in the palette that
+// does it: #777777 on paper measures 4.48:1, against #afafaf's 2.19:1. Thinner
+// than the 2px #afafaf it replaces, and actually visible.
+const CONTROL_EDGE = PENCIL_GRAY
 
 // The reference has no error or warning colour — its palette came from a
 // marketing page, and this is a console that has to say "that did not work".
@@ -104,10 +144,43 @@ const LINK_BLUE = '#077db5'
 
 // ---- the bevel band ------------------------------------------------------
 // One step down in value from the face it sits under, square-cut. These carry
-// no text, so they have no contrast floor of their own.
+// no text, so they have no contrast floor of their own. There is no gray band
+// any more: only a filled button is raised, and a filled button is either the
+// accent or the destructive red.
 const GREEN_BEVEL = '#46a302'
-const GRAY_BEVEL = FADED_GRAY
 const RED_BEVEL = '#e03d3d'
+
+// The three text controls are the same object, so they are written once. See
+// the note on `text-input` in `components` for why the colour token is the
+// emphasized one.
+const INPUT_EDGE = {
+  borderRadius: '12px',
+  '--border-width': HAIRLINE,
+  '--color-border-emphasized': CONTROL_EDGE,
+}
+
+/** The raised band and the press that goes with it, for the one or two
+ *  variants that earn it. `band` is a colour or a `var()` — primary takes
+ *  `--accent-bevel` so a lead block can hand its buttons a band of its own
+ *  instead of a green one. */
+function bevel(band) {
+  return {
+    '::after': {
+      content: '""',
+      position: 'absolute',
+      insetInlineStart: '0',
+      insetInlineEnd: '0',
+      top: '100%',
+      height: '4px',
+      backgroundColor: band,
+      borderEndStartRadius: '12px',
+      borderEndEndRadius: '12px',
+      pointerEvents: 'none',
+    },
+    ':active': {translate: '0 4px'},
+    ':active::after': {height: '0px'},
+  }
+}
 
 // ---- the lead blocks -----------------------------------------------------
 // The four colours a region can open with. The reference names them at full
@@ -127,9 +200,12 @@ const LEAD_BLUE = '#077db5'
 const LEAD_PURPLE = '#9a4cee'
 const LEAD_ORANGE = '#b85c00'
 
-// Nav labels, table headings and button text: uppercase at the reference's
-// tracking. Labels only — never body copy.
+// Button text, and nothing else: uppercase at the reference's tracking. Nav
+// rows, column headings and stat captions used to carry this too, which is
+// four things in caps on one screen and the main reason the console read as
+// shouting. See "THE TRIM" at the top of the file.
 const LABEL_TRACKING = '0.053em'
+
 // The reference sets nav labels at 15px. The top bar could not afford that with
 // ten of them across a laptop; the rail gives each its own line, so 15px is back.
 const NAV_LABEL_SIZE = '15px'
@@ -199,15 +275,23 @@ export const classroomTheme = defineTheme({
     // substitute for Feather — and Nunito Sans for reading. Both are bundled
     // from node_modules by the build, so nothing is fetched at page load,
     // which is the promise the rest of the bundle already makes.
+    //
+    // 700, not 800: a heading is meant to be the heavy thing on a card, and at
+    // 800 every card title was competing with the display numbers above it.
+    // Nunito at 700 is still unmistakably the rounded, chunky face.
     heading: {
       family: 'Nunito Variable',
       fallbacks: 'Nunito, ui-rounded, "SF Pro Rounded", system-ui, sans-serif',
-      weight: 800,
+      weight: 700,
     },
+    // 400 is this face's reading weight. At 500 there was no light material
+    // anywhere on the page for the eye to rest on — every run of prose sat a
+    // half-step up from where a paragraph belongs, which is most of why the
+    // screens read as dense rather than as text.
     body: {
       family: 'Nunito Sans Variable',
       fallbacks: '"Nunito Sans", "Segoe UI", system-ui, -apple-system, sans-serif',
-      weight: 500,
+      weight: 400,
     },
   },
 
@@ -317,17 +401,22 @@ export const classroomTheme = defineTheme({
     '--radius-page': '16px',
 
     // ---- weight --------------------------------------------------------
-    // Labels — buttons, nav rows, table headings, Text type="label" — are the
-    // one place this design shouts, so the named weights sit a step heavier
-    // than a neutral theme would put them and the label scale is bold outright.
-    '--font-weight-medium': '700',
-    '--font-weight-semibold': '800',
-    '--font-weight-bold': '800',
-    '--text-label-weight': '800',
+    // One step above a neutral theme, not two. These are read by tokens,
+    // badges, field labels and nav rows — the supporting cast — and at 700/800
+    // they were as heavy as the headings, so nothing on the page looked more
+    // important than anything else. 600 still separates a label from its value
+    // without asking to be read first.
+    '--font-weight-medium': '600',
+    '--font-weight-semibold': '700',
+    '--font-weight-bold': '700',
+    // The stat-tile caption sits under a 40px number. It does not also need to
+    // be the boldest text in its own tile.
+    '--text-label-weight': '600',
     '--text-label-size': '15px',
     // The number on a stat tile is a headline, not a paragraph. The type scale
     // leaves the display weights at the body weight, which is not what a
-    // rounded display face is for.
+    // rounded display face is for. These stay at 800 while everything around
+    // them comes down — they are the thing the eye is supposed to land on.
     '--text-display-1-weight': '800',
     '--text-display-2-weight': '800',
     '--text-display-3-weight': '800',
@@ -396,8 +485,12 @@ export const classroomTheme = defineTheme({
       'type:display-1': {fontFamily: 'var(--font-family-heading)'},
       'type:display-2': {fontFamily: 'var(--font-family-heading)'},
       'type:display-3': {fontFamily: 'var(--font-family-heading)'},
-      // The stat-tile caption. Uppercase belongs on a label and nowhere else.
-      'type:label': {textTransform: 'uppercase', letterSpacing: LABEL_TRACKING},
+      // `type:label` used to be uppercase with tracking. It is the caption
+      // under a stat number — "Attention index", "Slack (7 days)" — and there
+      // were a dozen of them on the dashboard alone, next to a nav rail and a
+      // table that were also in caps. Sentence case at `--text-label-weight`
+      // is still clearly a caption and stops the screen shouting; nothing is
+      // set here now, so the entry is gone rather than left empty.
     },
 
     // ---- the bevel -----------------------------------------------------
@@ -411,78 +504,87 @@ export const classroomTheme = defineTheme({
     // layer above this one; a themed shadow here compiles and never paints.
     // `translate` is used rather than `transform` for the same reason: Button
     // owns `transform` on `:active`, and `translate` composes with it.
+    //
+    // This lives on the variants rather than on `base` now. Every button used
+    // to sit on a band, which put a secondary, a "Clear", a preference toggle
+    // and a form's Save on the page as four raised objects at once — and a
+    // raised object reads as "press me", so four of them is no signal at all.
+    // It is the primary action's signature, and a destructive one is equally
+    // the point of its row; nothing else is raised off the page.
     button: {
       base: {
         borderRadius: '12px',
+        // The one place caps survive. A button label is short, it is an
+        // instruction rather than something you read, and the tracking is what
+        // makes the face's round caps legible at 15px.
         textTransform: 'uppercase',
         letterSpacing: LABEL_TRACKING,
-        '--button-bevel': GRAY_BEVEL,
-        '::after': {
-          content: '""',
-          position: 'absolute',
-          insetInlineStart: '0',
-          insetInlineEnd: '0',
-          top: '100%',
-          height: '4px',
-          backgroundColor: 'var(--button-bevel)',
-          borderEndStartRadius: '12px',
-          borderEndEndRadius: '12px',
-          pointerEvents: 'none',
-        },
-        ':active': {translate: '0 4px'},
-        ':active::after': {height: '0px'},
       },
-      'variant:primary': {'--button-bevel': 'var(--accent-bevel)'},
-      // The outlined button: white face, gray ring, gray band, blue label. The
-      // ring is a `::before` because Button zeroes its own border width from a
-      // later layer, so a themed border never shows.
+      'variant:primary': bevel('var(--accent-bevel)'),
+      'variant:destructive': bevel(RED_BEVEL),
+      // The outlined button: white face, one hairline ring, blue label, flat
+      // on the page. The ring is a `::before` because Button zeroes its own
+      // border width from a later layer, so a themed border never shows.
+      //
+      // Now that there is no band under it, the ring is the only thing marking
+      // this as a control, which makes it a 3:1 edge rather than decoration —
+      // hence CONTROL_EDGE (4.48:1) where this used to draw 2px of #afafaf
+      // (2.19:1). Half the width, and findable.
       'variant:secondary': {
         '--color-neutral': PAPER_WHITE,
         '--color-text-primary': LINK_BLUE,
         '--color-icon-primary': LINK_BLUE,
-        '--button-bevel': GRAY_BEVEL,
         '::before': {
           content: '""',
           position: 'absolute',
           inset: '0',
           borderRadius: 'inherit',
-          borderWidth: '2px',
+          borderWidth: HAIRLINE,
           borderStyle: 'solid',
-          borderColor: FADED_GRAY,
+          borderColor: CONTROL_EDGE,
           pointerEvents: 'none',
         },
       },
       // Ghost is the quiet one — no ring, no band, nothing to press onto.
-      'variant:ghost': {
-        '--button-bevel': 'transparent',
-        ':active': {translate: '0 0'},
-      },
-      'variant:destructive': {'--button-bevel': RED_BEVEL},
+      'variant:ghost': {},
     },
 
     // The controls, not the field wrapper: a border on `field` would draw a box
     // around the label as well as the input.
-    'text-input': {
-      base: {borderRadius: '12px', '--border-width': '2px', '--color-border': RULE_GRAY},
-    },
-    selector: {
-      base: {borderRadius: '12px', '--border-width': '2px', '--color-border': RULE_GRAY},
-    },
-    textarea: {
-      base: {borderRadius: '12px', '--border-width': '2px', '--color-border': RULE_GRAY},
-    },
+    //
+    // This is the one surface that keeps an edge, because you have to put a
+    // cursor in it — and with the cards around it unoutlined, it is now the
+    // only box on a form, which is the point. `--color-border-EMPHASIZED`, not
+    // `--color-border`: checked in the browser, the wrapper `.astryx-text-input`
+    // paints #afafaf from the emphasized token whatever `--color-border` says,
+    // so the old `--color-border: RULE_GRAY` line here never painted anything.
+    // A dead rule, exactly the kind the note above warns about.
+    'text-input': {base: {...INPUT_EDGE}},
+    selector: {base: {...INPUT_EDGE}},
+    textarea: {base: {...INPUT_EDGE}},
     'field-label': {
-      base: {'--font-weight-medium': '700', '--color-text-secondary': PENCIL_GRAY},
+      base: {'--font-weight-medium': '600', '--color-text-secondary': PENCIL_GRAY},
     },
 
     // ---- cards ---------------------------------------------------------
-    // White, 16px, outlined 2px, never shadowed. `--border-width` rather than
-    // `border-width`: Card draws its border from the token.
+    // White, 16px, no outline, never shadowed. `--border-width` rather than
+    // `border-width`: Card draws its border from the token, so zeroing the
+    // token is what actually removes the line.
+    //
+    // The outline used to be 2px, and on a dashboard where every fellow, every
+    // session and every badge is a card, that was twenty boxes drawn on white
+    // — at which point the box stops saying "these things belong together" and
+    // just says "furniture". The gap between two cards already says it. What
+    // is left is the 20px of padding, which is what actually groups the
+    // contents, and it does not change.
+    //
+    // A card that has to be separated from the page still can be: that is what
+    // the four lead fills below are for.
     card: {
       base: {
         borderRadius: '16px',
         padding: '20px',
-        '--border-width': '2px',
+        '--border-width': '0px',
       },
 
       // ---- the four lead blocks ---------------------------------------
@@ -503,29 +605,31 @@ export const classroomTheme = defineTheme({
 
     section: {base: {borderRadius: '16px'}},
 
-    banner: {base: {borderRadius: '16px', '--border-width': '2px'}},
+    // A banner is the one card-shaped thing that is interrupting you, and it
+    // is already carrying a fill; a hairline is all the edge it needs.
+    banner: {base: {borderRadius: '16px', '--border-width': HAIRLINE}},
 
-    // Tags and counts: pills at the element radius, bold.
+    // Tags and counts: pills at the element radius. 600, not 700 — a token is
+    // a value, and a page of them at 700 was a page of small bold objects.
     token: {
-      base: {'--radius-inner': '12px', '--font-weight-medium': '700'},
+      base: {'--radius-inner': '12px', '--font-weight-medium': '600'},
     },
-    badge: {base: {'--radius-inner': '12px', '--font-weight-medium': '700'}},
+    badge: {base: {'--radius-inner': '12px', '--font-weight-medium': '600'}},
 
-    // Column headings are labels, which is the one place uppercase belongs.
-    // Row rules stay hairline — the 2px the cards carry would turn a table into
-    // a grid of boxes — so the inherited `--border-width` is pinned back.
+    // A column heading names the column; it is not the first thing in the
+    // table you should read. Sentence case at 600 in pencil gray does that and
+    // leaves the numbers underneath as the loud part. Row rules are hairline,
+    // which is now the only rule weight in the file.
     'table-header-cell': {
       base: {
-        textTransform: 'uppercase',
-        letterSpacing: LABEL_TRACKING,
         '--text-label-size': '13px',
-        '--font-weight-semibold': '800',
+        '--font-weight-semibold': '600',
         '--color-text-secondary': PENCIL_GRAY,
-        '--border-width': '1px',
+        '--border-width': HAIRLINE,
       },
     },
-    'table-cell': {base: {'--border-width': '1px'}},
-    divider: {base: {'--border-width': '1px'}},
+    'table-cell': {base: {'--border-width': HAIRLINE}},
+    divider: {base: {'--border-width': HAIRLINE}},
 
     // ---- the rail ------------------------------------------------------
     // SideNav sets no border and no font-family of its own, so both land as
@@ -534,11 +638,16 @@ export const classroomTheme = defineTheme({
     // layer above this one, so the only way to give the console's name the
     // rounded face is to hand it to the whole rail — which is also where the
     // reference puts it.
+    //
+    // The rail keeps its rule where the cards lost theirs, and the difference
+    // is that this one separates two regions rather than two items: the page
+    // scrolls underneath it while the rail stays put, so the line is telling
+    // you where the scrolling stops. At 1px it says that without fencing.
     'side-nav': {
       base: {
         backgroundColor: PAPER_WHITE,
         fontFamily: 'var(--font-family-heading)',
-        borderInlineEndWidth: '2px',
+        borderInlineEndWidth: HAIRLINE,
         borderInlineEndStyle: 'solid',
         borderInlineEndColor: RULE_GRAY,
       },
@@ -548,32 +657,23 @@ export const classroomTheme = defineTheme({
     // here. The row reads `--text-label-size`, `--font-weight-normal`,
     // `--color-text-primary` and — when selected — `--color-neutral` and
     // `--font-weight-medium`; setting those is the only way to reach it.
-    // `position: relative` is free (SideNavItem sets no position), which is
-    // what lets the selected row carry a ring without a border.
+    //
+    // Sentence case, and no ring on the selected row. Ten nav labels in caps
+    // with tracking was the largest single block of shouting on the screen,
+    // and a green pill with green ink in it does not also need to be outlined
+    // in a third green to read as the page you are on — the fill says it, the
+    // weight step confirms it.
     'side-nav-item': {
       base: {
         borderRadius: '12px',
-        textTransform: 'uppercase',
-        letterSpacing: LABEL_TRACKING,
-        position: 'relative',
         '--text-label-size': NAV_LABEL_SIZE,
-        '--font-weight-normal': '700',
+        '--font-weight-normal': '600',
         '--color-text-primary': PENCIL_GRAY,
       },
       selected: {
         '--color-neutral': STORYBOOK_GREEN,
         '--color-text-primary': DEEP_GREEN,
-        '--font-weight-medium': '800',
-        '::before': {
-          content: '""',
-          position: 'absolute',
-          inset: '0',
-          borderRadius: 'inherit',
-          borderWidth: '2px',
-          borderStyle: 'solid',
-          borderColor: FRESH_LEAF,
-          pointerEvents: 'none',
-        },
+        '--font-weight-medium': '700',
       },
     },
 
@@ -587,18 +687,19 @@ export const classroomTheme = defineTheme({
         letterSpacing: '-0.01em',
         '--text-large-size': '17px',
         '--text-large-leading': '1.3',
-        '--font-weight-semibold': '800',
+        '--font-weight-semibold': '700',
         '--color-text-primary': CHARCOAL,
       },
     },
 
-    // Rail group headings — "Set up", "Cohort", "Queues".
+    // Rail group headings — "Set up", "Cohort", "Queues". Sentence case: these
+    // sat in caps directly above nav rows that were also in caps, so the group
+    // and its contents looked like the same kind of thing. Small, gray and
+    // lighter than the rows under them is what makes a group heading read.
     'side-nav-section': {
       base: {
-        textTransform: 'uppercase',
-        letterSpacing: LABEL_TRACKING,
         '--text-supporting-size': '12px',
-        '--font-weight-semibold': '800',
+        '--font-weight-semibold': '700',
         // Not #afafaf: a group heading is text, and #afafaf on paper is 2.19:1.
         '--color-text-secondary': PENCIL_GRAY,
       },
@@ -611,7 +712,8 @@ export const classroomTheme = defineTheme({
         // Same reason as the rail: TopNavHeading inherits its family, so the
         // bar is where the rounded face has to be set.
         fontFamily: 'var(--font-family-heading)',
-        borderBottomWidth: '2px',
+        // Same rule, same reason, same weight as the rail's.
+        borderBottomWidth: HAIRLINE,
         borderBottomStyle: 'solid',
         borderBottomColor: RULE_GRAY,
       },
@@ -619,16 +721,14 @@ export const classroomTheme = defineTheme({
     'top-nav-item': {
       base: {
         borderRadius: '12px',
-        textTransform: 'uppercase',
-        letterSpacing: LABEL_TRACKING,
         '--text-label-size': NAV_LABEL_SIZE,
-        '--font-weight-normal': '700',
+        '--font-weight-normal': '600',
         '--color-text-primary': PENCIL_GRAY,
       },
       selected: {'--color-neutral': STORYBOOK_GREEN, '--color-text-primary': DEEP_GREEN},
     },
     'top-nav-heading': {
-      base: {'--font-weight-semibold': '800'},
+      base: {'--font-weight-semibold': '700'},
     },
 
     // ---- the funnel ----------------------------------------------------
@@ -637,8 +737,13 @@ export const classroomTheme = defineTheme({
     // component's own layer, so `height` here would lose — `min-height` is a
     // different property and wins the used height outright, and the fill
     // resolves its 100% against that.
+    //
+    // The bar's own label and value — "Attendance", "2 / 5" — rendered at 800,
+    // which put two more pieces of heavy type on every fellow row next to the
+    // heavy number that row already leads with. They name a bar you can read at
+    // a glance; 600 and 500 are enough.
     progressbar: {
-      base: {'--font-weight-medium': '800', '--font-weight-normal': '800'},
+      base: {'--font-weight-medium': '600', '--font-weight-normal': '500'},
     },
     'progressbar-track': {
       base: {minHeight: '16px', '--color-background-muted': TRACK_GRAY},

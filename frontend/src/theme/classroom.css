@@ -15,44 +15,44 @@
 
   :where(h1) {
     font-size: var(--font-size-2xl);
-    font-weight: 800;
+    font-weight: 700;
     line-height: 1.2121;
   }
 
   :where(h2) {
     font-size: var(--font-size-xl);
-    font-weight: 800;
+    font-weight: 700;
     line-height: 1.3333;
   }
 
   :where(h3) {
     font-size: var(--font-size-lg);
-    font-weight: 800;
+    font-weight: 700;
     line-height: 1.3333;
   }
 
   :where(h4) {
     font-size: var(--font-size-base);
-    font-weight: 800;
+    font-weight: 700;
     line-height: 1.4118;
   }
 
   :where(h5) {
     font-size: var(--font-size-sm);
-    font-weight: 800;
+    font-weight: 700;
     line-height: 1.4286;
   }
 
   :where(h6) {
     font-size: var(--font-size-xs);
-    font-weight: 800;
+    font-weight: 700;
     line-height: 1.4545;
   }
 
   :where(p) {
     font-family: var(--font-family-body);
     font-size: var(--font-size-base);
-    font-weight: 500;
+    font-weight: 400;
     line-height: 1.4118;
     color: var(--color-text-primary);
   }
@@ -97,31 +97,31 @@
     --font-size-4xl: 3.25rem;
     --font-size-5xl: 4.0625rem;
     --text-heading-1-size: var(--font-size-2xl);
-    --text-heading-1-weight: 800;
+    --text-heading-1-weight: 700;
     --text-heading-1-leading: 1.2121;
     --text-heading-2-size: var(--font-size-xl);
-    --text-heading-2-weight: 800;
+    --text-heading-2-weight: 700;
     --text-heading-2-leading: 1.3333;
     --text-heading-3-size: var(--font-size-lg);
-    --text-heading-3-weight: 800;
+    --text-heading-3-weight: 700;
     --text-heading-3-leading: 1.3333;
     --text-heading-4-size: var(--font-size-base);
-    --text-heading-4-weight: 800;
+    --text-heading-4-weight: 700;
     --text-heading-4-leading: 1.4118;
     --text-heading-5-size: var(--font-size-sm);
-    --text-heading-5-weight: 800;
+    --text-heading-5-weight: 700;
     --text-heading-5-leading: 1.4286;
     --text-heading-6-size: var(--font-size-xs);
-    --text-heading-6-weight: 800;
+    --text-heading-6-weight: 700;
     --text-heading-6-leading: 1.4545;
     --text-body-size: var(--font-size-base);
-    --text-body-weight: 500;
+    --text-body-weight: 400;
     --text-body-leading: 1.4118;
     --text-large-size: var(--font-size-lg);
     --text-large-weight: var(--font-weight-semibold);
     --text-large-leading: 1.3333;
     --text-label-size: 15px;
-    --text-label-weight: 800;
+    --text-label-weight: 600;
     --text-label-leading: 1.4118;
     --text-code-size: var(--font-size-base);
     --text-code-weight: var(--font-weight-normal);
@@ -256,9 +256,9 @@
     --shadow-inset-error: inset 0 0 0 2px #ff4b4b80;
     --radius-chat: 28px;
     --color-background-inverted: #4b4b4b;
-    --font-weight-medium: 700;
-    --font-weight-semibold: 800;
-    --font-weight-bold: 800;
+    --font-weight-medium: 600;
+    --font-weight-semibold: 700;
+    --font-weight-bold: 700;
     --section-heading-ink: #3a8701;
     --accent-bevel: #46a302;
     --size-element-sm: 32px;
@@ -351,8 +351,6 @@
     font-family: var(--font-family-body);
     font-size: var(--text-label-size);
     line-height: var(--text-label-leading);
-    text-transform: uppercase;
-    letter-spacing: 0.053em;
   }
 
   .astryx-text.code {
@@ -388,47 +386,61 @@
   .astryx-button.destructive {
     background-color: var(--color-error-muted);
     color: var(--color-error);
-    --button-bevel: #e03d3d;
   }
 
-  .astryx-button {
-    border-radius: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.053em;
-    --button-bevel: #afafaf;
-    --_button-radius: 12px;
-  }
-
-  .astryx-button::after {
+  .astryx-button.destructive::after {
     content: "";
     position: absolute;
     inset-inline-start: 0;
     inset-inline-end: 0;
     top: 100%;
     height: 4px;
-    background-color: var(--button-bevel);
+    background-color: #e03d3d;
     border-end-start-radius: 12px;
     border-end-end-radius: 12px;
     pointer-events: none;
   }
 
-  .astryx-button:active {
+  .astryx-button.destructive:active {
     translate: 0 4px;
   }
 
-  .astryx-button:active::after {
+  .astryx-button.destructive:active::after {
     height: 0px;
   }
 
-  .astryx-button.primary {
-    --button-bevel: var(--accent-bevel);
+  .astryx-button {
+    border-radius: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.053em;
+    --_button-radius: 12px;
+  }
+
+  .astryx-button.primary::after {
+    content: "";
+    position: absolute;
+    inset-inline-start: 0;
+    inset-inline-end: 0;
+    top: 100%;
+    height: 4px;
+    background-color: var(--accent-bevel);
+    border-end-start-radius: 12px;
+    border-end-end-radius: 12px;
+    pointer-events: none;
+  }
+
+  .astryx-button.primary:active {
+    translate: 0 4px;
+  }
+
+  .astryx-button.primary:active::after {
+    height: 0px;
   }
 
   .astryx-button.secondary {
     --color-neutral: #ffffff;
     --color-text-primary: #077db5;
     --color-icon-primary: #077db5;
-    --button-bevel: #afafaf;
   }
 
   .astryx-button.secondary::before {
@@ -436,18 +448,10 @@
     position: absolute;
     inset: 0;
     border-radius: inherit;
-    border-width: 2px;
+    border-width: 1px;
     border-style: solid;
-    border-color: #afafaf;
+    border-color: #777777;
     pointer-events: none;
-  }
-
-  .astryx-button.ghost {
-    --button-bevel: transparent;
-  }
-
-  .astryx-button.ghost:active {
-    translate: 0 0;
   }
 
   .astryx-badge.info {
@@ -527,7 +531,7 @@
 
   .astryx-badge {
     --radius-inner: 12px;
-    --font-weight-medium: 700;
+    --font-weight-medium: 600;
   }
 
   .astryx-statusdot.success {
@@ -573,7 +577,7 @@
 
   .astryx-banner {
     border-radius: 16px;
-    --border-width: 2px;
+    --border-width: 1px;
     --_banner-radius: 16px;
   }
 
@@ -583,8 +587,8 @@
 
   .astryx-progressbar {
     --color-background-muted: var(--color-border-emphasized);
-    --font-weight-medium: 800;
-    --font-weight-normal: 800;
+    --font-weight-medium: 600;
+    --font-weight-normal: 500;
   }
 
   .astryx-progressbar.accent {
@@ -605,7 +609,7 @@
 
   .astryx-card {
     border-radius: 16px;
-    --border-width: 2px;
+    --border-width: 0px;
     --astryx-card-padding: 20px;
     --_card-radius: 16px;
   }
@@ -701,37 +705,35 @@
 
   .astryx-text-input {
     border-radius: 12px;
-    --border-width: 2px;
-    --color-border: #e5e5e5;
+    --border-width: 1px;
+    --color-border-emphasized: #777777;
   }
 
   .astryx-selector {
     border-radius: 12px;
-    --border-width: 2px;
-    --color-border: #e5e5e5;
+    --border-width: 1px;
+    --color-border-emphasized: #777777;
   }
 
   .astryx-textarea {
     border-radius: 12px;
-    --border-width: 2px;
-    --color-border: #e5e5e5;
+    --border-width: 1px;
+    --color-border-emphasized: #777777;
   }
 
   .astryx-field-label {
-    --font-weight-medium: 700;
+    --font-weight-medium: 600;
     --color-text-secondary: #777777;
   }
 
   .astryx-token {
     --radius-inner: 12px;
-    --font-weight-medium: 700;
+    --font-weight-medium: 600;
   }
 
   .astryx-table-header-cell {
-    text-transform: uppercase;
-    letter-spacing: 0.053em;
     --text-label-size: 13px;
-    --font-weight-semibold: 800;
+    --font-weight-semibold: 600;
     --color-text-secondary: #777777;
     --border-width: 1px;
   }
@@ -747,68 +749,50 @@
   .astryx-side-nav {
     background-color: #ffffff;
     font-family: var(--font-family-heading);
-    border-inline-end-width: 2px;
+    border-inline-end-width: 1px;
     border-inline-end-style: solid;
     border-inline-end-color: #e5e5e5;
   }
 
   .astryx-side-nav-item {
     border-radius: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.053em;
-    position: relative;
     --text-label-size: 15px;
-    --font-weight-normal: 700;
+    --font-weight-normal: 600;
     --color-text-primary: #777777;
   }
 
   .astryx-side-nav-item.selected {
     --color-neutral: #d7ffb8;
     --color-text-primary: #3d7000;
-    --font-weight-medium: 800;
-  }
-
-  .astryx-side-nav-item.selected::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    border-radius: inherit;
-    border-width: 2px;
-    border-style: solid;
-    border-color: #a5ed6e;
-    pointer-events: none;
+    --font-weight-medium: 700;
   }
 
   .astryx-side-nav-heading {
     letter-spacing: -0.01em;
     --text-large-size: 17px;
     --text-large-leading: 1.3;
-    --font-weight-semibold: 800;
+    --font-weight-semibold: 700;
     --color-text-primary: #4b4b4b;
   }
 
   .astryx-side-nav-section {
-    text-transform: uppercase;
-    letter-spacing: 0.053em;
     --text-supporting-size: 12px;
-    --font-weight-semibold: 800;
+    --font-weight-semibold: 700;
     --color-text-secondary: #777777;
   }
 
   .astryx-top-nav {
     background-color: #ffffff;
     font-family: var(--font-family-heading);
-    border-bottom-width: 2px;
+    border-bottom-width: 1px;
     border-bottom-style: solid;
     border-bottom-color: #e5e5e5;
   }
 
   .astryx-top-nav-item {
     border-radius: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.053em;
     --text-label-size: 15px;
-    --font-weight-normal: 700;
+    --font-weight-normal: 600;
     --color-text-primary: #777777;
   }
 
@@ -818,7 +802,7 @@
   }
 
   .astryx-top-nav-heading {
-    --font-weight-semibold: 800;
+    --font-weight-semibold: 700;
   }
 
   .astryx-progressbar-track {
