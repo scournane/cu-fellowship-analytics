@@ -37,10 +37,17 @@ this repo deploys it.
 | `/rotation` | Which question each upcoming week will ask | `cufa rotation` |
 | `/shoutouts` | Names waiting for a human to link | `cufa shoutouts review` / `link` |
 | `/review` | Needs-review queue, AI decisions, unresolved addresses, straight-lining | `cufa review`, `cufa decide` |
+| `/dashboard` | Staff dashboard — attendance, the attention list and its outreach toggle, badges and ranks, assignments and scores, the funnel | `cufa report`, `/leaderboard` and `/score` in Slack |
+| `/dashboard/fellow/{id}` | One fellow as staff see them: the fellow's own page plus aliases, interventions and airtime | `/fellow <name\|id\|email>` in Slack |
 | `/help-requests` | **Access-gated.** Fellows who asked to be checked in with | `cufa help-requests list` / `ack` / `close` |
 
 `/healthz` reports whether the database is reachable, and
 `/sessions/{id}/responses.json` is what the live response counter polls.
+
+`/me/{token}` is the one page here that is **not** a staff screen: it shows one
+fellow their own record, is reached only through the signed, 7-day link the bot
+hands out with `/dashboard` in Slack, and carries none of the console's nav or
+configuration. There is no fellow login.
 
 **`/help-requests` has its own access list**, separate from the sign-in
 allowlist below — being able to use the console does not open it. See
@@ -226,6 +233,37 @@ The **Review** screen has three lists:
 - **Unresolved addresses** — submissions from addresses not on the roster. The
   check-in was still recorded; fix the roster entry and it re-attributes with no
   backfill, because identity resolves at read time.
+
+---
+
+## The look, and where it is defined
+
+Every colour, radius, border and type size in the console comes from one theme:
+`frontend/src/theme/classroomTheme.js`. Screens ask for components and never set
+a colour of their own, so the whole console changes from that file and nowhere
+else.
+
+It is compiled, not read at start-up:
+
+```bash
+cd frontend
+npm run theme      # rebuilds src/theme/classroom.css and classroom.js
+npm run build      # rebuilds the bundle that imports them
+```
+
+The compiled pair is committed alongside the source. `python tasks.py frontend`
+refuses to build when they have drifted apart, because a theme edited and not
+rebuilt renders the *previous* look with no error anywhere.
+
+Two things worth knowing before changing it:
+
+* **The fonts are bundled, not fetched.** Nunito and Nunito Sans come from
+  `node_modules` through the build, so the console renders the same on a laptop
+  with no network. Naming a font in the theme that nothing loads is a silent
+  fallback to whatever the browser has.
+* **It is a light theme on purpose.** `main.jsx` pins `mode="light"`; a dark
+  scheme derived from these colours would be a different design rather than this
+  one after dark.
 
 ---
 

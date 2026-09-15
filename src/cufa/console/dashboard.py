@@ -1,4 +1,4 @@
-"""Two dashboards, rendered on the server with no build step.
+"""Two dashboards: one for the staff, one for one fellow.
 
 * ``/dashboard`` — **staff**. Overall attendance, the attention list with the
   "reached out" toggle, this week's most active fellows, open check-in
@@ -10,9 +10,18 @@
   preferences, and an export button. The token is signed and expiring and is
   handed out by the bot's ``/dashboard`` command; there is no fellow login.
 
-Both are plain Jinja templates rather than React screens on purpose: they
-are read-mostly, they must keep working the day the front-end toolchain
-does not, and a fellow's page must not require the staff bundle.
+Both are React screens drawn from the same Astryx components as the rest of
+the console (https://astryx.atmeta.com), rendered through ``render_spa`` like
+every other screen: one set of components, one build, one look. The cost is
+real and is accepted here rather than hidden — both pages now need the bundle
+that ``python tasks.py frontend`` builds, the fellow's page included, and
+neither works with JavaScript switched off. What a fellow can still do without
+it is Slack: ``/me``, ``/reminders``, ``/badges``.
+
+The fellow's page is not a staff screen and is not framed as one. It carries
+no console nav, and ``render_spa`` hands it the screen's own data only — the
+allowlist and the rest of the staff configuration never reach a browser
+holding nothing but a signed link.
 
 Neither page reads ``help_request``. Nothing about the help checkbox appears
 on a fellow's own page either — it is routed to a named person and is not a
@@ -26,17 +35,17 @@ import io
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
+from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
-from fastapi.templating import Jinja2Templates
 
 from ..assignments import list_assignments, record_score, submissions_for_assignment, submissions_for_fellow
 from ..config import get_settings
 from ..db import connection, fetch_all, fetch_one
 from ..engagement import cohort_attendance, cohort_engagement, fellow_engagement, most_active
 from ..errors import CufaError
-from ..funnel import cohort_summary, fellow_funnel, STAGE_LABELS
+from ..funnel import cohort_summary, fellow_funnel, journey, STAGE_LABELS
 from ..interventions import clear_reached_out, for_fellow as interventions_for, mark_reached_out, open_requests, resolve as resolve_intervention
 from ..slack.badges import RANK_KEYS, badges_for, leaderboard
 from ..slack.dashboard_links import read_token
@@ -47,18 +56,19 @@ from ..slack.sync import last_data_received
 from ..zoom import speaking_share
 
 
-def _cohorts(conn: Any) -> list[str]:
-    return [r["cohort_id"] for r in fetch_all(conn, "select cohort_id from cohort order by cohort_id")]
+def _cohorts(conn: Any) -> list[dict[str, Any]]:
+    """Every cohort, with its label — what the cohort picker is built from."""
+    return fetch_all(conn, "select cohort_id, label from cohort order by cohort_id")
 
 
 def _pick_cohort(conn: Any, requested: str | None) -> str | None:
-    cohorts = _cohorts(conn)
-    if requested and requested in cohorts:
+    ids = [c["cohort_id"] for c in _cohorts(conn)]
+    if requested and requested in ids:
         return requested
     settings = get_settings()
-    if settings.slack_cohort and settings.slack_cohort in cohorts:
+    if settings.slack_cohort and settings.slack_cohort in ids:
         return settings.slack_cohort
-    return cohorts[0] if cohorts else None
+    return ids[0] if ids else None
 
 
 def staff_context(conn: Any, cohort_id: str, *, now: datetime | None = None) -> dict[str, Any]:
@@ -114,6 +124,7 @@ def fellow_context(conn: Any, fellow_id: str, *, now: datetime | None = None) ->
         (fellow_id, fellow_id, fellow["cohort_id"], now),
     )
     engagement = fellow_engagement(conn, fellow_id, now=now)
+    funnel = fellow_funnel(conn, fellow_id)
     return {
         "fellow": fellow,
         "now": now,
@@ -123,7 +134,10 @@ def fellow_context(conn: Any, fellow_id: str, *, now: datetime | None = None) ->
         "engagement": engagement.to_dict() if engagement else None,
         "badges": badges_for(conn, fellow_id),
         "assignments": submissions_for_fellow(conn, fellow_id),
-        "funnel": fellow_funnel(conn, fellow_id),
+        "funnel": funnel,
+        # The stages in order, so the screen renders a journey without knowing
+        # which column holds which stage.
+        "journey": journey(funnel) if funnel else [],
         "stage_labels": STAGE_LABELS,
         "connected": {
             "slack": bool(slack),
@@ -193,18 +207,80 @@ def staff_export_csv(conn: Any, cohort_id: str) -> str:
     return _csv(rows, fields)
 
 
-def register(app: FastAPI, templates: Jinja2Templates, require_user: Callable[..., Any]) -> None:
-    """Mount the routes. Called once from ``console.app``."""
+# What a fellow is shown of their own engagement record: their counts, and
+# nothing that was computed to rank them against anybody. The attention index,
+# the flags behind it, their share of the cohort mean and whether a staffer has
+# reached out are triage for staff (ADR-035) — and on a React screen the whole
+# record would sit in the page source whether or not the screen drew it.
+FELLOW_ENGAGEMENT_FIELDS = (
+    "attended",
+    "sessions_held",
+    "needs_review",
+    "forms_submitted",
+    "forms_expected",
+    "form_completeness",
+    "messages",
+    "messages_7d",
+)
+
+
+def fellow_facing(context: dict[str, Any]) -> dict[str, Any]:
+    """The fellow's own context, with the staff-only numbers taken out."""
+    engagement = context.get("engagement")
+    if not engagement:
+        return context
+    return {
+        **context,
+        "engagement": {k: engagement[k] for k in FELLOW_ENGAGEMENT_FIELDS},
+    }
+
+
+EXPIRED_LINK = (
+    "Dashboard links are good for 7 days and then stop working, so that a link "
+    "forwarded or left open on a shared computer does not keep showing your "
+    "record. Ask the bot for a new one in Slack with /dashboard."
+)
+
+
+def register(app: FastAPI, render: Callable[..., Response], require_user: Callable[..., Any]) -> None:
+    """Mount the routes. Called once from ``console.app``.
+
+    ``render`` is ``console.app.render_spa``, passed in rather than imported to
+    keep the import one-way: this module is imported by ``console.app``.
+    """
+
+    def back_to_dashboard(cohort: str, notice: str) -> RedirectResponse:
+        """Where every action on this page ends: the page it started on, with
+        one line saying what happened. A 303 rather than a re-render, so a
+        refresh cannot repeat the write."""
+        query = urlencode({"cohort": cohort, "notice": notice})
+        return RedirectResponse(f"/dashboard?{query}", status_code=303)
 
     @app.get("/dashboard", response_class=HTMLResponse)
-    def staff_dashboard(request: Request, cohort: str | None = None, user: Any = Depends(require_user)) -> Response:
+    def staff_dashboard(
+        request: Request,
+        cohort: str | None = None,
+        notice: str | None = None,
+        user: Any = Depends(require_user),
+    ) -> Response:
         with connection() as conn:
             cohort_id = _pick_cohort(conn, cohort)
             if cohort_id is None:
-                return HTMLResponse("<p>No cohort yet. Load a roster first.</p>", status_code=200)
+                return render(
+                    request,
+                    "message",
+                    title="Staff dashboard",
+                    heading="There is no cohort yet",
+                    body=(
+                        "Every number on this page is counted per cohort, and no "
+                        "cohort exists. Load a roster first, from the command line:"
+                    ),
+                    code="cufa load-roster --csv <path> --cohort <id>",
+                    link="/roster",
+                    link_label="Roster",
+                )
             context = staff_context(conn, cohort_id)
-        context.update({"request": request, "user": user, "title": "Staff dashboard"})
-        return templates.TemplateResponse(request, "dashboard.html", context)
+        return render(request, "dashboard", title="Staff dashboard", notice=notice, **context)
 
     @app.get("/dashboard/export.csv")
     def staff_export(cohort: str | None = None, user: Any = Depends(require_user)) -> Response:
@@ -218,14 +294,22 @@ def register(app: FastAPI, templates: Jinja2Templates, require_user: Callable[..
         fellow_id: str, request: Request, action: str = Form(...), note: str = Form(""), cohort: str = Form(""), user: Any = Depends(require_user)
     ) -> Response:
         with connection() as conn:
+            row = fetch_one(conn, "select full_name from fellow where fellow_id = %s", (fellow_id,))
+            who = (row or {}).get("full_name") or fellow_id
             if action == "clear":
                 clear_reached_out(conn, fellow_id, by_email=user.email)
+                notice = f"Cleared the reached-out flag on {who}."
             else:
                 mark_reached_out(conn, fellow_id, by_email=user.email, note=note.strip() or None, source="console")
+                closed = 0
                 for r in open_requests(conn):
                     if r["fellow_id"] == fellow_id:
                         resolve_intervention(conn, str(r["intervention_id"]), by_email=user.email)
-        return RedirectResponse(f"/dashboard?cohort={cohort}#attention", status_code=303)
+                        closed += 1
+                notice = f"Recorded that {who} has been reached out to."
+                if closed:
+                    notice += f" {closed} check-in request(s) closed."
+        return back_to_dashboard(cohort, notice)
 
     @app.post("/dashboard/score")
     def enter_score(
@@ -237,36 +321,77 @@ def register(app: FastAPI, templates: Jinja2Templates, require_user: Callable[..
         cohort: str = Form(""),
         user: Any = Depends(require_user),
     ) -> Response:
+        def refused(body: str) -> Response:
+            # 400 with the reason in full, and the page to go back to. Nothing
+            # was written, which is the part the person needs to be sure of.
+            return render(
+                request,
+                "message",
+                status_code=400,
+                title="Score not saved",
+                heading="That score was not saved",
+                body=body,
+                link=f"/dashboard?cohort={cohort}",
+                link_label="Back to the dashboard",
+            )
+
         try:
             value = Decimal(score.strip())
         except InvalidOperation:
-            return HTMLResponse(f"<p>{score!r} is not a number. <a href='/dashboard?cohort={cohort}'>Back</a></p>", status_code=400)
+            return refused(f"{score!r} is not a number. Scores are entered as digits, for example 88.5.")
         with connection() as conn:
             try:
                 record_score(conn, assignment_id, fellow_id, score=value, by=user.email, note=note.strip() or None)
             except CufaError as exc:
-                return HTMLResponse(f"<p>{exc} <a href='/dashboard?cohort={cohort}'>Back</a></p>", status_code=400)
-        return RedirectResponse(f"/dashboard?cohort={cohort}#assignments", status_code=303)
+                return refused(str(exc))
+        return back_to_dashboard(cohort, f"Score {value} saved.")
 
     @app.get("/dashboard/fellow/{fellow_id}", response_class=HTMLResponse)
     def staff_fellow_detail(fellow_id: str, request: Request, user: Any = Depends(require_user)) -> Response:
         with connection() as conn:
             context = fellow_detail_context(conn, fellow_id)
         if context is None:
-            return HTMLResponse("<p>No fellow with that id.</p>", status_code=404)
-        context.update({"request": request, "user": user, "title": context["fellow"]["full_name"], "staff_view": True, "token": None})
-        return templates.TemplateResponse(request, "me.html", context)
+            return render(
+                request,
+                "message",
+                status_code=404,
+                title="No such fellow",
+                heading="No fellow has that id",
+                body=f"Nothing on the roster is {fellow_id}. Check the id on the dashboard.",
+                link="/dashboard",
+                link_label="Back to the dashboard",
+            )
+        return render(
+            request,
+            "me",
+            title=context["fellow"]["full_name"],
+            staff_view=True,
+            token=None,
+            **context,
+        )
 
     @app.post("/me/{token}/prefs")
     def fellow_prefs(
+        request: Request,
         token: str,
         kind: str = Form(...),
         offset: str = Form(""),
         enabled: str = Form(...),
     ) -> Response:
+        def refused(status: int, heading: str, body: str) -> Response:
+            return render(
+                request,
+                "message",
+                status_code=status,
+                title="Preferences",
+                frame="fellow",
+                heading=heading,
+                body=body,
+            )
+
         fellow_id = read_token(get_settings(), token)
         if fellow_id is None:
-            return Response("expired", status_code=403)
+            return refused(403, "This link has expired", EXPIRED_LINK)
         on = enabled == "on"
         with connection() as conn:
             slack = fetch_one(
@@ -275,7 +400,12 @@ def register(app: FastAPI, templates: Jinja2Templates, require_user: Callable[..
                 (fellow_id,),
             )
             if slack is None:
-                return HTMLResponse("<p>Join the Slack workspace first; preferences live on your Slack account.</p>", status_code=400)
+                return refused(
+                    400,
+                    "There is no Slack account to set this on",
+                    "These preferences live on your Slack account. Join the workspace, "
+                    "then open this page again.",
+                )
             uid = slack["slack_user_id"]
             try:
                 if kind == "gamification":
@@ -285,22 +415,49 @@ def register(app: FastAPI, templates: Jinja2Templates, require_user: Callable[..
                 elif kind in ("session", "assignment", "all"):
                     set_all_reminders(conn, uid, kind=kind, enabled=on)
                 else:
-                    return HTMLResponse("<p>Unknown preference.</p>", status_code=400)
+                    return refused(400, "That is not a setting", f"No preference is called {kind!r}.")
             except (CufaError, ValueError) as exc:
-                return HTMLResponse(f"<p>{exc}</p>", status_code=400)
-        return RedirectResponse(f"/me/{token}#prefs", status_code=303)
+                return refused(400, "That setting was not changed", str(exc))
+        return RedirectResponse(f"/me/{token}", status_code=303)
 
     @app.get("/me/{token}", response_class=HTMLResponse)
     def fellow_dashboard(token: str, request: Request) -> Response:
         fellow_id = read_token(get_settings(), token)
         if fellow_id is None:
-            return HTMLResponse("<p>This link has expired or is not valid. Ask the bot for a new one with <code>/dashboard</code>.</p>", status_code=403)
+            return render(
+                request,
+                "message",
+                status_code=403,
+                title="Link expired",
+                frame="fellow",
+                heading="This link has expired",
+                body=EXPIRED_LINK,
+            )
         with connection() as conn:
             context = fellow_context(conn, fellow_id)
         if context is None:
-            return HTMLResponse("<p>No record found.</p>", status_code=404)
-        context.update({"request": request, "token": token, "title": "My dashboard", "staff_view": False, "offsets": list(DEFAULT_OFFSETS)})
-        return templates.TemplateResponse(request, "me.html", context)
+            return render(
+                request,
+                "message",
+                status_code=404,
+                title="Nothing to show",
+                frame="fellow",
+                heading="There is no record to show",
+                body=(
+                    "The link is valid, but the roster entry it names is gone. Ask in "
+                    "Slack and somebody will sort it out."
+                ),
+            )
+        return render(
+            request,
+            "me",
+            title="My dashboard",
+            frame="fellow",
+            staff_view=False,
+            token=token,
+            offsets=list(DEFAULT_OFFSETS),
+            **fellow_facing(context),
+        )
 
     @app.get("/me/{token}/export.csv")
     def fellow_export(token: str) -> Response:
@@ -312,4 +469,12 @@ def register(app: FastAPI, templates: Jinja2Templates, require_user: Callable[..
         return Response(body, media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="my-fellowship-{fellow_id}.csv"'})
 
 
-__all__ = ["fellow_context", "fellow_detail_context", "fellow_export_csv", "register", "staff_context", "staff_export_csv"]
+__all__ = [
+    "fellow_context",
+    "fellow_detail_context",
+    "fellow_export_csv",
+    "fellow_facing",
+    "register",
+    "staff_context",
+    "staff_export_csv",
+]

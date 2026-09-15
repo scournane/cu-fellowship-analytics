@@ -469,6 +469,7 @@ because a plausible-looking guess in any of them quietly becomes the policy.
 | [`docs/safeguarding.md`](docs/safeguarding.md) | The help-request path — **written for CU staff, not engineers** |
 | [`docs/google-api-traps.md`](docs/google-api-traps.md) | The five traps — **read this before touching the Google code** |
 | [`docs/decisions.md`](docs/decisions.md) | 36 ADRs: what was decided, what was rejected, and why |
+| [`docs/handoff/credentials.md`](docs/handoff/credentials.md) | Every account, key and secret — the handover checklist |
 
 ---
 

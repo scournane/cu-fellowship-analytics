@@ -41,14 +41,18 @@ export function cohortOptions(cohorts, {includeAll = true} = {}) {
 }
 
 /** Navigating on change keeps the server as the source of truth for the filter,
- *  exactly as the <select onchange="this.form.submit()"> did. */
-export function CohortFilter({cohorts, selected, hrefFor}) {
+ *  exactly as the <select onchange="this.form.submit()"> did.
+ *
+ *  `includeAll` is off for screens that are always about one cohort: the
+ *  dashboard's numbers are per-cohort, so "All cohorts" would offer a view it
+ *  does not have. */
+export function CohortFilter({cohorts, selected, hrefFor, includeAll = true}) {
   return (
     <Selector
       label="Cohort"
       size="sm"
       value={selected || ''}
-      options={cohortOptions(cohorts)}
+      options={cohortOptions(cohorts, {includeAll})}
       onChange={(value) => {
         window.location.href = hrefFor(value)
       }}

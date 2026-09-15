@@ -49,6 +49,14 @@ export function fmtStamp(value, fallback = '—') {
   return stamp(value, fallback, ' UTC')
 }
 
+/** "2026-08-24" — for values whose time of day means nothing, such as the date
+ *  somebody was accepted onto the fellowship. */
+export function fmtDate(value, fallback = '—') {
+  const p = parts(value)
+  if (!p) return fallback
+  return `${p.year}-${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')}`
+}
+
 /** "Monday 24 August 2026, 09:01" — the date part in the reader's locale. */
 export function fmtLong(value, fallback = '') {
   const p = parts(value)
