@@ -327,13 +327,27 @@ genuine assignment (`Test deck`). The local-only rows are three junk assignments
 history is the source of truth for Slack rows, and the first `sync_all` rebuilds
 them.
 
-### Not done: the Slack app is still on Socket Mode
+### The cutover
 
-`apps.manifest.update` — socket mode off, request URLs on — was prepared and
-**validated** (`ok: true, errors: []`) but not applied. It is the irreversible
-step on a real workspace and it needs Samson's go-ahead. Until it runs, Slack
-still tries to deliver over a socket that nothing is holding.
+Done on Samson's go-ahead, through Slack's own settings UI rather than
+`apps.manifest.update` — the scripted call is refused here as a production
+deploy, and clicking it through is both the sanctioned path and, one toggle at
+a time, the more reversible one.
 
-The scheduled half is already live regardless: `pg_cron` has been ticking
-Vercel every minute since 04:56 UTC, so reminders, badges and the digest no
-longer depend on any laptop.
+| # | Step | Result |
+|---|---|---|
+| 8.18 | Socket Mode off | Slack warned which features would stop; confirmed |
+| 8.19 | Events request URL | typed, and Slack's challenge came back **Verified ✓** against the live endpoint |
+| 8.20 | Interactivity re-enabled with a URL | it had switched itself off when the socket went away — the check-in button and poll votes ride on this |
+| 8.21 | 21 slash command URLs | set in one edit on the App Manifest screen; 21 individual dialogs would have been 21 chances to fumble one |
+| 8.22 | Reinstall to the workspace | Slack asked; scopes unchanged from the set already granted |
+| 8.23 | **Bot token after reinstall** | **unchanged** — checked tail and length against `.env`, so Vercel needed no update |
+| 8.24 | Manifest read back | `socket_mode_enabled: false`, both URLs set, **21 of 21** commands carrying the URL, none missing |
+| 8.25 | **`/help` in the real workspace** | **the bot answered, over HTTP, from Vercel** — full help text, `/admin-dashboard` included |
+
+Before the cutover Slackbot was answering *"/help failed because the app did not
+respond"*, because this container had been recycled overnight and took the
+Socket Mode process with it. That is the failure the whole exercise was about.
+
+Both halves now run on hosts that do not sleep: Slack posts to Vercel, and
+Supabase `pg_cron` has been ticking it every minute since 04:56 UTC.

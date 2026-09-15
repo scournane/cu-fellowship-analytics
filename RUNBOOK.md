@@ -223,7 +223,8 @@ reminders, badges, welcomes and the digest every minute. Simple, and its uptime
 is the uptime of whatever machine it is on. A laptop that sleeps is a bot that
 stops, silently, and the first symptom is a fellow not getting a reminder.
 
-**Serverless** (`deploy/vercel/`). Slack posts to `/bot/slack/events`, and
+**Serverless** (`deploy/vercel/`) — what this install runs as of Sep 2026.
+Slack posts to `/bot/slack/events`, and
 because there is no process to hold a loop, an outside scheduler calls
 `/bot/cron/tick` once a minute. Uptime stops depending on anybody's laptop. The
 full setup, including the `pg_cron` job, is in `deploy/vercel/README.md`.
@@ -252,8 +253,10 @@ A `200` body carries the tick's own counts. Non-200 with `not authorised` means
 
 ### Switching back to a long-lived process
 
-1. Set the app manifest's `socket_mode_enabled` back to `true` and clear the
-   request URLs.
+1. Settings → Socket Mode → on. Slack clears the request URLs itself. (Going
+   the other way, note that turning Socket Mode *off* silently switches
+   Interactivity off too, because it had no URL of its own — that is the one
+   that takes the check-in button and poll votes with it.)
 2. `select cron.unschedule('cufa-tick');`
 3. `CUFA_SLACK_AUTOMATIONS=1` wherever the process runs, and start it.
 

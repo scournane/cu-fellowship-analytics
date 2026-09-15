@@ -305,7 +305,8 @@ reachable meanwhile.
 | Slack URL verification, live and signed | ✅ | challenge echoed; a forged signature gets 401 |
 | `pg_cron` fires every minute | ✅ | the dashboard's `slack_sync` stamp advanced once a minute, checked against a wall clock |
 | Cron token kept out of `cron.job.command` | ✅ | stored in Vault, read via `decrypted_secrets` |
-| Slack app moved off Socket Mode | ⏸️ | manifest prepared and validated; not applied — needs a go-ahead, it is irreversible on a live workspace |
+| Slack app moved off Socket Mode | ✅ | socket off, events + interactivity URLs **Verified ✓** by Slack, 21 of 21 commands carrying the URL, app reinstalled, bot token unchanged |
+| A real slash command answered from Vercel | ✅ | `/help` in #cif-staff, answered by the deployment over HTTP — minutes after Slackbot had been saying "the app did not respond" |
 
 Known limits: Slack allows 3 seconds to ack a slash command and a warm
 invocation uses 0.7–1.6s of that, so a cold start could exceed it
