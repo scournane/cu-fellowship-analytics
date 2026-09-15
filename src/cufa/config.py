@@ -92,6 +92,12 @@ class Settings:
     #: Outbound reminders/digests/agendas run in the same long-lived bot
     #: process. Set false when a deployment runs a separate one-shot worker.
     slack_automations_enabled: bool = True
+    #: Bearer token that POST /cron/tick requires. Serverless has no long-lived
+    #: process to run the automation loop in, so an outside scheduler calls that
+    #: route each minute instead — and a route that sends DMs to a cohort of
+    #: young people must not be firable by anyone who guesses the URL. Empty
+    #: (the default) keeps the route refusing every request.
+    cron_secret: str = ""
     slack_automation_interval_seconds: int = 60
     #: Name or channel id used for agendas unless a session overrides it.
     slack_announcement_channel: str = "announcements"
@@ -212,6 +218,7 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         slack_user_cache_hours=_int("CUFA_SLACK_USER_CACHE_HOURS", 24),
         slack_process_before_response=not _truthy(env.get("CUFA_SLACK_ACK_FIRST")),
         slack_automations_enabled=_enabled("CUFA_SLACK_AUTOMATIONS", True),
+        cron_secret=(env.get("CUFA_CRON_SECRET") or "").strip(),
         slack_automation_interval_seconds=_int(
             "CUFA_SLACK_AUTOMATION_INTERVAL_SECONDS", 60
         ),

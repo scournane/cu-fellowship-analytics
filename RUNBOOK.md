@@ -169,7 +169,9 @@ select max(received_at) from slack_event;
 ```
 
 Plus: a `slack_bot` row in `load_run` still `running` with no newer run means
-the bot died without stopping cleanly.
+the bot died without stopping cleanly — **on a long-lived process**. On the
+serverless deployment it usually means an idle instance was collected, which is
+ordinary; see section 9 for what to read instead.
 
 ## 8 · Getting into the staff console
 
@@ -209,3 +211,53 @@ forwardable, so the password travels some other way.
 **What this costs you:** no record of who read what, and no rate limit on
 guessing beyond whatever is in front of the console. Register a Google OAuth
 client for the deployed origin when there is time, and unset the password.
+
+
+## 9 · Where the bot actually runs
+
+Two deployments are possible and they fail differently.
+
+**A long-lived process** (`cufa slack socket`, or `cufa slack serve`). One
+process holds the Slack connection and runs `AutomationLoop`, which sends
+reminders, badges, welcomes and the digest every minute. Simple, and its uptime
+is the uptime of whatever machine it is on. A laptop that sleeps is a bot that
+stops, silently, and the first symptom is a fellow not getting a reminder.
+
+**Serverless** (`deploy/vercel/`). Slack posts to `/bot/slack/events`, and
+because there is no process to hold a loop, an outside scheduler calls
+`/bot/cron/tick` once a minute. Uptime stops depending on anybody's laptop. The
+full setup, including the `pg_cron` job, is in `deploy/vercel/README.md`.
+
+### Is it alive?
+
+Not from `load_run` — see section 7. Ask the scheduler:
+
+```sql
+select status, return_message, start_time
+  from cron.job_run_details
+ where jobid = (select jobid from cron.job where jobname = 'cufa-tick')
+ order by start_time desc limit 10;
+```
+
+Ten rows, all `succeeded`, one a minute: healthy. Gaps, or `failed` rows, mean
+the tick is not landing and reminders are not going out. The HTTP side of it:
+
+```sql
+select status_code, left(content, 200) from net._http_response
+ order by id desc limit 5;
+```
+
+A `200` body carries the tick's own counts. Non-200 with `not authorised` means
+`CUFA_CRON_SECRET` in Vault and on the host have drifted apart.
+
+### Switching back to a long-lived process
+
+1. Set the app manifest's `socket_mode_enabled` back to `true` and clear the
+   request URLs.
+2. `select cron.unschedule('cufa-tick');`
+3. `CUFA_SLACK_AUTOMATIONS=1` wherever the process runs, and start it.
+
+Do 1 and 2 together. Leaving the cron running while a process also holds the
+loop means two things deciding the same reminder is due; `bot_delivery` dedupes
+so nobody gets it twice, but you will be reading a log where half the work is
+claimed by a machine you forgot about.

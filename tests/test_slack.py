@@ -21,7 +21,7 @@ import pytest
 from conftest import TEST_COHORT, count, make_fellow
 
 from cufa.config import load_settings
-from cufa.db import execute, fetch_all, fetch_one
+from cufa.db import connection, execute, fetch_all, fetch_one
 from cufa.slack.backfill import backfill_channel, backfill_workspace, sync_channels
 from cufa.slack.events import (
     Skipped,
@@ -296,9 +296,16 @@ def test_stats_and_per_fellow_join_the_roster(db, ws, client, workspace_row):
 # bot — the processor, and once over HTTP with Bolt's real verifier
 # ===========================================================================
 
+#: Variables the suite sets for itself. Inheriting the developer's values makes
+#: the suite go red the moment somebody configures a real deployment, which is
+#: exactly when they want to trust it (F-13). Cleared here for this file at
+#: least; ``extra`` still wins when a test wants one set.
+_SUITE_OWNED = ("CUFA_CRON_SECRET",)
+
+
 def _settings(api_base_url: str, **extra: str):
     env = {
-        **os.environ,
+        **{k: v for k, v in os.environ.items() if k not in _SUITE_OWNED},
         "SLACK_BOT_TOKEN": "xoxb-test-token",
         "SLACK_SIGNING_SECRET": "test-signing-secret",
         "SLACK_API_BASE_URL": api_base_url,
@@ -355,6 +362,63 @@ def _post(tc, envelope: dict, *, secret: str = "test-signing-secret", retry: int
     if retry:
         headers["X-Slack-Retry-Num"] = str(retry)
     return tc.post("/slack/events", content=body, headers=headers)
+
+
+@pytest.fixture
+def cron_stack(db, ws):
+    """The same HTTP app, but with a cron secret configured."""
+    from fastapi.testclient import TestClient
+    from slack_sdk import WebClient
+
+    from cufa.slack.bot import EventProcessor, build_http_app
+    from cufa.slack.fake_server import FakeSlackHTTPServer
+
+    fake = FakeSlackHTTPServer(ws, signing_secret="test-signing-secret", bot_events_url="http://bot.invalid/slack/events", port=0).start_in_thread()
+    settings = _settings(fake.api_base_url, CUFA_CRON_SECRET="a-real-cron-secret")
+    web = WebClient(token="xoxb-test-token", base_url=fake.api_base_url)
+    app = build_http_app(settings, client=web, processor=EventProcessor(settings, web))
+    with TestClient(app) as tc:
+        yield tc
+    fake.stop()
+
+
+def test_cron_tick_is_closed_when_no_secret_is_configured(http_stack):
+    """The default is a shut door, not an open one. A route that can DM a whole
+    cohort does not get to be reachable because somebody forgot a variable."""
+    tc, _, _ = http_stack
+    r = tc.post("/cron/tick")
+    assert r.status_code == 503
+    assert "CUFA_CRON_SECRET" in r.json()["error"]
+
+
+def test_cron_tick_refuses_a_missing_or_wrong_token(cron_stack):
+    assert cron_stack.post("/cron/tick").status_code == 403
+    assert cron_stack.post("/cron/tick", headers={"Authorization": "Bearer nope"}).status_code == 403
+    # Not a bearer scheme at all, and the bare secret without it.
+    assert cron_stack.post("/cron/tick", headers={"Authorization": "a-real-cron-secret"}).status_code == 403
+
+
+def test_cron_tick_runs_with_the_right_token(cron_stack):
+    r = cron_stack.post("/cron/tick", headers={"Authorization": "Bearer a-real-cron-secret"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True, body
+    assert set(body) >= {"synced", "welcomed", "reminders", "weekly", "errors", "seconds"}
+
+
+def test_a_second_tick_steps_aside_while_one_is_running(cron_stack, db):
+    """Two overlapping ticks must not both decide the same reminder is due."""
+    from cufa.slack.bot import _TICK_LOCK_KEY
+
+    # Hold the lock on a separate connection, exactly as an in-flight tick would.
+    with connection() as other:
+        assert fetch_one(other, "select pg_try_advisory_lock(%s) as got", (_TICK_LOCK_KEY,))["got"]
+        try:
+            r = cron_stack.post("/cron/tick", headers={"Authorization": "Bearer a-real-cron-secret"})
+            assert r.status_code == 200
+            assert "skipped" in r.json(), r.json()
+        finally:
+            fetch_one(other, "select pg_advisory_unlock(%s) as done", (_TICK_LOCK_KEY,))
 
 
 def test_http_url_verification_challenge_is_echoed(http_stack):

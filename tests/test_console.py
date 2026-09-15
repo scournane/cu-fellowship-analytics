@@ -254,6 +254,21 @@ SITE_PASSWORD = "correct-horse-battery-staple"
 
 
 @pytest.fixture
+def password_unset(monkeypatch: pytest.MonkeyPatch):
+    """The developer's own .env may configure a password; this test is about the
+    default, so the variable is emptied rather than assumed absent (F-13).
+
+    Set to "" rather than deleted: load_dotenv runs with override=False, so a
+    deleted name is simply read back out of .env on the next load, while an
+    empty one already present is left alone."""
+    monkeypatch.setenv("CUFA_CONSOLE_PASSWORD", "")
+    reset_settings_cache()
+    yield
+    monkeypatch.undo()
+    reset_settings_cache()
+
+
+@pytest.fixture
 def password_configured(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("CUFA_CONSOLE_PASSWORD", SITE_PASSWORD)
     reset_settings_cache()
@@ -262,7 +277,7 @@ def password_configured(monkeypatch: pytest.MonkeyPatch):
     reset_settings_cache()
 
 
-def test_password_door_is_shut_unless_one_is_configured(client: TestClient) -> None:
+def test_password_door_is_shut_unless_one_is_configured(client: TestClient, password_unset) -> None:
     """No CUFA_CONSOLE_PASSWORD, no door — not even an empty one that matches ''."""
     assert boot_state(client.get("/signin"))["passwordSignin"] is False
     assert client.post("/signin/password", data={"password": "", "next": "/"}).status_code == 403

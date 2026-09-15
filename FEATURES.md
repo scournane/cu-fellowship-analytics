@@ -294,6 +294,26 @@ reachable meanwhile.
 
 ---
 
+## Where it runs (added this run)
+
+| Feature | Result | Proof |
+|---|---|---|
+| `POST /bot/cron/tick`, bearer-authenticated | ✅ | 503 with no secret, 403 on a wrong one, runs on the right one |
+| Two ticks never overlap | ✅ | advisory lock; the second returns `skipped` and does no work |
+| Console and bot from one deployment | ✅ | console at `/`, bot mounted at `/bot`, one secret, one database |
+| A real tick on Vercel against Supabase | ✅ | `synced=true, alerts=1, errors=[]` in 0.59s |
+| Slack URL verification, live and signed | ✅ | challenge echoed; a forged signature gets 401 |
+| `pg_cron` fires every minute | ✅ | the dashboard's `slack_sync` stamp advanced once a minute, checked against a wall clock |
+| Cron token kept out of `cron.job.command` | ✅ | stored in Vault, read via `decrypted_secrets` |
+| Slack app moved off Socket Mode | ⏸️ | manifest prepared and validated; not applied — needs a go-ahead, it is irreversible on a live workspace |
+
+Known limits: Slack allows 3 seconds to ack a slash command and a warm
+invocation uses 0.7–1.6s of that, so a cold start could exceed it
+(`CUFA_SLACK_ACK_FIRST=1` is the lever). And `load_run` no longer distinguishes
+a reclaimed instance from a crash — see F-14.
+
+---
+
 ## Verdict
 
 Would this survive a real cohort? The recording half, yes. The privacy claims are

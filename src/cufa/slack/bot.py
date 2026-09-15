@@ -20,6 +20,7 @@ Two transports, one processor:
 
 from __future__ import annotations
 
+import hmac
 import logging
 import re
 import threading
@@ -34,10 +35,11 @@ from slack_bolt.request import BoltRequest
 from slack_sdk import WebClient
 
 from ..config import Settings, get_settings
-from ..db import connection
+from ..db import connection, execute, fetch_one
 from ..errors import ConfigError
 from ..ingest.common import IngestResult, finish_load_run, start_load_run
 from ..logging_setup import configure_logging, get_logger
+from .client import WebClientAdapter
 from .events import POLL_ACTION_ID, Skipped, parse_event, parse_interaction
 from .qa import QaService, build_qa_service
 from .store import RecordOutcome, WorkspaceInfo, ensure_workspace, resolve_and_record, stats, touch_load_run
@@ -385,7 +387,7 @@ def doctor(settings: Settings, *, out: Any = None) -> int:
     # 2. database
     line(ping(settings), "database reachable", fix="make db-up   (Docker must be running)")
     if ping(settings):
-        from ..db import connection, fetch_one
+        from ..db import connection, execute, fetch_one, fetch_one
 
         with connection(settings) as conn:
             roster = fetch_one(
@@ -660,6 +662,11 @@ def build_bolt_app(settings: Settings, client: WebClient, processor: EventProces
     return app
 
 
+#: Advisory-lock key for /cron/tick. Arbitrary, but must not collide with any
+#: other advisory lock this codebase takes. It takes none, so it does not.
+_TICK_LOCK_KEY = 0x63756661_7469636B % (2**31)
+
+
 def build_http_app(
     settings: Settings | None = None,
     *,
@@ -709,6 +716,72 @@ def build_http_app(
     @api.get("/health")
     def health() -> JSONResponse:
         return JSONResponse({"ok": True, "team_id": processor.workspace.team_id if processor.workspace else None})
+
+    @api.post("/cron/tick")
+    def cron_tick(request: Request) -> JSONResponse:
+        """One tick, run by an outside scheduler. The serverless answer to the loop.
+
+        ``AutomationLoop`` is a thread inside a process that never exits. On a
+        platform where the process *is* the request, there is no such thread, so
+        something outside has to say "now" once a minute. This is that door.
+
+        It is shut unless ``CUFA_CRON_SECRET`` is set, and it is the one route
+        here that can DM an entire cohort, so an unauthenticated caller is
+        refused before any work happens. The comparison is constant time.
+
+        Two ticks must not run at once, or a slow one and the next one both
+        decide the same reminder is due. ``bot_delivery`` would catch that at
+        the insert, but losing a race is a worse way to find out than not
+        entering one: an advisory lock makes the second caller leave quietly.
+        """
+        expected = settings.cron_secret
+        if not expected:
+            return JSONResponse(
+                {"ok": False, "error": "CUFA_CRON_SECRET is not set, so this route is closed."},
+                status_code=503,
+            )
+        header = request.headers.get("authorization") or ""
+        offered = header[7:] if header[:7].lower() == "bearer " else ""
+        if not hmac.compare_digest(expected, offered):
+            log.warning("cron tick refused: bad or missing bearer token")
+            return JSONResponse({"ok": False, "error": "not authorised"}, status_code=403)
+
+        from .digest import tick
+
+        started = time.monotonic()
+        with connection(settings) as conn:
+            # 8-byte key, stable across processes: any two ticks contend.
+            held = fetch_one(conn, "select pg_try_advisory_lock(%s) as got", (_TICK_LOCK_KEY,))
+            if not (held and held["got"]):
+                return JSONResponse({"ok": True, "skipped": "another tick is already running"})
+            try:
+                result = tick(
+                    conn,
+                    WebClientAdapter(client),
+                    settings=settings,
+                    cohort_id=(processor.workspace.cohort_id if processor.workspace else None)
+                    or settings.slack_cohort,
+                )
+            finally:
+                execute(conn, "select pg_advisory_unlock(%s)", (_TICK_LOCK_KEY,))
+
+        payload = {
+            "ok": not result.errors,
+            "synced": result.synced,
+            "welcomed": result.welcomed,
+            "reminders": result.reminders_sent,
+            "summaries": result.summaries_posted,
+            "weekly": result.weekly_posted,
+            "alerts": result.alerts_posted,
+            "badges_awarded": result.badges_awarded,
+            "badges_notified": result.badges_notified,
+            "errors": result.errors,
+            "seconds": round(time.monotonic() - started, 2),
+        }
+        log.info("cron tick %s in %ss", result, payload["seconds"])
+        # 200 even with step errors: the scheduler should keep calling. The
+        # errors are in the body and the log, where somebody can act on them.
+        return JSONResponse(payload)
 
     @api.get("/stats")
     def stats_json() -> JSONResponse:

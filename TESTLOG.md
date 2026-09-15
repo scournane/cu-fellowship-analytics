@@ -270,3 +270,70 @@ client. The browser tab was backgrounded (`document.visibilityState: "hidden"`),
 so Slack's virtual message list stopped painting and no reply text could be read
 out of the DOM — including for `/alerts`, which 7.14's method shows *did* run.
 Every link in the chain is proved separately; the pixel is not.
+
+---
+
+## Phase 8 · Moving the bot's uptime off a laptop
+
+Samson asked for the bot's uptime to be tied to Vercel. The bot is two
+programs, and only one of them moves cleanly.
+
+The reactive half (slash commands, events, buttons, `@bot summary`) is already
+request-shaped; `build_http_app` existed for it. The scheduled half is
+`AutomationLoop`, a thread in a process that never exits, and serverless has no
+such process. Vercel's own cron cannot stand in for it on a Hobby plan: minimum
+interval once per day, fired anywhere inside a one-hour window. So the loop
+became a route, `POST /bot/cron/tick`, and Supabase `pg_cron` calls it.
+
+### What was built
+
+* `CUFA_CRON_SECRET` and `POST /cron/tick`, bearer-authenticated, advisory-
+  locked so two ticks never overlap, returning the tick's own counts.
+* `deploy/vercel/` in the repo — entrypoint, `build.sh`, `vercel.json`,
+  `requirements.txt`, README — instead of a scratch directory outside it.
+* The console is the root app; the bot is mounted at `/bot`. A mounted sub-app
+  gets no lifespan events, so the workspace is resolved once per cold start in
+  the entrypoint rather than by the startup hook.
+
+### Checks
+
+| # | Check | Expected | Actual | Result |
+|---|---|---|---|---|
+| 8.1 | tick route shut with no secret | 503, no work | 503, names the variable | PASS |
+| 8.2 | missing / wrong / unprefixed token | 403 each | 403, 403, 403 | PASS |
+| 8.3 | right token | runs, reports | `ok`, counts, `seconds` | PASS |
+| 8.4 | two overlapping ticks | second stands down | second returns `skipped`, does no work | PASS |
+| 8.5 | combined app boots locally | console + `/bot` | 53 console routes, `/bot` mounted, workspace resolved, `load_run` closed at exit | PASS |
+| 8.6 | signed slash commands, local | all answer | `/help` 27ms, `/report` 60ms, 5 others under 45ms | PASS |
+| 8.7 | deployed console | 200 | 200 | PASS |
+| 8.8 | deployed `/bot/health` | team id | `{"ok":true,"team_id":"T0BSTD4J14Z"}` | PASS |
+| 8.9 | deployed tick auth | 403 twice | 403, 403 | PASS |
+| 8.10 | **a real tick, on Vercel, against Supabase** | runs clean | `synced=true, alerts=1, errors=[]`, **0.59s** | **PASS** |
+| 8.11 | Slack URL verification, signed, live | echoes challenge | echoed, 0.54s | PASS |
+| 8.12 | forged signature, live | refused | **401** | PASS |
+| 8.13 | slash command latency, live | under 3s | 0.9–1.8s round trip, baseline 0.17s → ~0.7–1.6s of function time | PASS (warm) |
+| 8.14 | `pg_cron` + `pg_net` installed | present | 1.6.4 and 0.20.4 | PASS |
+| 8.15 | cron token in Vault, not in `cron.job.command` | Vault | `vault.create_secret`, job reads `decrypted_secrets` | PASS |
+| 8.16 | **the schedule actually fires** | every minute | dashboard's `slack_sync` stamp advanced 04:56 → 04:57 → 04:58 against a wall clock at :22, :33, :43 | **PASS (proved)** |
+| 8.17 | full suite | green | **610 passed**, 1 failure — F-13's, unrelated | PASS |
+
+### Data: nothing was migrated, on purpose
+
+The local database and Supabase were compared rather than copied. They already
+agree on everything real in `cu-2026-test`: 3 fellows, 1 session, and the one
+genuine assignment (`Test deck`). The local-only rows are three junk assignments
+(`test`, `Title`, `Demo`) made while exercising slash commands, plus the
+20-fellow `demo` cohort — none of which belong in a live deployment. Slack's own
+history is the source of truth for Slack rows, and the first `sync_all` rebuilds
+them.
+
+### Not done: the Slack app is still on Socket Mode
+
+`apps.manifest.update` — socket mode off, request URLs on — was prepared and
+**validated** (`ok: true, errors: []`) but not applied. It is the irreversible
+step on a real workspace and it needs Samson's go-ahead. Until it runs, Slack
+still tries to deliver over a socket that nothing is holding.
+
+The scheduled half is already live regardless: `pg_cron` has been ticking
+Vercel every minute since 04:56 UTC, so reminders, badges and the digest no
+longer depend on any laptop.

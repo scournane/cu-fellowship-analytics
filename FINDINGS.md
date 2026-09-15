@@ -462,3 +462,30 @@ they most want to trust it.
 **Fix:** have the test fixtures build `Settings` from explicit values rather
 than inheriting the process environment, or have `conftest.py` clear the
 `CUFA_SLACK_*` variables for the session.
+
+## One more, from moving the bot to serverless
+
+### F-14 · Annoying · `load_run` cannot tell a reclaimed instance from a crash
+
+`EventProcessor.start()` opens a `load_run` row and leaves it `running` until
+`stop()`. That is a good design on a long-lived process: a row still `running`
+with no newer one is the record that the collector died, which is the failure
+mode that otherwise goes unnoticed.
+
+On serverless it stops meaning that. Every cold start opens a row; `atexit`
+closes it on a graceful shutdown, but an idle instance the platform reclaims
+without warning leaves it open. So the table accumulates `running` rows that
+look exactly like crashes and are not.
+
+Repro: deploy `deploy/vercel/`, let an instance go idle, then
+
+```sql
+select status, count(*) from load_run where source = 'slack_bot' group by 1;
+```
+
+**Worked around, not fixed.** RUNBOOK sections 7 and 9 now say to judge
+liveness from `cron.job_run_details` instead, and `deploy/vercel/README.md`
+says why. A real fix would be either a heartbeat column that a stale row can be
+aged out by, or a serverless mode that attributes provenance per request rather
+than per process. Neither is worth doing before somebody has actually run this
+for a few weeks and can say which failure they wanted to see.
