@@ -726,8 +726,8 @@ def _is_rate_limit(exc: Exception) -> bool:
 
 class _GeminiJson:
     """One structured-output call with backoff on 429. Same conventions as
-    ``adjudicate.ai`` and ``themes``: temperature 0, a response schema, and
-    ``AiUnavailable`` for every failure so callers degrade instead of crash."""
+    ``themes``: temperature 0, a response schema, and ``AiUnavailable`` for
+    every failure so callers degrade instead of crash."""
 
     prompt_version = PROMPT_VERSION
 

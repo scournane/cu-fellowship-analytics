@@ -147,8 +147,8 @@ class GeminiClusterer:
     """The live clusterer.
 
     Uses ``google-genai`` (``from google import genai``), the same package and
-    the same conventions as Part A's tier 2: ``gemini-2.5-flash`` by default,
-    ``temperature=0``, a response schema, and backoff on 429.
+    the same conventions as the Slack Q&A matcher: ``gemini-2.5-flash`` by
+    default, ``temperature=0``, a response schema, and backoff on 429.
     """
 
     prompt_version = PROMPT_VERSION
