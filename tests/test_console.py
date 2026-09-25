@@ -24,7 +24,7 @@ import json
 import re
 import os
 import uuid
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 # Settings are read once and cached, and importing the app reads them, so the
 # environment has to be right before any cufa import happens.
@@ -1383,3 +1383,99 @@ def test_a_blank_timezone_clears_it(signed_in: TestClient, cohort: str) -> None:
             conn, "select timezone from fellow where fellow_id = %s", (fellow_id,)
         )[0]
     assert row["timezone"] is None
+
+
+# --------------------------------------------------------------------------
+# loading a roster from the console
+# --------------------------------------------------------------------------
+#
+# The roster is the first thing anybody does and it used to need a terminal.
+# These tests are about the failure a file picker introduces and a command line
+# does not: somebody choosing the wrong file out of a folder. A wrong file must
+# be refused whole, because a partly-applied roster is worse than none — it
+# looks like a loaded cohort and is missing people.
+
+
+ROSTER_CSV = (
+    "fellow_id,full_name,email,timezone\n"
+    "CU-9001,Ada Nwosu,ada@example.invalid,America/New_York\n"
+    "CU-9002,Bo Salas,bo@example.invalid,\n"
+)
+
+
+def _upload(client: TestClient, cohort: str, body: str | bytes, name: str = "roster.csv"):
+    payload = body.encode() if isinstance(body, str) else body
+    return client.post(
+        "/roster/upload",
+        data={"cohort": cohort},
+        files={"file": (name, payload, "text/csv")},
+    )
+
+
+def test_a_roster_loads_from_the_console(signed_in: TestClient, db) -> None:
+    response = _upload(signed_in, "console-roster", ROSTER_CSV)
+    assert response.status_code == 303
+    assert "notice=" in response.headers["location"]
+
+    page = signed_in.get("/roster?cohort=console-roster")
+    ids = {f["fellow_id"] for f in boot_state(page)["fellows"]}
+    assert {"CU-9001", "CU-9002"} <= ids
+
+
+def test_loading_the_same_roster_twice_updates_rather_than_duplicates(
+    signed_in: TestClient, db
+) -> None:
+    _upload(signed_in, "console-twice", ROSTER_CSV)
+    corrected = ROSTER_CSV.replace("Ada Nwosu", "Ada Nwosu-Bell")
+    assert _upload(signed_in, "console-twice", corrected).status_code == 303
+
+    fellows = boot_state(signed_in.get("/roster?cohort=console-twice"))["fellows"]
+    ada = [f for f in fellows if f["fellow_id"] == "CU-9001"]
+    assert len(ada) == 1, "upsert, not insert"
+    assert ada[0]["full_name"] == "Ada Nwosu-Bell"
+
+
+def test_the_wrong_spreadsheet_is_refused_and_writes_nothing(
+    signed_in: TestClient, db
+) -> None:
+    """The case a file picker makes possible and a command line does not."""
+    response = _upload(signed_in, "console-wrong", "invoice_no,amount\n1,20.00\n")
+    assert response.status_code == 303
+    location = response.headers["location"]
+    assert "error=" in location
+    # The message names the columns it wanted, in the words a spreadsheet uses.
+    assert "fellow_id" in unquote(location) and "email" in unquote(location)
+
+    page = signed_in.get("/roster?cohort=console-wrong")
+    assert boot_state(page)["fellows"] == [], "nothing may be written by a refused file"
+
+
+def test_a_bad_timezone_is_refused_before_any_row_is_written(
+    signed_in: TestClient, db
+) -> None:
+    """`load_roster` raises on a bad zone mid-file, which would leave the rows
+    before it written and the rows after it not. The check runs first."""
+    body = (
+        "fellow_id,full_name,email,timezone\n"
+        "CU-9101,Fine Person,fine@example.invalid,America/New_York\n"
+        "CU-9102,Bad Zone,bad@example.invalid,Mars/Olympus\n"
+    )
+    response = _upload(signed_in, "console-badzone", body)
+    assert "error=" in response.headers["location"]
+    assert "Mars/Olympus" in unquote(response.headers["location"])
+
+    page = signed_in.get("/roster?cohort=console-badzone")
+    assert boot_state(page)["fellows"] == [], "not even the good row before it"
+
+
+def test_an_empty_file_says_so(signed_in: TestClient, db) -> None:
+    response = _upload(signed_in, "console-empty", "")
+    assert "error=" in response.headers["location"]
+    assert "empty" in unquote(response.headers["location"]).lower()
+
+
+def test_uploading_a_roster_needs_a_session(client: TestClient, db) -> None:
+    assert _upload(client, "console-anon", ROSTER_CSV).status_code in (303, 401, 403)
+    assert "/signin" in _upload(client, "console-anon", ROSTER_CSV).headers.get(
+        "location", "/signin"
+    )

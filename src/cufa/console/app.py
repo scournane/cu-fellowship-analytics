@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import tempfile
 import uuid
 from contextlib import contextmanager
 from functools import lru_cache
@@ -45,7 +46,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, Form, Query, Request
+from fastapi import Depends, FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -82,7 +83,7 @@ from ..assignments import (
 from ..provisioning import is_ready, provision_session, resolve_rotating_slot
 from ..question_map import map_rows
 from ..report import ai_decisions, needs_review_queue, unresolved_identities
-from ..roster import list_fellows, set_fellow_timezone
+from ..roster import inspect_roster_csv, list_fellows, load_roster, set_fellow_timezone
 from ..rotation import RotationConfigError, TeacherQuestionMissing, get_rotation
 from ..shoutouts import candidates_for, link as link_shoutout, review_queue as shoutout_queue
 from ..themes import current_themes, generate_themes
@@ -2416,6 +2417,69 @@ def roster_screen(
         notice=notice,
         error=error,
     )
+
+
+# A roster arrives as a spreadsheet, which is the one artefact every program
+# already has. Until now the only way in was `cufa load-roster --csv <path>
+# --cohort <id>`, which means a terminal, a checkout and a working DSN — three
+# things the person holding the spreadsheet does not have. This is the same
+# loader behind a file picker.
+#
+# Guarded rather than trusted, because the failure mode on a web form is
+# different from the one at a prompt: somebody picks the wrong file out of a
+# folder. So the bytes are checked before the database is opened, and a file
+# that would load nothing says why instead of reporting "0 written".
+
+#: Generous for a cohort of a few hundred and small enough that a mis-picked
+#: video never reaches the CSV parser.
+MAX_ROSTER_BYTES = 2 * 1024 * 1024
+
+
+@app.post("/roster/upload")
+async def roster_upload(
+    request: Request,
+    user: ConsoleUser = Depends(require_user),
+    cohort: str = Form(...),
+    file: UploadFile = File(...),
+) -> Response:
+    destination = "/roster?cohort=" + quote(cohort)
+
+    def refuse(message: str) -> Response:
+        return RedirectResponse(destination + "&error=" + quote(message), status_code=303)
+
+    cohort_id = (cohort or "").strip()
+    if not cohort_id:
+        return refuse("Choose which cohort this roster belongs to.")
+
+    payload = await file.read(MAX_ROSTER_BYTES + 1)
+    if not payload:
+        return refuse("That file is empty.")
+    if len(payload) > MAX_ROSTER_BYTES:
+        return refuse(
+            f"That file is larger than {MAX_ROSTER_BYTES // (1024 * 1024)}MB. "
+            "A roster CSV is usually a few kilobytes — check it is the right file."
+        )
+
+    # Written to a temporary file rather than parsed from memory so that the
+    # console and the CLI run the same `load_roster` over the same kind of
+    # handle. One loader, one set of rules about what a roster may contain.
+    with tempfile.TemporaryDirectory() as scratch:
+        staged = Path(scratch) / "roster.csv"
+        staged.write_bytes(payload)
+
+        check = inspect_roster_csv(staged)
+        if not check.ok:
+            return refuse(" ".join(check.problems) or "That file has no rows this can load.")
+
+        with connection() as conn:
+            summary = load_roster(conn, staged, cohort_id)
+
+    said = f"Loaded {summary.written} of {summary.read} rows into {cohort_id}."
+    if summary.skipped:
+        said += f" {summary.skipped} skipped for a missing id or address."
+    if check.warnings:
+        said += " " + " ".join(check.warnings)
+    return RedirectResponse(destination + "&notice=" + quote(said), status_code=303)
 
 
 @app.post("/roster/{fellow_id}/timezone")

@@ -59,6 +59,116 @@ def ensure_cohort(conn: psycopg.Connection, cohort_id: str, label: str | None = 
     )
 
 
+@dataclass(frozen=True)
+class RosterCheck:
+    """What a CSV would do, worked out before anything is written.
+
+    `load_roster` upserts row by row, so a file with a good first half and a
+    bad second half half-applies and reports a count. That is fine at a
+    terminal, where the person who typed the command can read a traceback and
+    re-run. It is not fine on a web form, where the person may have picked the
+    wrong spreadsheet out of a folder and has no way to see what went in. So
+    the file is read twice: once to say what it contains, and only then to
+    write it.
+    """
+
+    rows: int
+    usable: int
+    problems: list[str]
+    warnings: list[str]
+
+    @property
+    def ok(self) -> bool:
+        return not self.problems and self.usable > 0
+
+
+def inspect_roster_csv(path: str | Path) -> RosterCheck:
+    """Read a roster CSV and describe it, without touching the database.
+
+    Every message here is addressed to somebody who has a spreadsheet open,
+    not to somebody who has the schema in their head: it names the column that
+    is missing in the words the column would have, and it counts rather than
+    raising on the first bad line, because "row 14 is missing an email" is
+    only useful alongside "the other 23 are fine".
+    """
+    problems: list[str] = []
+    warnings: list[str] = []
+    rows = usable = 0
+
+    try:
+        with Path(path).open(newline="", encoding="utf-8-sig") as handle:
+            reader = csv.DictReader(handle)
+            field_names = reader.fieldnames or []
+            if not field_names:
+                return RosterCheck(0, 0, ["This file has no header row, so there is nothing to read."], [])
+
+            present = {(name or "").strip().lower() for name in field_names}
+            if not present & {"fellow_id", "id"}:
+                problems.append(
+                    "No column named 'fellow_id' (or 'id'). That is the "
+                    "identifier the rest of the system uses for a person."
+                )
+            if not present & {"primary_email", "email"}:
+                problems.append(
+                    "No column named 'primary_email' (or 'email'). Without an "
+                    "address, nothing can be matched to a Google form or a "
+                    "Slack account."
+                )
+            if not present & {"full_name", "name"}:
+                warnings.append(
+                    "No column named 'full_name' (or 'name'). Everyone will be "
+                    "shown by their fellow id until that is corrected."
+                )
+
+            for row in reader:
+                rows += 1
+                headers = _headers(row)
+                fellow_id = _pick(row, headers, "fellow_id", "id")
+                email = normalize_email(_pick(row, headers, "primary_email", "email"))
+                timezone = _pick(row, headers, "timezone", "tz") or None
+
+                if not fellow_id or not email:
+                    missing = "id" if not fellow_id else "email address"
+                    warnings.append(f"Row {rows} has no {missing}, so it will be skipped.")
+                    continue
+
+                if timezone:
+                    # The same refusal `load_roster` makes, made early. A typo
+                    # here sends somebody's reminders to the wrong hour, and
+                    # the loader raises on it mid-file; better to say so now.
+                    from .timeutil import get_zone
+
+                    try:
+                        get_zone(timezone)
+                    except Exception:
+                        problems.append(
+                            f"Row {rows} has the time zone {timezone!r}, which is not a "
+                            "zone name. Use something like 'America/New_York'."
+                        )
+                        continue
+
+                usable += 1
+    except UnicodeDecodeError:
+        return RosterCheck(
+            0, 0,
+            ["This file is not readable as text. Export it from the spreadsheet as CSV and try again."],
+            [],
+        )
+    except csv.Error as exc:
+        return RosterCheck(0, 0, [f"This file is not valid CSV ({exc})."], [])
+
+    if rows and not usable and not problems:
+        problems.append("Every row is missing an id or an email address, so there is nothing to load.")
+    if not rows:
+        problems.append("This file has a header row but no people in it.")
+
+    # A long file with a long tail of bad rows produces an unreadable wall.
+    if len(warnings) > 12:
+        warnings = warnings[:12] + [f"...and {len(warnings) - 12} more rows like this."]
+
+    return RosterCheck(rows, usable, problems, warnings)
+
+
 def load_roster(conn: psycopg.Connection, path: str | Path, cohort_id: str) -> LoadSummary:
     """Upsert fellows from a CSV.
 

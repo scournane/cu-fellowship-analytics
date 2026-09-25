@@ -80,12 +80,18 @@ export function PostForm({
   method = 'post',
   direction = 'horizontal',
   gap = 2,
+  // A form carrying a file has to say so, or the browser sends the filename
+  // and not the file. Only the roster upload needs it, so it is opt-in rather
+  // than the default: every other form on the console is a handful of fields
+  // and urlencoded is the right thing for those.
+  encType,
 }) {
   return (
     <Stack
       as="form"
       method={method}
       action={action}
+      encType={encType}
       direction={direction}
       gap={gap}
       align={direction === 'horizontal' ? 'center' : undefined}

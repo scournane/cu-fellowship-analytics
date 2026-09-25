@@ -1,6 +1,7 @@
 import {Button} from '@astryxdesign/core/Button'
 import {Card} from '@astryxdesign/core/Card'
 import {EmptyState} from '@astryxdesign/core/EmptyState'
+import {Heading} from '@astryxdesign/core/Heading'
 import {Stack} from '@astryxdesign/core/Stack'
 import {Table, TableCell, TableHeaderCell, TableRow} from '@astryxdesign/core/Table'
 import {Text} from '@astryxdesign/core/Text'
@@ -50,6 +51,75 @@ function TimezoneCell({fellow, cohort, commonZones}) {
   )
 }
 
+/** Load a roster from a spreadsheet.
+ *
+ *  This is the first thing anybody does with the system and it used to require
+ *  a terminal: `cufa load-roster --csv <path> --cohort <id>`. The person who
+ *  has the spreadsheet is not, generally, the person with a checkout and a
+ *  database URL, so the whole product started behind a step they could not
+ *  take.
+ *
+ *  Two things are deliberate. The cohort is typed rather than picked from the
+ *  existing list, because the first roster ever loaded creates the cohort and
+ *  a picker with nothing in it is a dead end. And the file input is a plain
+ *  one: the design system has no file control, and a styled div that opens a
+ *  picker is a worse version of the thing every browser already does well.
+ */
+function LoadRoster({cohorts = [], selected}) {
+  const [name, setName] = useState('')
+
+  return (
+    <Card padding={5}>
+      <Stack gap={3}>
+        <Stack gap={1}>
+          <Heading level={2}>Load a roster</Heading>
+          <Text type="supporting">
+            A CSV with a column for the fellow id and one for the email address. A name
+            and an IANA timezone are optional, and both can be corrected here afterwards.
+            Loading the same file twice is safe — people are matched on their id and
+            updated, never duplicated.
+          </Text>
+        </Stack>
+
+        <PostForm action="/roster/upload" encType="multipart/form-data" direction="vertical" gap={3}>
+          <Stack direction="horizontal" gap={3} align="end" wrap="wrap">
+            <TextInput
+              // Not "Cohort": the filter below is also called that, and on a
+              // screen with both, the one that writes needs to say so.
+              label="Load into cohort"
+              htmlName="cohort"
+              defaultValue={selected || ''}
+              placeholder="2026-spring"
+              // Typed, not picked: the first load creates the cohort.
+              list={cohorts.length ? 'known-cohorts' : undefined}
+              spellCheck={false}
+              isRequired
+            />
+            <Stack gap={1}>
+              <Text type="label">Spreadsheet</Text>
+              <input
+                type="file"
+                name="file"
+                accept=".csv,text/csv"
+                required
+                onChange={(e) => setName(e.target.files?.[0]?.name || '')}
+              />
+            </Stack>
+            <Button label="Load" type="submit" variant="primary" />
+          </Stack>
+          {name ? <Text type="supporting">Ready to load {name}.</Text> : null}
+        </PostForm>
+
+        <datalist id="known-cohorts">
+          {cohorts.map((c) => (
+            <option key={c.cohort_id || c} value={c.cohort_id || c} />
+          ))}
+        </datalist>
+      </Stack>
+    </Card>
+  )
+}
+
 export function Roster({
   fellows = [],
   cohorts = [],
@@ -75,6 +145,8 @@ export function Roster({
         {common_zones.map((zone) => <option key={zone} value={zone} />)}
       </datalist>
 
+      <LoadRoster cohorts={cohorts} selected={selected_cohort} />
+
       <Stack direction="horizontal" gap={3} align="end" wrap="wrap">
         <CohortFilter
           cohorts={cohorts}
@@ -90,7 +162,7 @@ export function Roster({
         <Card padding={5}>
           <EmptyState
             title="No fellows on the roster"
-            description="Load one with cufa load-roster --csv <path> --cohort <id>. A timezone column of IANA names is optional there, and can be filled in here instead."
+            description="Use the form above: a CSV with a column for the fellow id and one for the email address. Everything else on this screen, and most of the rest of the console, fills in from it."
             headingLevel={2}
           />
         </Card>
@@ -132,9 +204,10 @@ export function Roster({
             ))}
           </Table>
           <Text type="supporting">
-            Names, addresses and membership come from the roster CSV, which stays the
-            source of truth for who exists. Only the zone is editable here, because it is
-            the one field that gets corrected one person at a time.
+            Names, addresses and membership come from the roster, which stays the source
+            of truth for who exists — load a corrected file above and it is upserted over
+            what is here. Only the zone is editable row by row, because it is the one
+            field that gets corrected one person at a time.
           </Text>
         </Stack>
       )}
