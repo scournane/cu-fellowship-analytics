@@ -8,10 +8,12 @@ import {
   Series,
   interpolate,
   staticFile,
+  spring,
   useCurrentFrame,
+  useVideoConfig,
 } from "remotion";
-import { theme } from "../theme";
-import { Caption, CaptionLine, clamp, fadeIn } from "./ui";
+import { theme, tokens } from "../theme";
+import { Caption, CaptionLine, K, Pill, clamp, fadeIn } from "./ui";
 
 // Viewport the screenshot is shown in (absolute frame coords).
 const VX = 40;
@@ -51,6 +53,7 @@ function track<T extends { f: number }>(keys: T[], f: number, pick: (k: T) => nu
 
 const Shot: React.FC<{ beat: Beat }> = ({ beat }) => {
   const f = useCurrentFrame();
+  const { fps } = useVideoConfig();
   const z = track(beat.cam, f, (k) => k.z);
   const s = BASE * z;
   const vw = VW / s;
@@ -79,9 +82,10 @@ const Shot: React.FC<{ beat: Beat }> = ({ beat }) => {
           width: VW,
           height: VH,
           overflow: "hidden",
-          borderRadius: 18,
-          background: "#fff",
-          boxShadow: "0 30px 80px rgba(0,0,0,0.45)",
+          borderRadius: 16,
+          background: tokens.paper,
+          border: `2px solid ${tokens.faded}`,
+          boxSizing: "border-box",
         }}
       >
         <div
@@ -101,8 +105,9 @@ const Shot: React.FC<{ beat: Beat }> = ({ beat }) => {
             const o = Math.min(fadeIn(f, h.from, 8), interpolate(f, [end - 8, end], [1, 0], clamp));
             if (o <= 0) return null;
             const pad = 10;
-            const pulse = 1 + 0.03 * Math.sin((f - h.from) / 5);
-            const col = h.color ?? theme.accent;
+            const pop = spring({ frame: f - h.from, fps, config: { damping: 9, mass: 0.6 } });
+            const pulse = 0.94 + 0.06 * pop + 0.012 * Math.sin((f - h.from) / 6);
+            const col = h.color ?? tokens.sparkBlue;
             return (
               <div key={i}>
                 <div
@@ -113,8 +118,8 @@ const Shot: React.FC<{ beat: Beat }> = ({ beat }) => {
                     width: h.b[2] + pad * 2,
                     height: h.b[3] + pad * 2,
                     border: `${4 / s}px solid ${col}`,
-                    borderRadius: 10,
-                    boxShadow: `0 0 0 ${2000}px rgba(14,26,43,${0.28 * o})`,
+                    borderRadius: 12 / s,
+                    background: `${col}14`,
                     opacity: o,
                     transform: `scale(${pulse})`,
                   }}
@@ -124,18 +129,19 @@ const Shot: React.FC<{ beat: Beat }> = ({ beat }) => {
                     style={{
                       position: "absolute",
                       left: h.b[0] - pad,
-                      top: h.b[1] - pad - 44 / s,
-                      transformOrigin: "0 0",
-                      transform: `scale(${1 / s})`,
+                      top: h.b[1] - pad - 52 / s,
+                      transformOrigin: "0 100%",
+                      transform: `scale(${(0.6 + 0.4 * pop) / s})`,
                       background: col,
-                      color: theme.ink,
-                      fontFamily: theme.font,
-                      fontWeight: 800,
-                      fontSize: 24,
-                      padding: "4px 12px",
-                      borderRadius: 8,
+                      color: tokens.paper,
+                      fontFamily: tokens.body,
+                      fontSize: 22,
+                      padding: "6px 16px",
+                      border: `2px solid ${col}`,
+                      borderRadius: 999,
                       whiteSpace: "nowrap",
                       opacity: o,
+                      ...K.label,
                     }}
                   >
                     {h.label}
@@ -168,7 +174,7 @@ const Shot: React.FC<{ beat: Beat }> = ({ beat }) => {
                       width: 80,
                       height: 80,
                       borderRadius: 999,
-                      border: `5px solid ${theme.accent}`,
+                      border: `5px solid ${tokens.sparkBlue}`,
                       transform: `scale(${0.3 + p})`,
                       opacity: 1 - p,
                     }}
@@ -179,9 +185,9 @@ const Shot: React.FC<{ beat: Beat }> = ({ beat }) => {
                 width={48}
                 height={48}
                 viewBox="0 0 24 24"
-                style={{ position: "absolute", left: -6, top: -4, filter: "drop-shadow(0 4px 6px rgba(0,0,0,0.4))" }}
+                style={{ position: "absolute", left: -6, top: -4 }}
               >
-                <path d="M4 2 L4 20 L9 15 L12.5 22 L15.5 20.5 L12 13.8 L19 13.8 Z" fill="#FFFFFF" stroke="#0E1A2B" strokeWidth={1.4} />
+                <path d="M4 2 L4 20 L9 15 L12.5 22 L15.5 20.5 L12 13.8 L19 13.8 Z" fill="#FFFFFF" stroke={tokens.charcoal} strokeWidth={1.8} strokeLinejoin="round" />
               </svg>
             </div>
           ) : null}
@@ -190,6 +196,15 @@ const Shot: React.FC<{ beat: Beat }> = ({ beat }) => {
     </AbsoluteFill>
   );
 };
+
+/** Small outlined uppercase pill pinned to the top-right of the viewport card. */
+export const CornerPill: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <div style={{ position: "absolute", right: 60, top: 58 }}>
+    <Pill at={6} size={17} color={tokens.pencil}>
+      {children}
+    </Pill>
+  </div>
+);
 
 export type SceneDef = { step: string; title: string; beats: Beat[]; lines: CaptionLine[] };
 
@@ -205,23 +220,7 @@ export const RealScene: React.FC<{ def: SceneDef }> = ({ def }) => (
       ))}
     </Series>
     <Caption step={def.step} title={def.title} lines={def.lines} />
-    <div
-      style={{
-        position: "absolute",
-        right: 60,
-        top: 56,
-        fontFamily: theme.font,
-        fontSize: 18,
-        fontWeight: 700,
-        color: theme.text,
-        background: "rgba(14,26,43,0.82)",
-        padding: "6px 14px",
-        borderRadius: 8,
-        letterSpacing: 1,
-      }}
-    >
-      REAL SCREEN · demo data · fake-Google mode
-    </div>
+    <CornerPill>Real screen · demo data · fake-Google mode</CornerPill>
   </AbsoluteFill>
 );
 
@@ -241,18 +240,18 @@ export const Terminal: React.FC<{ blocks: TermBlock[]; scrollAt?: [number, numbe
         top: VY,
         width: VW,
         height: VH,
-        borderRadius: 18,
-        background: "#0A1220",
-        border: "2px solid #22324A",
+        borderRadius: 12,
+        background: tokens.nightInk,
+        border: `2px solid ${tokens.nightInk}`,
+        boxSizing: "border-box",
         overflow: "hidden",
-        boxShadow: "0 30px 80px rgba(0,0,0,0.45)",
       }}
     >
-      <div style={{ height: 44, background: "#16263D", display: "flex", alignItems: "center", gap: 10, paddingLeft: 18 }}>
-        {["#E4605E", "#F2B632", "#3FB6A8"].map((c) => (
+      <div style={{ height: 44, background: "#141a52", display: "flex", alignItems: "center", gap: 10, paddingLeft: 18 }}>
+        {["#ff4b4b", "#ffc800", tokens.eagerGreen].map((c) => (
           <div key={c} style={{ width: 14, height: 14, borderRadius: 99, background: c }} />
         ))}
-        <div style={{ marginLeft: 20, color: theme.muted, fontFamily: theme.font, fontSize: 20 }}>cu-fellowship-analytics — bash</div>
+        <div style={{ marginLeft: 20, color: "#b8bce0", fontFamily: tokens.body, fontSize: 20, fontWeight: 700 }}>cu-fellowship-analytics — bash</div>
       </div>
       <div
         style={{
@@ -274,7 +273,7 @@ export const Terminal: React.FC<{ blocks: TermBlock[]; scrollAt?: [number, numbe
           const shown = doneTyping ? Math.floor(interpolate(f, [outStart, outStart + 20], [0, lines.length], clamp)) : 0;
           return (
             <div key={i}>
-              <span style={{ color: theme.accent2 }}>$ </span>
+              <span style={{ color: tokens.freshLeaf }}>$ </span>
               <span>{typed}</span>
               {!doneTyping ? <span style={{ background: "#DDE6F2" }}> </span> : null}
               {"\n"}
@@ -358,12 +357,13 @@ export const SlackPane: React.FC<{ ex: SlackExchange }> = ({ ex }) => {
         top: VY,
         width: VW,
         height: VH,
-        borderRadius: 18,
+        borderRadius: 16,
         overflow: "hidden",
         display: "flex",
-        background: "#fff",
+        background: tokens.paper,
+        border: `2px solid ${tokens.faded}`,
+        boxSizing: "border-box",
         fontFamily: "Lato, 'Helvetica Neue', Arial, sans-serif",
-        boxShadow: "0 30px 80px rgba(0,0,0,0.45)",
       }}
     >
       <div style={{ width: 300, background: "#3F0E40", color: "#CFC3CF", padding: "22px 0" }}>

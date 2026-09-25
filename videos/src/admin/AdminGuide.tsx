@@ -1,9 +1,9 @@
 import React from "react";
-import { AbsoluteFill, Sequence, Series, interpolate, useCurrentFrame, useVideoConfig } from "remotion";
+import { AbsoluteFill, Sequence, Series, continueRender, delayRender, interpolate, staticFile, useCurrentFrame, useVideoConfig } from "remotion";
 import { theme } from "../theme";
 import { ClosingScene, RulesScene, TitleScene } from "./cards";
 import { DOCTOR, ENGAGEMENT, EXPORT, REPORT, TEMPLATE_CSV } from "./cliOutput";
-import { RealScene, SceneDef, SlackExchange, SlackPane, Terminal, sceneLength } from "./real";
+import { CornerPill, RealScene, SceneDef, SlackExchange, SlackPane, Terminal, sceneLength } from "./real";
 import { SLACK } from "./slackOutput";
 import { Caption, CaptionLine } from "./ui";
 
@@ -481,23 +481,7 @@ const SlackScene: React.FC<{ def: { step: string; title: string; ex: SlackExchan
       ))}
     </Series>
     <Caption step={def.step} title={def.title} lines={def.lines} />
-    <div
-      style={{
-        position: "absolute",
-        right: 60,
-        top: 56,
-        fontFamily: theme.font,
-        fontSize: 18,
-        fontWeight: 700,
-        color: theme.text,
-        background: "rgba(14,26,43,0.82)",
-        padding: "6px 14px",
-        borderRadius: 8,
-        letterSpacing: 1,
-      }}
-    >
-      REAL BOT REPLY · from `cufa slack cmd` on the demo
-    </div>
+    <CornerPill>Real bot reply · via cufa slack cmd</CornerPill>
   </AbsoluteFill>
 );
 const slackLen = (d: { ex: SlackExchange[] }) => d.ex.reduce((a, e) => a + e.dur, 0);
@@ -630,7 +614,40 @@ const Fade: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   return <AbsoluteFill style={{ opacity: o }}>{children}</AbsoluteFill>;
 };
 
+/**
+ * Register the Nunito faces from public/admin/fonts with the FontFace API and hold
+ * rendering until they load, so no frame falls back to a system font.
+ */
+const FACES: [string, string, string][] = [
+  ["Nunito", "800", "nunito-latin-800-normal.woff2"],
+  ["Nunito", "900", "nunito-latin-900-normal.woff2"],
+  ["Nunito Sans", "500", "nunito-sans-latin-500-normal.woff2"],
+  ["Nunito Sans", "700", "nunito-sans-latin-700-normal.woff2"],
+  ["Nunito Sans", "800", "nunito-sans-latin-800-normal.woff2"],
+];
+const useFonts = () => {
+  const [handle] = React.useState(() => delayRender("Loading Nunito fonts"));
+  React.useEffect(() => {
+    Promise.all(
+      FACES.map(([family, weight, file]) => {
+        const face = new FontFace(family, `url(${staticFile(`admin/fonts/${file}`)}) format("woff2")`, { weight });
+        document.fonts.add(face);
+        return face.load();
+      }),
+    )
+      .then(() => {
+        console.log("FONTS loaded", document.fonts.check("900 40px Nunito"), document.fonts.size);
+        continueRender(handle);
+      })
+      .catch((e) => {
+        console.error(e);
+        continueRender(handle);
+      });
+  }, [handle]);
+};
+
 export const AdminGuide: React.FC = () => {
+  useFonts();
   return (
     <AbsoluteFill style={{ background: theme.bg }}>
       <Series>

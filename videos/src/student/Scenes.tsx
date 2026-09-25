@@ -1,7 +1,7 @@
 import React from "react";
 import { AbsoluteFill, interpolate, useCurrentFrame } from "remotion";
-import { theme } from "../theme";
-import { Pill, Rise, Scene, useAppear, useProgress } from "./ui";
+import { theme, tokens } from "../theme";
+import { Ding, Display, Pill, Rise, Scene, useAppear, useProgress } from "./ui";
 
 const clamp = {
   extrapolateLeft: "clamp",
@@ -19,11 +19,11 @@ export const TitleScene: React.FC = () => {
           <Pill>CIVIC INNOVATORS FELLOWSHIP</Pill>
         </Rise>
         <Rise delay={14}>
-          <div style={{ fontSize: 132, fontWeight: 900, lineHeight: 1.02, marginTop: 40 }}>
+          <Display size={136} color={tokens.charcoal} style={{ marginTop: 40 }}>
             Checking in:
             <br />
-            <span style={{ color: theme.accent }}>a fellow&apos;s guide</span>
-          </div>
+            <span style={{ color: tokens.eagerGreen }}>a fellow&apos;s guide</span>
+          </Display>
         </Rise>
         <div
           style={{
@@ -34,6 +34,7 @@ export const TitleScene: React.FC = () => {
             marginTop: 44,
           }}
         />
+        <Ding size={460} delay={20} style={{ position: "absolute", right: 150, top: 300 }} />
         <Rise delay={36}>
           <div style={{ fontSize: 48, color: theme.muted, marginTop: 36 }}>
             Everything you do in a live lesson, step by step.
@@ -59,7 +60,7 @@ export const TimelineScene: React.FC = () => {
     <Scene dur={TIMELINE_DUR}>
       <AbsoluteFill style={{ padding: "90px 160px" }}>
         <Rise delay={0}>
-          <div style={{ fontSize: 88, fontWeight: 900 }}>Two quick forms, every live lesson</div>
+          <Display size={88}>Two quick forms, every live lesson</Display>
         </Rise>
         <Rise delay={10}>
           <div style={{ fontSize: 44, color: theme.muted, marginTop: 14 }}>
@@ -76,7 +77,7 @@ export const TimelineScene: React.FC = () => {
               left: 0,
               height: 40,
               width: barW * grow,
-              backgroundColor: theme.surface,
+              backgroundColor: "#e5e5e5",
               borderRadius: 40,
             }}
           />
@@ -87,7 +88,7 @@ export const TimelineScene: React.FC = () => {
               left: 0,
               height: 40,
               width: barW * play,
-              backgroundColor: "#2A4466",
+              backgroundColor: "#d7ffb8",
               borderRadius: 40,
             }}
           />
@@ -195,7 +196,7 @@ export const TimelineScene: React.FC = () => {
 
         <div style={{ display: "flex", gap: 60, marginTop: 70 }}>
           <Rise delay={140} style={{ flex: 1 }}>
-            <div style={{ backgroundColor: theme.surface, borderRadius: 28, padding: "30px 40px", borderLeft: `12px solid ${theme.accent}` }}>
+            <div style={{ backgroundColor: "#fff", border: "2px solid #e5e5e5", borderRadius: 14, padding: "30px 40px", borderColor: theme.accent, borderBottomWidth: 6 }}>
               <div style={{ fontSize: 48, fontWeight: 900 }}>Part A: &quot;I&apos;m here&quot;</div>
               <div style={{ fontSize: 38, color: theme.muted, marginTop: 8 }}>
                 Mid-lesson. Type the passphrase.
@@ -203,7 +204,7 @@ export const TimelineScene: React.FC = () => {
             </div>
           </Rise>
           <Rise delay={225} style={{ flex: 1 }}>
-            <div style={{ backgroundColor: theme.surface, borderRadius: 28, padding: "30px 40px", borderLeft: `12px solid ${theme.accent2}` }}>
+            <div style={{ backgroundColor: "#fff", border: "2px solid #e5e5e5", borderRadius: 14, padding: "30px 40px", borderColor: theme.accent2, borderBottomWidth: 6 }}>
               <div style={{ fontSize: 48, fontWeight: 900 }}>Part B: &quot;What landed&quot;</div>
               <div style={{ fontSize: 38, color: theme.muted, marginTop: 8 }}>
                 End of lesson. A quick reflection.
@@ -221,19 +222,20 @@ export const CLOSING_DUR = 150;
 export const ClosingScene: React.FC = () => {
   const glow = useProgress(10, 60);
   return (
-    <Scene dur={CLOSING_DUR}>
+    <Scene dur={CLOSING_DUR} bg={tokens.eagerGreen}>
       <AbsoluteFill style={{ alignItems: "center", justifyContent: "center", textAlign: "center" }}>
+        <Ding size={240} delay={0} style={{ marginBottom: 30 }} />
         <Rise delay={5}>
-          <div style={{ fontSize: 120, fontWeight: 900 }}>
-            Thanks for <span style={{ color: theme.accent }}>showing up.</span>
-          </div>
+          <Display size={130} color="#fff">
+            Thanks for <span style={{ color: tokens.storybookGreen }}>showing up.</span>
+          </Display>
         </Rise>
-        <div style={{ height: 10, width: 700 * glow, backgroundColor: theme.accent2, borderRadius: 10, margin: "40px 0" }} />
+        <div style={{ height: 10, width: 700 * glow, backgroundColor: tokens.freshLeaf, borderRadius: 10, margin: "40px 0" }} />
         <Rise delay={30}>
-          <div style={{ fontSize: 52, color: theme.muted }}>See you at the next live lesson.</div>
+          <div style={{ fontSize: 52, color: tokens.storybookGreen, fontWeight: 700 }}>See you at the next live lesson.</div>
         </Rise>
         <Rise delay={50}>
-          <div style={{ fontSize: 40, marginTop: 50, color: theme.text }}>Civics Unplugged · Civic Innovators Fellowship</div>
+          <div style={{ fontSize: 30, marginTop: 50, color: "#fff", fontWeight: 800, letterSpacing: "0.053em", textTransform: "uppercase" }}>Civics Unplugged · Civic Innovators Fellowship</div>
         </Rise>
       </AbsoluteFill>
     </Scene>

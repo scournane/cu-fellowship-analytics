@@ -2,12 +2,14 @@ import React from "react";
 import {
   AbsoluteFill,
   Easing,
+  Img,
   interpolate,
+  staticFile,
   spring,
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
-import { theme } from "../theme";
+import { theme, tokens } from "../theme";
 
 export const clamp = {
   extrapolateLeft: "clamp",
@@ -358,7 +360,7 @@ export const Cursor: React.FC<{ keys: CursorKey[]; clicks?: number[] }> = ({ key
         width={48}
         height={48}
         viewBox="0 0 24 24"
-        style={{ position: "absolute", left: x - 6, top: y - 4, opacity, filter: "drop-shadow(0 4px 6px rgba(0,0,0,0.4))" }}
+        style={{ position: "absolute", left: x - 6, top: y - 4, opacity }}
       >
         <path d="M4 2 L4 20 L9 15 L12.5 22 L15.5 20.5 L12 13.8 L19 13.8 Z" fill="#FFFFFF" stroke="#0E1A2B" strokeWidth={1.4} />
       </svg>
@@ -368,70 +370,163 @@ export const Cursor: React.FC<{ keys: CursorKey[]; clicks?: number[] }> = ({ key
 
 export type CaptionLine = { from: number; text: string };
 
+/* ---------------- storybook kit (local tokens; theme.ts stays untouched) ---------------- */
+export const K = {
+  greenEdge: "#58a700",
+  blueWash: "#ddf4ff",
+  mono: "'DejaVu Sans Mono', Menlo, monospace",
+  label: { textTransform: "uppercase", letterSpacing: "0.053em", fontWeight: 800 } as React.CSSProperties,
+};
+
+/** The app's mascot, Ding the desk bell, with a gentle bob. */
+export const Ding: React.FC<{ size: number; start?: number; style?: React.CSSProperties }> = ({ size, start = 0, style }) => {
+  const f = useCurrentFrame();
+  const pop = usePop(start);
+  const bob = Math.sin((f - start) / 9) * size * 0.03;
+  const tilt = Math.sin((f - start) / 13) * 3;
+  return (
+    <Img
+      src={staticFile("brand/ding-mark.svg")}
+      style={{
+        width: size,
+        height: size,
+        transform: `translateY(${bob}px) rotate(${tilt}deg) scale(${pop})`,
+        ...style,
+      }}
+    />
+  );
+};
+
+/** Outlined uppercase pill (secondary style), with a spring pop. */
+export const Pill: React.FC<{ children: React.ReactNode; at?: number; color?: string; size?: number; style?: React.CSSProperties }> = ({
+  children,
+  at = 0,
+  color = tokens.sparkBlue,
+  size = 20,
+  style,
+}) => {
+  const p = usePop(at);
+  return (
+    <div
+      style={{
+        display: "inline-block",
+        alignSelf: "flex-start",
+        fontFamily: tokens.body,
+        fontSize: size,
+        color,
+        background: tokens.paper,
+        border: `2px solid ${tokens.faded}`,
+        borderRadius: 999,
+        padding: "6px 16px",
+        whiteSpace: "nowrap",
+        transform: `scale(${0.7 + 0.3 * p})`,
+        opacity: Math.min(1, p * 1.5),
+        ...K.label,
+        ...style,
+      }}
+    >
+      {children}
+    </div>
+  );
+};
+
+/** Inline `code` in blue monospace on a light blue pill; everything else plain. */
+export const withCode = (text: string, size = "0.88em") =>
+  text.split(/(`[^`]+`)/g).map((part, i) =>
+    part.startsWith("`") && part.endsWith("`") && part.length > 2 ? (
+      <span
+        key={i}
+        style={{
+          fontFamily: K.mono,
+          color: tokens.sparkBlue,
+          background: K.blueWash,
+          borderRadius: 10,
+          padding: "0 10px",
+          fontSize: size,
+          fontWeight: 600,
+        }}
+      >
+        {part.slice(1, -1)}
+      </span>
+    ) : (
+      <React.Fragment key={i}>{part}</React.Fragment>
+    ),
+  );
+
+/** Green sticker STEP badge with a solid 4px bottom edge (an edge, not a shadow). */
+export const StepBadge: React.FC<{ step: string }> = ({ step }) => {
+  const p = usePop(2);
+  return (
+    <div
+      style={{
+        width: 150,
+        height: 150,
+        borderRadius: 12,
+        background: tokens.eagerGreen,
+        border: `2px solid ${tokens.eagerGreen}`,
+        borderBottom: `6px solid ${K.greenEdge}`,
+        color: tokens.paper,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        flexShrink: 0,
+        transform: `scale(${0.6 + 0.4 * p}) rotate(${(1 - p) * -8}deg)`,
+      }}
+    >
+      <div style={{ fontFamily: tokens.body, fontSize: 24, ...K.label, color: tokens.storybookGreen }}>Step</div>
+      <div style={{ fontFamily: tokens.display, fontSize: 76, fontWeight: 900, lineHeight: 1 }}>{step}</div>
+    </div>
+  );
+};
+
 export const Caption: React.FC<{ step: string; title: string; lines: CaptionLine[] }> = ({
   step,
   title,
   lines,
 }) => {
   const f = useCurrentFrame();
+  const { fps } = useVideoConfig();
   const idx = lines.reduce((acc, l, i) => (f >= l.from ? i : acc), 0);
   const cur = lines[idx];
-  const o = fadeIn(f, cur.from, 10);
-  const shift = interpolate(o, [0, 1], [16, 0]);
+  const o = fadeIn(f, cur.from, 8);
+  const sp = spring({ frame: f - cur.from, fps, config: { damping: 11, mass: 0.5 } });
+  const shift = interpolate(sp, [0, 1], [22, 0]);
   return (
-    <div
-      style={{
-        position: "absolute",
-        left: 40,
-        top: 856,
-        width: 1840,
-        height: 190,
-        fontFamily: theme.font,
-        color: theme.text,
-        display: "flex",
-        gap: 36,
-        alignItems: "flex-start",
-      }}
-    >
+    <>
+      <div style={{ position: "absolute", left: 0, top: 846, width: 1920, height: 2, background: tokens.hairline }} />
       <div
         style={{
-          minWidth: 170,
-          height: 170,
-          borderRadius: 20,
-          background: theme.accent,
-          color: theme.ink,
+          position: "absolute",
+          left: 40,
+          top: 872,
+          width: 1840,
+          height: 180,
+          fontFamily: tokens.body,
           display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          fontWeight: 800,
+          gap: 34,
+          alignItems: "flex-start",
         }}
       >
-        <div style={{ fontSize: 24, letterSpacing: 2 }}>STEP</div>
-        <div style={{ fontSize: 76, lineHeight: 1 }}>{step}</div>
-      </div>
-      <div style={{ flex: 1 }}>
-        <div style={{ fontSize: 44, fontWeight: 800, color: theme.accent, marginBottom: 8 }}>{title}</div>
-        <div
-          style={{
-            fontSize: 38,
-            lineHeight: 1.3,
-            opacity: o,
-            transform: `translateY(${shift}px)`,
-          }}
-        >
-          {cur.text.split(/(`[^`]+`)/g).map((part, i) =>
-            part.startsWith("`") && part.endsWith("`") ? (
-              <span key={i} style={{ fontFamily: "'DejaVu Sans Mono', Menlo, monospace", color: theme.accent2, fontSize: "0.9em" }}>
-                {part.slice(1, -1)}
-              </span>
-            ) : (
-              <React.Fragment key={i}>{part}</React.Fragment>
-            ),
-          )}
+        <StepBadge step={step} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 44, fontWeight: 800, color: tokens.charcoal, marginBottom: 6, lineHeight: 1.15 }}>{title}</div>
+          <div
+            style={{
+              fontSize: 36,
+              fontWeight: 500,
+              color: tokens.pencil,
+              lineHeight: 1.32,
+              opacity: o,
+              transform: `translateY(${shift}px)`,
+            }}
+          >
+            {withCode(cur.text)}
+          </div>
         </div>
+        <Ding size={120} style={{ flexShrink: 0, marginTop: 20 }} />
       </div>
-    </div>
+    </>
   );
 };
 

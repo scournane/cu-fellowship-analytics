@@ -22,7 +22,7 @@ export const FormCard: React.FC<{
       color: theme.ink,
       borderRadius: 24,
       overflow: "hidden",
-      boxShadow: "0 30px 80px rgba(0,0,0,0.45)",
+      border: "2px solid #afafaf",
       ...style,
     }}
   >

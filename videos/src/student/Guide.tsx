@@ -1,7 +1,7 @@
 import React from "react";
 import { AbsoluteFill, interpolate, useCurrentFrame } from "remotion";
-import { theme } from "../theme";
-import { Check, Pill, Rise, Scene, Typed, useAppear } from "./ui";
+import { theme, tokens } from "../theme";
+import { Check, Ding, Display, Pill, Rise, Scene, Typed, useAppear } from "./ui";
 import { ClickMark, FORM_PURPLE, TextLine } from "./FormBits";
 import { Shot } from "./Shot";
 
@@ -13,14 +13,14 @@ const G_BG = "#F0EBF8";
 const Header: React.FC<{ pill: string; title: string; color?: string }> = ({ pill, title, color }) => (
   <Rise delay={0} style={{ display: "flex", alignItems: "center", gap: 28 }}>
     <Pill color={color}>{pill}</Pill>
-    <div style={{ fontSize: 64, fontWeight: 900 }}>{title}</div>
+    <Display>{title}</Display>
   </Rise>
 );
 
 const Bullets: React.FC<{ items: { at: number; text: React.ReactNode }[]; size?: number; color?: string }> = ({
   items,
   size = 42,
-  color = theme.accent2,
+  color = tokens.eagerGreen,
 }) => (
   <div style={{ display: "flex", flexDirection: "column", gap: 26 }}>
     {items.map((it, i) => (
@@ -28,7 +28,7 @@ const Bullets: React.FC<{ items: { at: number; text: React.ReactNode }[]; size?:
         <div style={{ marginTop: 4 }}>
           <Check start={it.at} size={52} color={color} />
         </div>
-        <div style={{ fontSize: size, lineHeight: 1.25 }}>{it.text}</div>
+        <div style={{ fontSize: size, lineHeight: 1.25, color: tokens.pencil, fontWeight: 500 }}>{it.text}</div>
       </Rise>
     ))}
   </div>
@@ -47,7 +47,7 @@ const GForm: React.FC<{ children: React.ReactNode; scale?: number }> = ({ childr
       padding: 22,
       color: "#202124",
       fontFamily: "Roboto, Arial, sans-serif",
-      boxShadow: "0 30px 80px rgba(0,0,0,0.5)",
+      border: "2px solid #afafaf",
       zoom: scale,
     }}
   >
@@ -251,9 +251,9 @@ export const MatchScene: React.FC = () => {
       <AbsoluteFill style={{ padding: 60 }}>
         <Header pill="PART A" title="What if I make a typo?" />
         <div style={{ display: "flex", gap: 50, marginTop: 40 }}>
-          <div style={{ width: 800, display: "flex", flexDirection: "column", gap: 20 }}>
+          <div style={{ width: 800, display: "flex", flexDirection: "column", gap: 14 }}>
             {rows.map((r) => (
-              <Rise key={r.typed} delay={r.at} style={{ backgroundColor: theme.surface, borderRadius: 20, padding: "18px 26px", borderLeft: `10px solid ${r.c}` }}>
+              <Rise key={r.typed} delay={r.at} style={{ backgroundColor: "#fff", border: "2px solid #e5e5e5", borderRadius: 14, padding: "10px 26px", borderColor: r.c, borderBottomWidth: 6 }}>
                 <div style={{ fontSize: 40, fontFamily: "monospace", fontWeight: 700 }}>&quot;{r.typed}&quot;</div>
                 <div style={{ fontSize: 32, color: theme.muted, marginTop: 4 }}>{r.verdict}</div>
               </Rise>
@@ -299,9 +299,9 @@ export const WindowScene: React.FC = () => {
           </div>
         </Rise>
         <div style={{ position: "relative", width: W, height: 220, marginTop: 90 }}>
-          <div style={{ position: "absolute", top: 60, left: 0, width: W * grow, height: 70, borderRadius: 16, backgroundColor: "#2A4466" }} />
-          <div style={{ position: "absolute", top: 60, left: px(15), width: px(90) * grow, height: 70, borderRadius: 12, backgroundColor: theme.accent2 }} />
-          <div style={{ position: "absolute", top: 76, left: px(15) + 30, fontSize: 36, fontWeight: 800, color: theme.ink, opacity: grow }}>
+          <div style={{ position: "absolute", top: 60, left: 0, width: W * grow, height: 70, borderRadius: 16, backgroundColor: "#e5e5e5" }} />
+          <div style={{ position: "absolute", top: 60, left: px(15), width: px(90) * grow, height: 70, borderRadius: 12, backgroundColor: tokens.eagerGreen }} />
+          <div style={{ position: "absolute", top: 76, left: px(15) + 30, fontSize: 36, fontWeight: 800, color: "#fff", opacity: grow }}>
             The lesson, 19:00 to 20:30
           </div>
           {[
@@ -548,11 +548,11 @@ export const RotationScene: React.FC = () => (
       <div style={{ display: "flex", gap: 50, marginTop: 40 }}>
         <div style={{ width: 800, display: "flex", flexDirection: "column", gap: 22 }}>
           {[
-            { k: "Teacher's own question", w: "Weeks 1, 4, 7, 10", q: "Your teacher writes it for that lesson.", c: "#E3A6E8", at: 20 },
-            { k: "Muddiest point", w: "Weeks 2, 5, 8", q: "“What's still unclear?”", c: "#7FB8FF", at: 70 },
-            { k: "Application", w: "Weeks 3, 6, 9", q: "“One way you'd use this in your project”", c: "#8FD19E", at: 120 },
+            { k: "Teacher's own question", w: "Weeks 1, 4, 7, 10", q: "Your teacher writes it for that lesson.", c: tokens.eagerGreen, at: 20 },
+            { k: "Muddiest point", w: "Weeks 2, 5, 8", q: "“What's still unclear?”", c: tokens.sparkBlue, at: 70 },
+            { k: "Application", w: "Weeks 3, 6, 9", q: "“One way you'd use this in your project”", c: tokens.freshLeaf, at: 120 },
           ].map((r) => (
-            <Rise key={r.k} delay={r.at} style={{ backgroundColor: theme.surface, borderRadius: 20, padding: "20px 28px", borderLeft: `10px solid ${r.c}` }}>
+            <Rise key={r.k} delay={r.at} style={{ backgroundColor: "#fff", border: "2px solid #e5e5e5", borderRadius: 14, padding: "20px 28px", borderColor: r.c, borderBottomWidth: 6 }}>
               <div style={{ fontSize: 40, fontWeight: 900 }}>{r.k}</div>
               <div style={{ fontSize: 30, color: theme.muted }}>{r.w}</div>
               <div style={{ fontSize: 36, marginTop: 6 }}>{r.q}</div>
@@ -582,12 +582,12 @@ export const RotationScene: React.FC = () => (
 /* ---------- 11. Help ---------- */
 export const HELP2_DUR = 390;
 export const Help2Scene: React.FC = () => (
-  <Scene dur={HELP2_DUR} bg="#10302E">
+  <Scene dur={HELP2_DUR}>
     <AbsoluteFill style={{ padding: 60 }}>
       <Rise delay={0}>
-        <div style={{ fontSize: 76, fontWeight: 900, lineHeight: 1.05 }}>
-          Asking for help <span style={{ color: theme.accent2 }}>never</span> counts against you.
-        </div>
+        <Display size={80}>
+          Asking for help <span style={{ color: tokens.sparkBlue }}>never</span> counts against you.
+        </Display>
       </Rise>
       <div style={{ display: "flex", gap: 50, marginTop: 40 }}>
         <div style={{ width: 800 }}>
@@ -619,8 +619,8 @@ export const PrivacyScene: React.FC = () => {
   const cards = [
     { h: "Shoutouts are protected", b: "Not a vote, no leaderboard. Never shown to the person you named without an explicit decision by staff.", c: theme.accent },
     { h: "Writing isn't graded", b: "Free text is counted, never marked. No AI reads your answers to judge you.", c: theme.accent2 },
-    { h: "Who sees what", b: "Civics Unplugged staff see responses. Your teacher sees unclear-point themes, not names.", c: "#7FB8FF" },
-    { h: "The two parts are separate", b: "Answer one and not the other: both still count as data. Neither fills in for the other.", c: "#E3A6E8" },
+    { h: "Who sees what", b: "Civics Unplugged staff see responses. Your teacher sees unclear-point themes, not names.", c: tokens.sparkBlue },
+    { h: "The two parts are separate", b: "Answer one and not the other: both still count as data. Neither fills in for the other.", c: tokens.freshLeaf },
   ];
   return (
     <Scene dur={PRIVACY_DUR}>
@@ -629,8 +629,8 @@ export const PrivacyScene: React.FC = () => {
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 34, marginTop: 50 }}>
           {cards.map((c, i) => (
             <Rise key={c.h} delay={30 + i * 55} distance={60}>
-              <div style={{ backgroundColor: theme.surface, borderRadius: 28, padding: "34px 40px", borderTop: `12px solid ${c.c}`, height: 330 }}>
-                <div style={{ fontSize: 50, fontWeight: 900 }}>{c.h}</div>
+              <div style={{ backgroundColor: "#fff", border: "2px solid #e5e5e5", borderRadius: 14, padding: "34px 40px", borderColor: c.c, borderBottomWidth: 6, height: 330 }}>
+                <div style={{ fontSize: 48, fontWeight: 800, color: tokens.charcoal }}>{c.h}</div>
                 <div style={{ fontSize: 38, color: theme.muted, marginTop: 16, lineHeight: 1.3 }}>{c.b}</div>
               </div>
             </Rise>
@@ -660,7 +660,7 @@ export const FaqScene: React.FC = () => {
         <Header pill="FAQ" title="Something went wrong?" />
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 22, marginTop: 34 }}>
           {qs.map((x, i) => (
-            <Rise key={x.q} delay={20 + i * 50} style={{ backgroundColor: theme.surface, borderRadius: 22, padding: "16px 26px", height: 190 }}>
+            <Rise key={x.q} delay={20 + i * 50} style={{ backgroundColor: "#fff", border: "2px solid #e5e5e5", borderRadius: 14, padding: "16px 26px", height: 190 }}>
               <div style={{ fontSize: 36, fontWeight: 900, color: theme.accent }}>{x.q}</div>
               <div style={{ fontSize: 30, marginTop: 6, lineHeight: 1.3 }}>{x.a}</div>
             </Rise>
@@ -685,8 +685,9 @@ export const Recap2Scene: React.FC = () => {
   return (
     <Scene dur={RECAP2_DUR}>
       <AbsoluteFill style={{ padding: "80px 140px" }}>
+        <Ding size={320} delay={10} style={{ position: "absolute", right: 110, top: 70 }} />
         <Rise delay={0}>
-          <div style={{ fontSize: 96, fontWeight: 900 }}>Quick recap</div>
+          <Display size={110}>Quick recap</Display>
         </Rise>
         <div style={{ display: "flex", flexDirection: "column", gap: 26, marginTop: 40 }}>
           {items.map((t, i) => (

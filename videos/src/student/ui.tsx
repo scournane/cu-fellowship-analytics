@@ -1,13 +1,15 @@
 import React from "react";
 import {
   AbsoluteFill,
+  Img,
+  staticFile,
   Easing,
   interpolate,
   spring,
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
-import { theme } from "../theme";
+import { theme, tokens } from "../theme";
 
 const clamp = {
   extrapolateLeft: "clamp",
@@ -59,11 +61,12 @@ export const Rise: React.FC<{
   distance?: number;
 }> = ({ delay, children, style, distance = 40 }) => {
   const p = useAppear(delay);
+  const b = useAppear(delay, 11);
   return (
     <div
       style={{
         opacity: p,
-        translate: `0px ${(1 - p) * distance}px`,
+        translate: `0px ${(1 - b) * distance}px`,
         ...style,
       }}
     >
@@ -117,7 +120,7 @@ export const Check: React.FC<{
   size?: number;
   color?: string;
   circle?: boolean;
-}> = ({ start, size = 120, color = theme.accent2, circle = true }) => {
+}> = ({ start, size = 120, color = tokens.eagerGreen, circle = true }) => {
   const draw = useProgress(start + 6, start + 22);
   const pop = useAppear(start, 12);
   return (
@@ -157,22 +160,65 @@ export const Pill: React.FC<{
   color?: string;
   textColor?: string;
   style?: React.CSSProperties;
-}> = ({ children, color = theme.accent, textColor = theme.ink, style }) => (
-  <span
-    style={{
-      display: "inline-block",
-      backgroundColor: color,
-      color: textColor,
-      borderRadius: 999,
-      padding: "8px 26px",
-      fontWeight: 800,
-      fontSize: 34,
-      letterSpacing: 1,
-      ...style,
-    }}
-  >
+}> = ({ children, color = tokens.eagerGreen, textColor, style }) => {
+  const pop = useAppear(4, 9);
+  return (
+    <span
+      style={{
+        display: "inline-block",
+        backgroundColor: "#fff",
+        color: textColor ?? color,
+        border: `2px solid ${color}`,
+        borderBottomWidth: 5,
+        borderRadius: 12,
+        padding: "8px 22px 6px",
+        fontFamily: tokens.body,
+        fontWeight: 800,
+        fontSize: 28,
+        letterSpacing: "0.053em",
+        textTransform: "uppercase",
+        scale: `${0.6 + 0.4 * pop}`,
+        ...style,
+      }}
+    >
+      {children}
+    </span>
+  );
+};
+
+/** The app's mascot, Ding, popping in and bobbing gently. */
+export const Ding: React.FC<{ size?: number; delay?: number; style?: React.CSSProperties }> = ({
+  size = 300,
+  delay = 6,
+  style,
+}) => {
+  const frame = useCurrentFrame();
+  const pop = useAppear(delay, 8);
+  return (
+    <Img
+      src={staticFile("brand/ding-mark.svg")}
+      style={{
+        width: size,
+        height: size,
+        scale: `${pop}`,
+        rotate: `${Math.sin(frame / 14) * 4}deg`,
+        translate: `0px ${Math.sin(frame / 10) * 10}px`,
+        ...style,
+      }}
+    />
+  );
+};
+
+/** Display headline: Nunito 900, green, tight tracking. */
+export const Display: React.FC<{ size?: number; color?: string; children: React.ReactNode; style?: React.CSSProperties }> = ({
+  size = 72,
+  color = tokens.eagerGreen,
+  children,
+  style,
+}) => (
+  <div style={{ fontFamily: tokens.display, fontWeight: 900, fontSize: size, letterSpacing: "-0.02em", color, lineHeight: 1.05, ...style }}>
     {children}
-  </span>
+  </div>
 );
 
 /** Step list on the left of the form scenes; highlights active step. */
@@ -250,6 +296,6 @@ export const SceneHeader: React.FC<{ pill: string; title: string; pillColor?: st
 }) => (
   <Rise delay={0} style={{ display: "flex", alignItems: "center", gap: 30 }}>
     <Pill color={pillColor}>{pill}</Pill>
-    <div style={{ fontSize: 64, fontWeight: 900 }}>{title}</div>
+    <Display>{title}</Display>
   </Rise>
 );

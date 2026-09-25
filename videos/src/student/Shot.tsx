@@ -1,6 +1,7 @@
 import React from "react";
 import { Img, staticFile } from "remotion";
-import { theme } from "../theme";
+import { tokens } from "../theme";
+import { Pill } from "./ui";
 
 /** A real console screenshot (1920x1080 capture), cropped and slowly zoomed. */
 export const Shot: React.FC<{
@@ -15,8 +16,10 @@ export const Shot: React.FC<{
   return (
     <div style={{ ...style }}>
       {label ? (
-        <div style={{ fontSize: 28, color: theme.muted, marginBottom: 12, fontWeight: 700, letterSpacing: 1 }}>
-          {label}
+        <div style={{ marginBottom: 14 }}>
+          <Pill color={tokens.faded} textColor={tokens.pencil} style={{ fontSize: 24, borderBottomWidth: 2 }}>
+            {label.replace(/^REAL (SCREEN|LOG) · /, (_m, k) => `Real ${String(k).toLowerCase()} · `)}
+          </Pill>
         </div>
       ) : null}
       <div
@@ -24,10 +27,9 @@ export const Shot: React.FC<{
           width,
           height: crop.h * s,
           overflow: "hidden",
-          borderRadius: 20,
+          borderRadius: 16,
           backgroundColor: "#fff",
-          boxShadow: "0 30px 80px rgba(0,0,0,0.5)",
-          border: `4px solid ${theme.surface}`,
+          border: `2px solid ${tokens.faded}`,
         }}
       >
         <div>

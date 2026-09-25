@@ -1,5 +1,12 @@
-import React from "react";
-import { AbsoluteFill, Series } from "remotion";
+// Imported here directly: package.json marks only *.css as side-effectful, so
+// webpack drops src/fonts.ts (side-effect-only .ts) and its font CSS with it.
+import "@fontsource/nunito/800.css";
+import "@fontsource/nunito/900.css";
+import "@fontsource/nunito-sans/500.css";
+import "@fontsource/nunito-sans/700.css";
+import "@fontsource/nunito-sans/800.css";
+import React, { useEffect, useState } from "react";
+import { AbsoluteFill, continueRender, delayRender, Series } from "remotion";
 import { theme } from "../theme";
 import { CLOSING_DUR, ClosingScene, TIMELINE_DUR, TimelineScene, TITLE_DUR, TitleScene } from "./Scenes";
 import {
@@ -41,7 +48,26 @@ const SCENES: [React.FC, number][] = [
 
 export const STUDENT_DURATION = SCENES.reduce((sum, [, d]) => sum + d, 0);
 
-export const StudentGuide: React.FC = () => (
+const FONT_FACES = [
+  "800 40px Nunito",
+  "900 40px Nunito",
+  "500 40px 'Nunito Sans'",
+  "700 40px 'Nunito Sans'",
+  "800 40px 'Nunito Sans'",
+];
+
+export const StudentGuide: React.FC = () => {
+  // Fontsource declares the faces; make sure they are loaded before a frame is captured.
+  const [handle] = useState(() => delayRender("student fonts"));
+  useEffect(() => {
+    Promise.all(FONT_FACES.map((f) => document.fonts.load(f)))
+      .catch(() => undefined)
+      .then(() => continueRender(handle));
+  }, [handle]);
+  return <Guide />;
+};
+
+const Guide: React.FC = () => (
   <AbsoluteFill style={{ backgroundColor: theme.bg }}>
     <Series>
       {SCENES.map(([Comp, dur], i) => (

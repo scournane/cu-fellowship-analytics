@@ -51,12 +51,12 @@ export const SlackWindow: React.FC<{
   <div
     style={{
       width,
-      borderRadius: 18,
+      borderRadius: 14,
       overflow: "hidden",
       backgroundColor: "#fff",
       color: "#1D1C1D",
       fontFamily: SLACK_FONT,
-      boxShadow: "0 30px 80px rgba(0,0,0,0.5)",
+      border: "2px solid #afafaf",
       ...style,
     }}
   >
@@ -148,7 +148,7 @@ export const Msg: React.FC<{
                     padding: "7px 18px",
                     borderRadius: 6,
                     scale: pressed ? "0.93" : "1",
-                    boxShadow: `0 0 0 ${6 * flash}px rgba(242,182,50,${0.8 * flash})`,
+                    outline: `${5 * flash}px solid rgba(88,204,2,${flash})`,
                   }}
                 >
                   {b.label}

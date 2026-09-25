@@ -1,7 +1,7 @@
 import React from "react";
 import { AbsoluteFill } from "remotion";
-import { theme } from "../theme";
-import { Check, Pill, Rise, Scene } from "./ui";
+import { theme, tokens } from "../theme";
+import { Check, Display, Pill, Rise, Scene } from "./ui";
 import { Shot } from "./Shot";
 import { Msg, SlackWindow, Typed } from "./Slack";
 
@@ -36,8 +36,8 @@ const REPEAT =
 
 const Header: React.FC<{ pill: string; title: string }> = ({ pill, title }) => (
   <Rise delay={0} style={{ display: "flex", alignItems: "center", gap: 28 }}>
-    <Pill color="#B38BD9">{pill}</Pill>
-    <div style={{ fontSize: 62, fontWeight: 900 }}>{title}</div>
+    <Pill color={tokens.sparkBlue}>{pill}</Pill>
+    <Display>{title}</Display>
   </Rise>
 );
 
@@ -48,7 +48,7 @@ const Pts: React.FC<{ items: { at: number; t: React.ReactNode }[] }> = ({ items 
         <div style={{ marginTop: 4 }}>
           <Check start={it.at} size={48} />
         </div>
-        <div style={{ fontSize: 40, lineHeight: 1.25 }}>{it.t}</div>
+        <div style={{ fontSize: 40, lineHeight: 1.25, color: tokens.pencil, fontWeight: 500 }}>{it.t}</div>
       </Rise>
     ))}
   </div>
@@ -338,8 +338,8 @@ export const SlackPrivacyScene: React.FC = () => {
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 30, marginTop: 44 }}>
           {cards.map((c, i) => (
             <Rise key={c.h} delay={30 + i * 55} distance={60}>
-              <div style={{ backgroundColor: theme.surface, borderRadius: 26, padding: "30px 38px", borderTop: `12px solid #B38BD9`, height: 350 }}>
-                <div style={{ fontSize: 48, fontWeight: 900 }}>{c.h}</div>
+              <div style={{ backgroundColor: "#fff", border: "2px solid #e5e5e5", borderRadius: 14, padding: "30px 38px", borderColor: "#1cb0f6", borderBottomWidth: 6, height: 350 }}>
+                <div style={{ fontSize: 46, fontWeight: 800, color: tokens.charcoal }}>{c.h}</div>
                 <div style={{ fontSize: 36, color: theme.muted, marginTop: 14, lineHeight: 1.3 }}>{c.b}</div>
               </div>
             </Rise>
