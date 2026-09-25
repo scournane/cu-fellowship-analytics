@@ -224,6 +224,104 @@ def load_roster(conn: psycopg.Connection, path: str | Path, cohort_id: str) -> L
     return LoadSummary(read, written, skipped)
 
 
+def inspect_sessions_csv(path: str | Path) -> RosterCheck:
+    """The same read-before-write as `inspect_roster_csv`, for a session file.
+
+    `load_sessions` has the same shape of danger and one more besides: a time it
+    cannot parse raises out of `_parse_local` partway down the file, and a
+    session half-created is a schedule with a hole in it that nobody notices
+    until a form does not go out. A schedule is also the thing most likely to be
+    typed by hand rather than exported, so the times are the part to check.
+    """
+    problems: list[str] = []
+    warnings: list[str] = []
+    rows = usable = 0
+
+    required = (
+        ("cohort_id", ("cohort_id", "cohort")),
+        ("title", ("title",)),
+        ("scheduled_at_local", ("scheduled_at_local", "scheduled_at", "starts_at")),
+        ("timezone", ("timezone", "tz")),
+        ("duration_minutes", ("duration_minutes", "duration")),
+    )
+
+    try:
+        with Path(path).open(newline="", encoding="utf-8-sig") as handle:
+            reader = csv.DictReader(handle)
+            field_names = reader.fieldnames or []
+            if not field_names:
+                return RosterCheck(0, 0, ["This file has no header row, so there is nothing to read."], [])
+
+            present = {(name or "").strip().lower() for name in field_names}
+            for label, accepted in required:
+                if not present & set(accepted):
+                    other = " (or " + ", ".join(repr(a) for a in accepted[1:]) + ")" if len(accepted) > 1 else ""
+                    problems.append(f"No column named {label!r}{other}. Every session needs one.")
+
+            for row in reader:
+                rows += 1
+                headers = _headers(row)
+                title = _pick(row, headers, "title")
+                cohort_id = _pick(row, headers, "cohort_id", "cohort")
+                local_raw = _pick(row, headers, "scheduled_at_local", "scheduled_at", "starts_at")
+                zone = _pick(row, headers, "timezone", "tz")
+                duration = _pick(row, headers, "duration_minutes", "duration")
+                where = f"Row {rows}" + (f" ({title})" if title else "")
+
+                if not (cohort_id and title and local_raw and zone and duration):
+                    warnings.append(f"{where} is missing something it needs, so it will be skipped.")
+                    continue
+
+                try:
+                    _parse_local(local_raw)
+                except ValueError:
+                    problems.append(
+                        f"{where} has the start time {local_raw!r}, which cannot be read. "
+                        "Write it like 2026-09-15 19:00."
+                    )
+                    continue
+
+                from .timeutil import get_zone
+
+                try:
+                    get_zone(zone)
+                except Exception:
+                    problems.append(
+                        f"{where} has the time zone {zone!r}, which is not a zone name. "
+                        "Use something like 'America/New_York'."
+                    )
+                    continue
+
+                try:
+                    if int(duration) <= 0:
+                        raise ValueError
+                except ValueError:
+                    problems.append(
+                        f"{where} has a length of {duration!r}. It should be a number of minutes, like 60."
+                    )
+                    continue
+
+                usable += 1
+    except UnicodeDecodeError:
+        return RosterCheck(
+            0, 0,
+            ["This file is not readable as text. Export it from the spreadsheet as CSV and try again."],
+            [],
+        )
+    except csv.Error as exc:
+        return RosterCheck(0, 0, [f"This file is not valid CSV ({exc})."], [])
+
+    if not rows:
+        problems.append("This file has a header row but no sessions in it.")
+    elif not usable and not problems:
+        problems.append("Every row is missing something it needs, so there is nothing to create.")
+
+    if len(warnings) > 12:
+        warnings = warnings[:12] + [f"...and {len(warnings) - 12} more rows like this."]
+
+    return RosterCheck(rows, usable, problems, warnings)
+
+
 def load_sessions(conn: psycopg.Connection, path: str | Path) -> LoadSummary:
     """Create sessions from a CSV. Existing (cohort, title, time) rows are skipped."""
     read = written = skipped = 0

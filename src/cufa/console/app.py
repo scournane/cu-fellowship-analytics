@@ -83,7 +83,14 @@ from ..assignments import (
 from ..provisioning import is_ready, provision_session, resolve_rotating_slot
 from ..question_map import map_rows
 from ..report import ai_decisions, needs_review_queue, unresolved_identities
-from ..roster import inspect_roster_csv, list_fellows, load_roster, set_fellow_timezone
+from ..roster import (
+    inspect_roster_csv,
+    inspect_sessions_csv,
+    list_fellows,
+    load_roster,
+    load_sessions,
+    set_fellow_timezone,
+)
 from ..rotation import RotationConfigError, TeacherQuestionMissing, get_rotation
 from ..shoutouts import candidates_for, link as link_shoutout, review_queue as shoutout_queue
 from ..themes import current_themes, generate_themes
@@ -139,6 +146,11 @@ STATIC_DIR = _HERE / "static"
 # The account recorded when the fake client stands in for Google. It is an
 # `.invalid` domain by RFC 2606 so it can never be a real address.
 FAKE_ACCOUNT_EMAIL = "fake-google-client@example.invalid"
+
+#: The ceiling on any CSV the console accepts. Generous for a cohort of a few
+#: hundred or a term of sessions, and small enough that a mis-picked video never
+#: reaches the CSV parser.
+MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 
 # Offered as shortcuts on the roster screen. Any IANA name may still be
 # typed; these are only the ones a US cohort reaches for most.
@@ -1104,12 +1116,84 @@ def rotation_screen(
 # --------------------------------------------------------------------------
 
 
+# A term's schedule is typed once, into a spreadsheet, usually before anybody
+# has opened this console. `cufa load-sessions --csv` was the only way to get it
+# in. Creating twelve sessions one form at a time is not a reasonable
+# alternative, so this is the same loader behind the same kind of file picker
+# the roster screen has.
+#
+# The template below matters more than it looks. The roster is exported from
+# somewhere and already has the right shape; a schedule is typed by hand, and
+# without a starting file the first attempt is a guess at column names.
+
+
+#: The columns `load_sessions` reads, in the order a person would fill them,
+#: with one row showing the formats that are easy to get wrong — the time and
+#: the zone. Offered for download so the first attempt is not a guess.
+SESSION_TEMPLATE_CSV = (
+    "cohort_id,title,scheduled_at_local,timezone,duration_minutes,"
+    "grace_minutes,passphrase,week_index,teacher_question,zoom_url,agenda\n"
+    "2026-spring,Week 1 — What is civic innovation?,2026-09-15 19:00,"
+    "America/New_York,60,15,,1,,,\n"
+)
+
+
+@app.get("/sessions/template.csv")
+def sessions_template(user: ConsoleUser = Depends(require_user)) -> Response:
+    return Response(
+        SESSION_TEMPLATE_CSV,
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="sessions-template.csv"'},
+    )
+
+
+@app.post("/sessions/upload")
+async def sessions_upload(
+    request: Request,
+    user: ConsoleUser = Depends(require_user),
+    file: UploadFile = File(...),
+) -> Response:
+    def refuse(message: str) -> Response:
+        return RedirectResponse("/sessions?error=" + quote(message), status_code=303)
+
+    payload = await file.read(MAX_UPLOAD_BYTES + 1)
+    if not payload:
+        return refuse("That file is empty.")
+    if len(payload) > MAX_UPLOAD_BYTES:
+        return refuse(
+            f"That file is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)}MB. "
+            "A schedule is usually a few kilobytes — check it is the right file."
+        )
+
+    with tempfile.TemporaryDirectory() as scratch:
+        staged = Path(scratch) / "sessions.csv"
+        staged.write_bytes(payload)
+
+        check = inspect_sessions_csv(staged)
+        if not check.ok:
+            return refuse(" ".join(check.problems) or "That file has no rows this can create.")
+
+        with connection() as conn:
+            summary = load_sessions(conn, staged)
+
+    said = f"Created {summary.written} of {summary.read} sessions."
+    if summary.skipped:
+        # Skipped here usually means "already there", because load_sessions
+        # matches on cohort, title and time. Saying so stops a re-upload
+        # looking like a failure.
+        said += f" {summary.skipped} skipped — already scheduled, or missing something."
+    if check.warnings:
+        said += " " + " ".join(check.warnings)
+    return RedirectResponse("/sessions?notice=" + quote(said), status_code=303)
+
+
 @app.get("/sessions", response_class=HTMLResponse)
 def sessions_screen(
     request: Request,
     user: ConsoleUser = Depends(require_user),
     cohort: str | None = Query(default=None),
     notice: str | None = None,
+    error: str | None = None,
 ) -> Response:
     with connection() as conn:
         cohorts = _cohorts(conn)
@@ -1122,6 +1206,7 @@ def sessions_screen(
         cohorts=cohorts,
         selected_cohort=cohort or "",
         notice=notice,
+        error=error,
     )
 
 
@@ -2430,11 +2515,6 @@ def roster_screen(
 # folder. So the bytes are checked before the database is opened, and a file
 # that would load nothing says why instead of reporting "0 written".
 
-#: Generous for a cohort of a few hundred and small enough that a mis-picked
-#: video never reaches the CSV parser.
-MAX_ROSTER_BYTES = 2 * 1024 * 1024
-
-
 @app.post("/roster/upload")
 async def roster_upload(
     request: Request,
@@ -2451,12 +2531,12 @@ async def roster_upload(
     if not cohort_id:
         return refuse("Choose which cohort this roster belongs to.")
 
-    payload = await file.read(MAX_ROSTER_BYTES + 1)
+    payload = await file.read(MAX_UPLOAD_BYTES + 1)
     if not payload:
         return refuse("That file is empty.")
-    if len(payload) > MAX_ROSTER_BYTES:
+    if len(payload) > MAX_UPLOAD_BYTES:
         return refuse(
-            f"That file is larger than {MAX_ROSTER_BYTES // (1024 * 1024)}MB. "
+            f"That file is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)}MB. "
             "A roster CSV is usually a few kilobytes — check it is the right file."
         )
 

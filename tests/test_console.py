@@ -1479,3 +1479,88 @@ def test_uploading_a_roster_needs_a_session(client: TestClient, db) -> None:
     assert "/signin" in _upload(client, "console-anon", ROSTER_CSV).headers.get(
         "location", "/signin"
     )
+
+
+# --------------------------------------------------------------------------
+# loading a schedule from the console
+# --------------------------------------------------------------------------
+#
+# Same danger as the roster, plus one: `_parse_local` raises partway down a
+# file, and a half-created schedule is a term with a hole in it that nobody
+# notices until a form does not go out.
+
+
+SESSIONS_CSV = (
+    "cohort_id,title,scheduled_at_local,timezone,duration_minutes,passphrase\n"
+    "console-sched,Week 1 — Openings,2026-10-06 19:00,America/New_York,60,harbour\n"
+    "console-sched,Week 2 — Evidence,2026-10-13 19:00,America/New_York,60,lantern\n"
+)
+
+
+def _upload_sessions(client: TestClient, body: str, name: str = "schedule.csv"):
+    return client.post(
+        "/sessions/upload", files={"file": (name, body.encode(), "text/csv")}
+    )
+
+
+def test_a_schedule_loads_from_the_console(signed_in: TestClient, db) -> None:
+    response = _upload_sessions(signed_in, SESSIONS_CSV)
+    assert response.status_code == 303
+    assert "notice=" in response.headers["location"]
+
+    titles = {
+        s["title"] for s in boot_state(signed_in.get("/sessions?cohort=console-sched"))["sessions"]
+    }
+    assert {"Week 1 — Openings", "Week 2 — Evidence"} <= titles
+
+
+def test_reloading_a_schedule_adds_what_is_new_and_leaves_the_rest(
+    signed_in: TestClient, db
+) -> None:
+    _upload_sessions(signed_in, SESSIONS_CSV)
+    extended = SESSIONS_CSV + (
+        "console-sched,Week 3 — Coalitions,2026-10-20 19:00,America/New_York,60,compass\n"
+    )
+    response = _upload_sessions(signed_in, extended)
+    assert response.status_code == 303
+
+    sessions = boot_state(signed_in.get("/sessions?cohort=console-sched"))["sessions"]
+    assert len([s for s in sessions if s["title"] == "Week 1 — Openings"]) == 1
+    assert any(s["title"] == "Week 3 — Coalitions" for s in sessions)
+
+
+def test_an_unreadable_start_time_creates_nothing(signed_in: TestClient, db) -> None:
+    """The row order matters: the good session comes first, so a loader that
+    wrote as it went would leave it behind."""
+    body = (
+        "cohort_id,title,scheduled_at_local,timezone,duration_minutes\n"
+        "console-badtime,Good One,2026-10-06 19:00,America/New_York,60\n"
+        "console-badtime,Bad One,next tuesday,America/New_York,60\n"
+    )
+    response = _upload_sessions(signed_in, body)
+    assert "error=" in response.headers["location"]
+    assert "next tuesday" in unquote(response.headers["location"])
+
+    assert boot_state(signed_in.get("/sessions?cohort=console-badtime"))["sessions"] == []
+
+
+def test_a_schedule_missing_its_columns_says_which(signed_in: TestClient, db) -> None:
+    response = _upload_sessions(signed_in, "title,notes\nWeek 3,hello\n")
+    location = unquote(response.headers["location"])
+    assert "error=" in response.headers["location"]
+    for wanted in ("cohort_id", "scheduled_at_local", "timezone", "duration_minutes"):
+        assert wanted in location
+
+
+def test_the_session_template_is_a_file_this_loader_accepts(
+    signed_in: TestClient, db
+) -> None:
+    """A template that does not round-trip is worse than none: it teaches the
+    wrong columns with the console's own authority."""
+    template = signed_in.get("/sessions/template.csv")
+    assert template.status_code == 200
+    assert "attachment" in template.headers["content-disposition"]
+
+    response = _upload_sessions(signed_in, template.text)
+    assert response.status_code == 303
+    assert "error=" not in response.headers["location"], response.headers["location"]
