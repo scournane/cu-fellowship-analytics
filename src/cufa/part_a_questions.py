@@ -290,6 +290,8 @@ def _clean_question(
     clean: dict[str, Any] = {"key": key, "type": qtype, "title": title, "description": description}
     if not spec["answerable"]:
         # A section break or a block of text has nothing to require.
+        if qtype == "text" and not title and not description:
+            warnings.append(f"{where}: this text block is empty, so fellows will see nothing.")
         return clean
 
     required = _bool(raw.get("required"), False)

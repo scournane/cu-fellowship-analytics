@@ -51,6 +51,7 @@ from .errors import (
 )
 from .google.base import FormDefinition, FormsClient, GoogleApiError
 from .logging_setup import get_logger
+from .timeutil import to_utc
 
 log = get_logger(__name__)
 
@@ -268,8 +269,10 @@ def is_locked(conn: psycopg.Connection, session_id: str) -> tuple[bool, str | No
     published = row["publish_verified_at"] or row["published_at"]
     if published is None:
         return False, None
+    # "2026-09-25 19:33 UTC", the way the console prints every UTC instant.
+    when = to_utc(published).strftime("%Y-%m-%d %H:%M UTC")
     return True, (
-        f"The Part A form for “{row['title']}” was published at {published}, so "
+        f"The Part A form for “{row['title']}” was published at {when}, so "
         "fellows may already be answering it and its questions are locked. What "
         "they were asked is kept exactly as it was. Changes to the cohort default "
         "still reach every session that is not published yet."

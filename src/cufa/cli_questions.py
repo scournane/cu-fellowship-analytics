@@ -125,6 +125,15 @@ def _print_warnings(warnings: list[str]) -> None:
 
 
 def cmd_questions(args: argparse.Namespace) -> int:
+    try:
+        return _run(args)
+    except LookupError as exc:
+        # An unknown session id. Said plainly rather than as a traceback, which
+        # would read as the tool being broken rather than the argument wrong.
+        raise CufaError(str(exc).strip("'\"")) from None
+
+
+def _run(args: argparse.Namespace) -> int:
     from . import part_a_questions, question_sets
 
     action = args.questions_action

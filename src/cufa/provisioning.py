@@ -466,9 +466,9 @@ def _plan_part_a(
         else None
     )
     try:
-        current_scope, current = question_sets.resolve_for_session(conn, session_id)
+        _scope, current = question_sets.resolve_for_session(conn, session_id)
     except QuestionSetMissing:
-        current_scope, current = None, None
+        current = None
 
     note = None
     if provisioned is not None and current is not None and (

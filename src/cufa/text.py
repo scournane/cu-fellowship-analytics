@@ -43,43 +43,6 @@ def normalize_email(value: str | None) -> str:
     return value.strip().casefold()
 
 
-def levenshtein(a: str, b: str, *, max_distance: int | None = None) -> int:
-    """Edit distance between two strings.
-
-    Implemented directly rather than pulled in as a dependency: it is twenty
-    lines, and every dependency is maintenance CU inherits without a data
-    manager to carry it.
-
-    ``max_distance`` short-circuits once every cell in a row exceeds the bound,
-    which is the only case tier 1 cares about.
-    """
-    if a == b:
-        return 0
-    if not a:
-        return len(b)
-    if not b:
-        return len(a)
-
-    if max_distance is not None and abs(len(a) - len(b)) > max_distance:
-        return max_distance + 1
-
-    previous = list(range(len(b) + 1))
-    for i, ca in enumerate(a, start=1):
-        current = [i]
-        for j, cb in enumerate(b, start=1):
-            current.append(
-                min(
-                    previous[j] + 1,        # deletion
-                    current[j - 1] + 1,     # insertion
-                    previous[j - 1] + (ca != cb),  # substitution
-                )
-            )
-        if max_distance is not None and min(current) > max_distance:
-            return max_distance + 1
-        previous = current
-    return previous[-1]
-
-
 def sha256_hex(*parts: str) -> str:
     """Stable hash over ordered parts, joined by a separator that cannot occur.
 
