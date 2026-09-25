@@ -36,10 +36,14 @@ const go = async (p) => {
 async function shot(name, targets = {}) {
   // The console scrolls inside an app frame, so fullPage stops at the
   // viewport. Grow the viewport to the tallest scroll height instead.
+  await page.evaluate(() => {
+    for (const e of document.querySelectorAll('*')) if (e.scrollTop) e.scrollTop = 0;
+    window.scrollTo(0, 0);
+  });
   const tall = await page.evaluate(() =>
     Math.max(...[...document.querySelectorAll('*')].map((e) => e.scrollHeight)),
   );
-  const h = Math.min(Math.max(1080, tall), 5000);
+  const h = Math.min(Math.max(1080, tall + 200), 5000);
   await page.setViewportSize({ width: 1920, height: h });
   await page.waitForTimeout(400);
   const entry = { h, boxes: {} };

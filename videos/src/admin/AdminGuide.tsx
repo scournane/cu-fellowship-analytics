@@ -137,26 +137,27 @@ const SESSIONS: SceneDef = {
       cur: [{ f: 40, x: 900, y: 600 }, mid(B.newBtn, 80)], clicks: [90],
     },
     {
-      img: "11-new-filled", h: 1080, dur: 150,
-      cam: [cam(0, 960, 300, 1.2), cam(70, 960, 400, 1.2), cam(140, 960, 800, 1.2)],
+      img: "11-new-filled", h: 1302, dur: 150,
+      cam: [cam(0, 960, 380, 1.2), cam(70, 960, 480, 1.2), cam(140, 960, 1000, 1.2)],
       hl: [
-        { b: [509, 96, 902, 20], from: 5, to: 45, label: "title" },
-        { b: [533, 192, 181, 20], from: 40, to: 80, label: "date + time, with timezone" },
-        { b: [509, 813, 286, 20], from: 85, to: 150, label: "week 11" },
-        { b: [509, 905, 902, 20], from: 105, to: 150, label: "teacher question — left blank" },
+        { b: [509, 294, 902, 20], from: 5, to: 45, label: "title" },
+        { b: [533, 390, 181, 20], from: 40, to: 85, label: "local date + time" },
+        { b: [509, 486, 696, 20], from: 55, to: 85, label: "timezone" },
+        { b: [509, 1011, 286, 20], from: 90, to: 150, label: "week 11" },
+        { b: [509, 1103, 902, 20], from: 110, to: 150, label: "teacher question — left blank" },
       ],
     },
     {
-      img: "12-new-passphrase", h: 1080, dur: 130,
-      cam: [cam(0, 960, 620, 1.3)],
-      hl: [{ b: [500, 606, 163, 28], from: 5, to: 50 }, { b: [509, 572, 902, 20], from: 50, label: "suggested passphrase" }, { b: [500, 947, 107, 32], from: 90 }],
-      cur: [mid([500, 606, 163, 28], 0), mid([500, 606, 163, 28], 25), mid([500, 947, 107, 32], 100)], clicks: [30, 110],
+      img: "12-new-passphrase", h: 1302, dur: 130,
+      cam: [cam(0, 960, 820, 1.3), cam(80, 960, 960, 1.3)],
+      hl: [{ b: [500, 804, 163, 28], from: 5, to: 50 }, { b: [509, 770, 902, 20], from: 50, to: 95, label: "suggested passphrase" }, { b: [500, 1145, 107, 32], from: 90 }],
+      cur: [mid([500, 804, 163, 28], 0), mid([500, 804, 163, 28], 25), mid([500, 1145, 107, 32], 100)], clicks: [30, 110],
     },
   ],
   lines: [
     { from: 0, text: "The Sessions list shows every session with its form state and counts. New session opens the form." },
     { from: 110, text: "Title, local time with its timezone, duration, grace window, cohort, and the week of the fellowship." },
-    { from: 260, text: "Suggest a passphrase avoids words already used in this cohort. Save — we deliberately skip the question." },
+    { from: 260, text: "Suggest a passphrase proposes a word; reusing one in a cohort needs explicit confirmation. Save — question skipped on purpose." },
   ],
 };
 
@@ -178,7 +179,7 @@ const BLOCK: SceneDef = {
   ],
   lines: [
     { from: 0, text: "The new session opens with Part B blocked: week 11 asks the teacher’s own question and none is set." },
-    { from: 150, text: "Edit this session, type the question, save. Editing never touches a form that is already provisioned." },
+    { from: 150, text: "Edit this session, type the week’s question and save. Now Part B can be provisioned." },
   ],
 };
 
@@ -336,7 +337,7 @@ const TABS: SceneDef = {
   lines: [
     { from: 0, text: "AI decisions lists every model call with its reasoning, so staff sample it — overriding supersedes it for good." },
     { from: 100, text: "Straight-lining: identical confidence four sessions running. A data-quality flag — never a count or score." },
-    { from: 200, text: "Unresolved addresses: check-ins from emails not on the roster. Fix the roster, and they resolve." },
+    { from: 200, text: "Unresolved addresses: check-ins from emails not on the roster are listed here — never guessed at." },
   ],
 };
 
