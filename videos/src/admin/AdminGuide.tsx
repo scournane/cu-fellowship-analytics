@@ -2,52 +2,36 @@ import React from "react";
 import { AbsoluteFill, Sequence, Series, interpolate, useCurrentFrame, useVideoConfig } from "remotion";
 import { theme } from "../theme";
 import { ClosingScene, RulesScene, TitleScene } from "./cards";
-import { CONFIDENCE, REPORT } from "./cliOutput";
-import { RealScene, SceneDef, Terminal, sceneLength } from "./real";
-import { Caption } from "./ui";
+import { DOCTOR, ENGAGEMENT, EXPORT, REPORT, TEMPLATE_CSV } from "./cliOutput";
+import { RealScene, SceneDef, SlackExchange, SlackPane, Terminal, sceneLength } from "./real";
+import { SLACK } from "./slackOutput";
+import { Caption, CaptionLine } from "./ui";
 
 type Box = [number, number, number, number];
 const mid = (b: Box, f: number) => ({ f, x: b[0] + b[2] / 2, y: b[1] + b[3] / 2 });
 const cam = (f: number, x: number, y: number, z = 1) => ({ f, x, y, z });
+const click = (b: Box, from: number, at: number) => ({ cur: [{ f: from, x: b[0] + b[2] + 120, y: b[1] + 160 }, mid(b, at - 10)], clicks: [at] });
 
-/* Boxes are page coordinates recorded by scripts/capture-admin.mjs (public/admin/boxes.json). */
-const B = {
-  email: [749, 788, 422, 20] as Box,
-  dev: [740, 826, 440, 32] as Box,
-  connect0: [500, 544, 125, 32] as Box,
-  status0: [480, 268, 960, 148] as Box,
-  connectErr: [480, 268, 960, 104] as Box,
-  partA: [500, 308, 409, 28] as Box,
-  manual: [517, 757, 886, 20] as Box,
-  verifyA: [500, 934, 181, 32] as Box,
-  partB: [500, 1022, 319, 28] as Box,
-  verifyB: [500, 1648, 183, 32] as Box,
-  week11: [480, 1211, 960, 72] as Box,
-  rotTable: [480, 672, 960, 520] as Box,
-  newBtn: [480, 264, 103, 32] as Box,
-  sessTable: [480, 312, 960, 400] as Box,
-};
+// Page coordinates recorded by scripts/capture-admin.mjs (public/admin/boxes.json).
 
 const SIGNIN: SceneDef = {
   step: "1",
   title: "Sign in",
   beats: [
     {
-      img: "01-signin", h: 1080, dur: 100,
-      cam: [cam(0, 960, 540, 1), cam(90, 960, 760, 1.5)],
-      hl: [{ b: B.email, from: 30, label: "allowlisted address" }],
-      cur: [mid(B.email, 20), mid(B.email, 50)], clicks: [55],
-    },
-    {
-      img: "02-signin-filled", h: 1080, dur: 110,
-      cam: [cam(0, 960, 760, 1.5)],
-      hl: [{ b: B.dev, from: 10, label: "Sign in without Google" }],
-      cur: [mid(B.email, 0), mid(B.dev, 40)], clicks: [60],
+      img: "01-signin", h: 1280, dur: 200,
+      cam: [cam(0, 960, 640, 1), cam(80, 960, 760, 1.5)],
+      hl: [
+        { b: [740, 495, 440, 75], from: 20, to: 90, label: "Google sign-in + allowlist" },
+        { b: [749, 906, 422, 24], from: 90, to: 140, label: "developer bypass (demo only)" },
+        { b: [740, 950, 440, 40], from: 140 },
+      ],
+      ...click([740, 950, 440, 40], 110, 170),
     },
   ],
   lines: [
-    { from: 0, text: "Staff sign in with Google. Only addresses on CUFA_CONSOLE_ALLOWLIST get in." },
-    { from: 110, text: "This developer sign-in is a labelled bypass, only in fake-Google demo mode. It is how this video got in." },
+    { from: 0, text: "Staff sign in with Google; only addresses on CUFA_CONSOLE_ALLOWLIST get in. A site password is the other door." },
+    { from: 90, text: "The developer sign-in is a labelled bypass that exists only in fake-Google demo mode. It is how this video got in." },
   ],
 };
 
@@ -56,24 +40,25 @@ const CONNECT: SceneDef = {
   title: "Connect Google — connect, status, disconnect",
   beats: [
     {
-      img: "03-connect-before", h: 1080, dur: 140,
-      cam: [cam(0, 960, 540, 1), cam(120, 960, 420, 1.35)],
-      hl: [
-        { b: B.status0, from: 10, to: 75, label: "status + scopes" },
-        { b: B.connect0, from: 75, label: "Connect Google" },
-      ],
-      cur: [{ f: 60, x: 1100, y: 700 }, mid(B.connect0, 105)], clicks: [115],
+      img: "03-connect-before", h: 1280, dur: 110,
+      cam: [cam(0, 960, 500, 1.2)],
+      hl: [{ b: [647, 582, 174, 40], from: 20, label: "Connect Google" }],
+      ...click([647, 582, 174, 40], 30, 80),
     },
     {
-      img: "04-connect-after", h: 1080, dur: 130,
-      cam: [cam(0, 960, 420, 1.35), cam(110, 960, 330, 1.35)],
-      hl: [{ b: B.connectErr, from: 15, label: "real response from this demo server", color: theme.danger }],
+      img: "04-connect-after", h: 1280, dur: 200,
+      cam: [cam(0, 960, 500, 1.2), cam(150, 960, 560, 1.35)],
+      hl: [
+        { b: [627, 267, 928, 60], from: 5, to: 60, label: "no Google call was made" },
+        { b: [627, 360, 928, 210], from: 60, to: 140, label: "status: account, scopes, refresh" },
+        { b: [647, 718, 258, 40], from: 140, label: "Reconnect · Disconnect" },
+      ],
     },
   ],
   lines: [
-    { from: 0, text: "One staff account grants access once — just forms.body and drive.file. Status shows the account and scopes." },
-    { from: 75, text: "Connect runs the Google consent. Once connected, a Disconnect button appears and revokes the stored token." },
-    { from: 150, text: "This demo server has no encryption key, so it refuses to store even a simulated token — and says exactly why." },
+    { from: 0, text: "One staff account grants access once — only forms.body and drive.file. Every form then lives in CU’s Drive." },
+    { from: 110, text: "Connected. Status shows the account, when it connected and its scopes. The refresh token is encrypted at rest." },
+    { from: 250, text: "Reconnect re-runs consent; Disconnect revokes and deletes the stored token." },
   ],
 };
 
@@ -82,28 +67,25 @@ const TEMPLATE: SceneDef = {
   title: "Template setup — Part A and Part B",
   beats: [
     {
-      img: "06-template", h: 1806, dur: 250,
-      cam: [cam(0, 960, 540, 1), cam(60, 960, 560, 1.15), cam(120, 960, 830, 1.3), cam(190, 960, 1300, 1.1), cam(240, 960, 1500, 1.1)],
+      img: "06-template", h: 2156, dur: 260,
+      cam: [cam(0, 960, 540, 1), cam(70, 960, 800, 1.25), cam(170, 960, 1500, 1.1), cam(250, 960, 1600, 1.1)],
       hl: [
-        { b: B.partA, from: 10, to: 80, label: "Create the Part A template" },
-        { b: B.manual, from: 80, to: 150, label: "manual step: Verified emails" },
-        { b: B.verifyA, from: 110, to: 170 },
-        { b: B.partB, from: 170, to: 250, label: "same again for Part B" },
-        { b: B.verifyB, from: 200, to: 250 },
+        { b: [663, 741, 856, 24], from: 30, to: 110, label: "manual step: Collect emails → Verified" },
+        { b: [647, 937, 269, 40], from: 90, to: 160, label: "Verify Part A" },
+        { b: [647, 1685, 268, 40], from: 180, label: "same for Part B" },
       ],
-      cur: [{ f: 100, x: 800, y: 760 }, mid(B.verifyA, 140)], clicks: [150],
+      ...click([647, 937, 269, 40], 100, 150),
     },
     {
-      img: "07-template-verified", h: 1886, dur: 110,
+      img: "07-template-verified", h: 2237, dur: 100,
       cam: [cam(0, 960, 600, 1.15)],
-      hl: [{ b: [480, 268, 960, 64], from: 5, label: "read back from the API" }, { b: [500, 1014, 181, 32], from: 40 }],
+      hl: [{ b: [647, 1019, 269, 40], from: 10, label: "read back from the API" }],
     },
   ],
   lines: [
-    { from: 0, text: "Create the Part A (mid-lesson) and Part B (end-of-session) templates once. Every session copies them." },
-    { from: 80, text: "The one manual step: in Google Forms set Collect email addresses → Verified. The API can’t do it reliably." },
-    { from: 150, text: "Then Verify: the console reads form settings back from the API and trusts only that. Replace retires a template." },
-    { from: 250, text: "Verified. If a template drifts later, Replace creates a fresh form — past sessions keep their own copies." },
+    { from: 0, text: "Create the Part A (mid-lesson) and Part B (end-of-session) templates once; every session copies them." },
+    { from: 30, text: "The one manual step: in Google Forms set Collect email addresses → Verified. The API can’t do it reliably." },
+    { from: 140, text: "Verify reads the form settings back from the API and trusts only that. Replace retires a template for a fresh one." },
   ],
 };
 
@@ -112,69 +94,75 @@ const ROTATION: SceneDef = {
   title: "Rotation schedule",
   beats: [
     {
-      img: "08-rotation", h: 1532, dur: 220,
-      cam: [cam(0, 960, 540, 1), cam(80, 960, 900, 1.1), cam(170, 960, 1180, 1.35)],
+      img: "08-rotation", h: 2115, dur: 210,
+      cam: [cam(0, 960, 540, 1), cam(80, 960, 1000, 1.1), cam(160, 960, 1450, 1.3)],
       hl: [
-        { b: B.rotTable, from: 20, to: 110, label: "week → rotating question" },
-        { b: B.week11, from: 120, label: "week 11 needs a teacher question", color: theme.danger },
+        { b: [627, 683, 928, 700], from: 20, to: 110, label: "week → rotating question" },
+        { b: [627, 1493, 928, 59], from: 120, label: "week 11 needs a teacher question", color: theme.danger },
       ],
     },
   ],
   lines: [
-    { from: 0, text: "One Part B question rotates weekly: teacher question, muddiest point, application." },
-    { from: 120, text: "Teacher-question weeks need your own question. With none set, provisioning is blocked — no generic stand-in." },
+    { from: 0, text: "One Part B question rotates weekly: the teacher’s own question, muddiest point, or application." },
+    { from: 120, text: "Teacher-question weeks need your question. Without it provisioning is blocked — never a generic stand-in." },
   ],
 };
 
 const SESSIONS: SceneDef = {
   step: "5",
-  title: "Sessions — list and create",
+  title: "Sessions — list, CSV schedule, create",
   beats: [
     {
-      img: "09-sessions", h: 1146, dur: 110,
-      cam: [cam(0, 960, 540, 1), cam(90, 960, 500, 1.15)],
-      hl: [{ b: B.sessTable, from: 10, to: 60, label: "every session, form state, counts" }, { b: B.newBtn, from: 60 }],
-      cur: [{ f: 40, x: 900, y: 600 }, mid(B.newBtn, 80)], clicks: [90],
+      img: "09-sessions", h: 2150, dur: 170,
+      cam: [cam(0, 960, 540, 1), cam(60, 960, 420, 1.25)],
+      hl: [
+        { b: [611, 477, 960, 700], from: 5, to: 60, label: "every session: form state, check-ins" },
+        { b: [647, 407, 888, 49], from: 60, to: 120, label: "Load a schedule from CSV" },
+        { b: [1075, 432, 175, 30], from: 90, to: 130, label: "template.csv" },
+        { b: [627, 240, 137, 40], from: 125, label: "New session" },
+      ],
+      ...click([627, 240, 137, 40], 130, 160),
     },
     {
-      img: "11-new-filled", h: 1302, dur: 150,
-      cam: [cam(0, 960, 380, 1.2), cam(70, 960, 480, 1.2), cam(140, 960, 1000, 1.2)],
+      img: "11-new-filled", h: 1938, dur: 170,
+      cam: [cam(0, 960, 420, 1.2), cam(70, 960, 460, 1.2), cam(130, 960, 1500, 1.2)],
       hl: [
-        { b: [509, 294, 902, 20], from: 5, to: 45, label: "title" },
-        { b: [533, 390, 181, 20], from: 40, to: 85, label: "local date + time" },
-        { b: [509, 486, 696, 20], from: 55, to: 85, label: "timezone" },
-        { b: [509, 1011, 286, 20], from: 90, to: 150, label: "week 11" },
-        { b: [509, 1103, 902, 20], from: 110, to: 150, label: "teacher question — left blank" },
+        { b: [656, 276, 870, 24], from: 5, to: 45, label: "title" },
+        { b: [679, 381, 193, 24], from: 40, to: 90, label: "local date + time" },
+        { b: [656, 486, 828, 24], from: 55, to: 90, label: "timezone" },
+        { b: [656, 1562, 341, 24], from: 110, to: 170, label: "week 11" },
+        { b: [656, 1663, 870, 24], from: 130, to: 170, label: "teacher question — left blank" },
       ],
     },
     {
-      img: "12-new-passphrase", h: 1302, dur: 130,
-      cam: [cam(0, 960, 820, 1.3), cam(80, 960, 960, 1.3)],
-      hl: [{ b: [500, 804, 163, 28], from: 5, to: 50 }, { b: [509, 770, 902, 20], from: 50, to: 95, label: "suggested passphrase" }, { b: [500, 1145, 107, 32], from: 90 }],
-      cur: [mid([500, 804, 163, 28], 0), mid([500, 804, 163, 28], 25), mid([500, 1145, 107, 32], 100)], clicks: [30, 110],
+      img: "12-new-passphrase", h: 1938, dur: 130,
+      cam: [cam(0, 960, 1380, 1.3), cam(80, 960, 1500, 1.3)],
+      hl: [{ b: [647, 1337, 227, 32], from: 5, to: 50 }, { b: [656, 1297, 870, 24], from: 45, to: 95, label: "suggested passphrase" }, { b: [647, 1711, 140, 40], from: 90 }],
+      cur: [mid([647, 1337, 227, 32], 0), mid([647, 1337, 227, 32], 20), mid([647, 1711, 140, 40], 100)],
+      clicks: [25, 110],
     },
   ],
   lines: [
-    { from: 0, text: "The Sessions list shows every session with its form state and counts. New session opens the form." },
-    { from: 110, text: "Title, local time with its timezone, duration, grace window, cohort, and the week of the fellowship." },
-    { from: 260, text: "Suggest a passphrase proposes a word; reusing one in a cohort needs explicit confirmation. Save — question skipped on purpose." },
+    { from: 0, text: "Sessions lists every session. Load a whole schedule from a CSV — download template.csv for the columns." },
+    { from: 170, text: "New session: title, local time with its timezone, duration, grace window, cohort and the fellowship week." },
+    { from: 340, text: "Suggest a passphrase proposes a fresh word. Save — here we skip the teacher question on purpose." },
   ],
 };
 
 const BLOCK: SceneDef = {
   step: "6",
-  title: "No teacher question → provisioning blocked, then edit",
+  title: "Blocked without a question, then edit",
   beats: [
     {
-      img: "14-detail-before", h: 1080, dur: 150,
-      cam: [cam(0, 960, 540, 1), cam(60, 960, 900, 1.35)],
-      hl: [{ b: [500, 962, 920, 118], from: 40, label: "real block on Part B", color: theme.danger }],
+      img: "14-detail-before", h: 2581, dur: 150,
+      cam: [cam(0, 960, 540, 1), cam(70, 960, 1000, 1.3)],
+      hl: [{ b: [645, 1020, 885, 145], from: 50, label: "Part B blocked", color: theme.danger }],
     },
     {
-      img: "17-edit-question", h: 1080, dur: 130,
-      cam: [cam(0, 960, 900, 1.35)],
-      hl: [{ b: [509, 966, 902, 20], from: 5, to: 80, label: "Your question for this week" }, { b: [500, 1008, 107, 32], from: 80 }],
-      cur: [{ f: 60, x: 1100, y: 900 }, mid([500, 1008, 107, 32], 95)], clicks: [105],
+      img: "17-edit-question", h: 1949, dur: 130,
+      cam: [cam(0, 960, 1560, 1.3)],
+      hl: [{ b: [656, 1674, 870, 24], from: 5, to: 80, label: "Your question for this week" }, { b: [647, 1722, 140, 40], from: 80 }],
+      ...click([647, 1722, 140, 40], 60, 105),
     },
   ],
   lines: [
@@ -188,263 +176,441 @@ const PROVISION: SceneDef = {
   title: "Provision both forms",
   beats: [
     {
-      img: "15-provisioned-a", h: 1080, dur: 90,
-      cam: [cam(0, 960, 540, 1), cam(80, 960, 500, 1.2)],
-      hl: [{ b: [480, 440, 960, 64], from: 10, label: "Part A provisioned" }],
+      img: "14-detail-before", h: 2581, dur: 90,
+      cam: [cam(0, 960, 760, 1.3)],
+      hl: [{ b: [647, 794, 178, 40], from: 5, label: "Provision Part A" }],
+      ...click([647, 794, 178, 40], 10, 60),
     },
     {
-      img: "40-detail-full", h: 2904, dur: 220,
-      cam: [cam(0, 960, 700, 1.2), cam(90, 960, 900, 1.2), cam(150, 960, 1300, 1.2), cam(210, 960, 1300, 1.2)],
+      img: "19-mid-lesson", h: 3884, dur: 230,
+      cam: [cam(0, 960, 800, 1.2), cam(90, 960, 950, 1.2), cam(150, 960, 1400, 1.2), cam(220, 960, 1400, 1.2)],
       hl: [
-        { b: [508, 654, 117, 20], from: 10, to: 90, label: "publish state read back" },
-        { b: [500, 898, 240, 240], from: 50, to: 130, label: "link + QR only once verified" },
-        { b: [500, 1250, 460, 40], from: 140, label: "Part B provisioned too" },
+        { b: [655, 692, 141, 20], from: 10, to: 90, label: "published and verified" },
+        { b: [647, 939, 240, 240], from: 50, to: 140, label: "link + QR only once verified" },
+        { b: [647, 1307, 410, 36], from: 150, label: "Part B provisioned too" },
       ],
     },
   ],
   lines: [
-    { from: 0, text: "Provision Part A copies the template into a new form and publishes it. Safe to press twice — never duplicated." },
-    { from: 100, text: "“Published and verified” is read back from the API. No link or QR code is shown until it is." },
+    { from: 0, text: "Provision Part A copies the template, publishes it and reads the state back. Safe to press twice." },
+    { from: 100, text: "“Published and verified” comes from the API, not an assumption. No link or QR code appears until it does." },
     { from: 230, text: "Part B provisions the same way, with the week’s rotating question snapshotted onto the form." },
   ],
 };
 
 const LESSON: SceneDef = {
   step: "8",
-  title: "Mid-lesson: passphrase and Announce now",
+  title: "Mid-lesson: passphrase, Announce, live counter, pull",
   beats: [
     {
-      img: "19-mid-lesson", h: 1080, dur: 120,
-      cam: [cam(0, 960, 540, 1), cam(90, 960, 470, 1.4)],
-      hl: [{ b: [480, 440, 960, 138], from: 20, label: "put this on screen" }],
+      img: "19-mid-lesson", h: 3884, dur: 110,
+      cam: [cam(0, 960, 540, 1), cam(80, 960, 480, 1.4)],
+      hl: [{ b: [627, 450, 928, 140], from: 20, label: "say it AND show it" }],
     },
     {
-      img: "40-detail-full", h: 2904, dur: 110,
-      cam: [cam(0, 960, 2380, 1.3)],
-      hl: [{ b: [500, 2346, 197, 32], from: 10, label: "Announce" }],
-      cur: [{ f: 0, x: 1000, y: 2250 }, mid([500, 2346, 197, 32], 30)], clicks: [45],
+      img: "19-mid-lesson", h: 3884, dur: 100,
+      cam: [cam(0, 960, 2820, 1.3)],
+      hl: [{ b: [647, 2777, 164, 40], from: 10, label: "Announce now" }],
+      ...click([647, 2777, 164, 40], 10, 60),
     },
     {
-      img: "20-announced", h: 1080, dur: 90,
-      cam: [cam(0, 960, 470, 1.4)],
-      hl: [{ b: [480, 440, 960, 64], from: 5, label: "T0 recorded" }],
+      img: "20-announced", h: 3942, dur: 110,
+      cam: [cam(0, 960, 2900, 1.3)],
+      hl: [{ b: [647, 2834, 274, 40], from: 5, to: 55, label: "T0 recorded" }, { b: [627, 2915, 928, 150], from: 55, label: "live counter, every 5 s" }],
+    },
+    {
+      img: "22-pull-after", h: 3942, dur: 170,
+      cam: [cam(0, 960, 3000, 1.3), cam(80, 960, 3000, 1.3), cam(130, 960, 3300, 1.2)],
+      hl: [
+        { b: [647, 3090, 164, 40], from: 5, to: 80, label: "Pull responses (Forms API)" },
+        { b: [647, 3398, 888, 49], from: 90, label: "Zoom transcript upload" },
+      ],
+      ...click([647, 3090, 164, 40], 0, 40),
     },
   ],
   lines: [
-    { from: 0, text: "During the lesson, open the session. Say the passphrase aloud AND show it — audio alone excludes fellows." },
-    { from: 120, text: "Press Announce now when you tell the room the form is open. That moment is T0 for every check-in." },
-    { from: 230, text: "Announced. Latency is measured from T0 and recorded, never judged. Announce again resets it." },
-  ],
-};
-
-const PULL: SceneDef = {
-  step: "9",
-  title: "Live counter and pulling responses",
-  beats: [
-    {
-      img: "21-pull-before", h: 2904, dur: 140,
-      cam: [cam(0, 960, 2480, 1.35)],
-      hl: [{ b: [480, 2414, 960, 150], from: 10, to: 80, label: "live counter, every 5 s" }, { b: [500, 2586, 116, 32], from: 80 }],
-      cur: [{ f: 50, x: 1000, y: 2700 }, mid([500, 2586, 116, 32], 95)], clicks: [110],
-    },
-    {
-      img: "22-pull-after", h: 2984, dur: 120,
-      cam: [cam(0, 960, 470, 1.35), cam(70, 960, 470, 1.35), cam(110, 960, 1780, 1.2)],
-      hl: [{ b: [480, 440, 960, 64], from: 5, to: 70, label: "pulled via the Forms API" }, { b: [500, 1802, 159, 32], from: 85, label: "Pull Part B" }],
-    },
-  ],
-  lines: [
-    { from: 0, text: "The Responses counter refreshes every five seconds from what is stored. Pull responses fetches new ones." },
-    { from: 140, text: "Pulls are idempotent: already-recorded answers are skipped. Part B has its own pull button." },
-    { from: 200, text: "If the API is unavailable, export the CSV and run `cufa ingest part-a` — the fallback path." },
+    { from: 0, text: "During the lesson, open the session. Say the passphrase aloud AND display it — audio alone excludes fellows." },
+    { from: 110, text: "Press Announce now when you tell the room the form is open. That moment is T0 for every check-in’s latency." },
+    { from: 320, text: "Pull fetches new responses; repeats are skipped. No API? Export the CSV and run `cufa ingest part-a`." },
+    { from: 400, text: "Uploading the Zoom transcript adds who spoke and for how long to the session summary." },
   ],
 };
 
 const RESPONSES: SceneDef = {
-  step: "10",
+  step: "9",
   title: "Part B responses and themes",
   beats: [
     {
-      img: "23-responses", h: 2591, dur: 300,
-      cam: [cam(0, 960, 490, 1.2), cam(90, 960, 490, 1.2), cam(130, 960, 860, 1.2), cam(210, 960, 860, 1.2), cam(260, 960, 1400, 1.1)],
+      img: "23-responses", h: 3411, dur: 270,
+      cam: [cam(0, 960, 560, 1.15), cam(90, 960, 560, 1.15), cam(130, 960, 950, 1.2), cam(200, 960, 950, 1.2), cam(250, 960, 1500, 1.1)],
       hl: [
-        { b: [480, 305, 960, 365], from: 10, to: 100, label: "confidence: median + IQR, never a mean" },
-        { b: [480, 686, 960, 344], from: 110, to: 220, label: "muddiest-point themes (AI)" },
-        { b: [500, 924, 147, 32], from: 150, to: 220 },
-        { b: [480, 1048, 960, 500], from: 240, label: "takeaways — counted, never graded" },
+        { b: [647, 346, 888, 36], from: 10, to: 100, label: "confidence: median + IQR, never a mean" },
+        { b: [647, 766, 888, 36], from: 110, to: 200 },
+        { b: [647, 1038, 200, 40], from: 130, to: 200, label: "Regenerate themes (AI, aggregate)" },
+        { b: [647, 1206, 888, 36], from: 215, label: "takeaways — counted, never graded" },
       ],
-      cur: [{ f: 140, x: 900, y: 1000 }, mid([500, 924, 147, 32], 175)], clicks: [185],
     },
   ],
   lines: [
-    { from: 0, text: "Each session’s end-of-session page: confidence as a distribution — read the trend, not a single score." },
-    { from: 110, text: "Regenerate themes groups “what’s still unclear” answers. The AI sees anonymous text only — aggregate, no names." },
-    { from: 220, text: "No key here, so no themes — the answers stay readable. Takeaways are counted, never graded." },
+    { from: 0, text: "Each session’s end-of-session page shows confidence as a distribution — read the trend, not one score." },
+    { from: 110, text: "Themes group the “what’s still unclear” answers. The model sees anonymous text only and never judges a fellow." },
+    { from: 210, text: "Takeaways are counted, never graded: rating writing would penalise second-language and different writers." },
   ],
 };
 
 const REVIEW: SceneDef = {
-  step: "11",
+  step: "10",
   title: "Review queue — deciding",
   beats: [
     {
-      img: "25-review-needs", h: 5000, dur: 150,
-      cam: [cam(0, 960, 400, 1), cam(70, 1000, 480, 1.35)],
+      img: "26-review-note", h: 5000, dur: 200,
+      cam: [cam(0, 960, 500, 1), cam(70, 1100, 480, 1.4)],
       hl: [
-        { b: [480, 244, 540, 32], from: 5, to: 60, label: "four tabs" },
-        { b: [1060, 440, 180, 100], from: 60, label: "typed vs expected" },
+        { b: [627, 222, 560, 40], from: 5, to: 70, label: "four queues" },
+        { b: [1339, 432, 216, 112], from: 80, to: 200, label: "note + decision" },
       ],
+      ...click([1339, 472, 109, 32], 120, 175),
     },
     {
-      img: "26-review-note", h: 5000, dur: 110,
-      cam: [cam(0, 1100, 480, 1.6)],
-      hl: [{ b: [1250, 455, 176, 100], from: 5, label: "note + decision" }],
-      cur: [{ f: 20, x: 1200, y: 560 }, mid([1250, 491, 80, 28], 60)], clicks: [80],
-    },
-    {
-      img: "27-review-decided", h: 5000, dur: 100,
-      cam: [cam(0, 960, 400, 1.2)],
-      hl: [{ b: [480, 243, 960, 65], from: 5, label: "recorded, audited" }],
+      img: "27-review-decided", h: 5000, dur: 90,
+      cam: [cam(0, 960, 400, 1.15)],
     },
   ],
   lines: [
-    { from: 0, text: "Tier 1 rules decide clear cases; tier 2 AI takes some ambiguous ones; the rest wait here for tier 3 — you." },
-    { from: 100, text: "Oldest first. Compare what the fellow typed with the expected passphrase, add an optional note, decide." },
-    { from: 260, text: "Decisions are append-only: an override adds a row, never edits one. A human decision always wins." },
+    { from: 0, text: "Tier 1 rules decide clear cases, tier 2 AI takes some ambiguous ones, the rest wait here for tier 3 — you." },
+    { from: 80, text: "Compare what the fellow typed with the expected passphrase, add an optional note, decide." },
+    { from: 200, text: "Decisions are append-only and audited: an override adds a row. A human decision always wins." },
   ],
 };
 
 const TABS: SceneDef = {
-  step: "12",
+  step: "11",
   title: "Review — AI decisions, straight-lining, addresses",
   beats: [
+    { img: "28-review-ai", h: 1280, dur: 100, cam: [cam(0, 960, 540, 1.15)], hl: [{ b: [747, 222, 107, 40], from: 10, label: "AI decisions" }] },
     {
-      img: "28-review-ai", h: 1080, dur: 100,
-      cam: [cam(0, 960, 540, 1), cam(80, 960, 420, 1.3)],
-      hl: [{ b: [596, 244, 106, 32], from: 10, label: "AI decisions" }],
+      img: "29-review-straight", h: 1280, dur: 100, cam: [cam(0, 960, 480, 1.3)],
+      hl: [{ b: [856, 222, 128, 40], from: 5, to: 45 }, { b: [611, 397, 960, 142], from: 40, label: "data-quality flag only" }],
     },
     {
-      img: "29-review-straight", h: 1080, dur: 100,
-      cam: [cam(0, 960, 420, 1.3)],
-      hl: [{ b: [704, 244, 119, 32], from: 5, to: 50 }, { b: [480, 421, 960, 122], from: 40, label: "data-quality flag only" }],
-    },
-    {
-      img: "30-review-identities", h: 1080, dur: 100,
-      cam: [cam(0, 960, 420, 1.3)],
-      hl: [{ b: [825, 244, 173, 32], from: 5, to: 50 }, { b: [480, 421, 960, 80], from: 40, label: "email not on roster" }],
+      img: "30-review-identities", h: 1280, dur: 100, cam: [cam(0, 960, 480, 1.3)],
+      hl: [{ b: [986, 222, 177, 40], from: 5, to: 45 }, { b: [611, 397, 960, 92], from: 40, label: "email not on roster" }],
     },
   ],
   lines: [
-    { from: 0, text: "AI decisions lists every model call with its reasoning, so staff sample it — overriding supersedes it for good." },
-    { from: 100, text: "Straight-lining: identical confidence four sessions running. A data-quality flag — never a count or score." },
-    { from: 200, text: "Unresolved addresses: check-ins from emails not on the roster are listed here — never guessed at." },
+    { from: 0, text: "AI decisions lists every model call with its reasoning so staff can sample it; an override supersedes it for good." },
+    { from: 100, text: "Straight-lining: identical confidence four sessions running. A data-quality flag, never a count or score." },
+    { from: 200, text: "Unresolved addresses: check-ins from emails not on the roster are listed here, never guessed at." },
   ],
 };
 
 const SHOUTOUTS: SceneDef = {
-  step: "13",
+  step: "12",
   title: "Shoutouts — linking names",
   beats: [
     {
-      img: "31-shoutouts", h: 1080, dur: 140,
-      cam: [cam(0, 960, 540, 1), cam(80, 1000, 520, 1.3)],
-      hl: [{ b: [488, 455, 224, 70], from: 10, to: 70, label: "as typed" }, { b: [1208, 463, 224, 60], from: 60, label: "roster candidates" }],
-      cur: [{ f: 70, x: 1000, y: 700 }, mid([1208, 463, 224, 28], 105)], clicks: [120],
+      img: "31-shoutouts", h: 2497, dur: 150,
+      cam: [cam(0, 960, 540, 1), cam(70, 1050, 480, 1.35)],
+      hl: [{ b: [640, 278, 180, 30], from: 5, to: 50, label: "cohort filter" }, { b: [1291, 450, 264, 68], from: 60, label: "roster candidates" }],
+      ...click([1291, 450, 264, 32], 70, 125),
     },
-    {
-      img: "32-shoutout-linked", h: 1080, dur: 120,
-      cam: [cam(0, 960, 480, 1.3)],
-      hl: [{ b: [480, 268, 960, 64], from: 5, to: 60, label: "linked, against your address" }, { b: [1200, 450, 240, 85], from: 60, label: "outside the roster is fine" }],
-    },
+    { img: "32-shoutout-linked", h: 2501, dur: 90, cam: [cam(0, 960, 500, 1.2)] },
   ],
   lines: [
-    { from: 0, text: "Names fellows typed for “who helped you” that didn’t match exactly one person. Pick the right fellow to link." },
-    { from: 140, text: "Guest speakers and teachers get thanked too — they stay unlinked. Third-party names are protected data." },
+    { from: 0, text: "Names fellows typed for “who helped you” that matched nobody, or more than one person. Pick the right one to link." },
+    { from: 150, text: "Guest speakers and teachers get thanked too and stay unlinked. Third-party names are protected data." },
   ],
 };
 
 const HELP: SceneDef = {
-  step: "14",
+  step: "13",
   title: "Help requests — access-gated",
   beats: [
     {
-      img: "33-help", h: 1080, dur: 150,
-      cam: [cam(0, 960, 540, 1), cam(60, 960, 440, 1.2), cam(130, 960, 700, 1.2)],
-      hl: [
-        { b: [480, 268, 960, 84], from: 5, to: 60, label: "not routine data" },
-        { b: [480, 368, 960, 220], from: 60, to: 110, label: "who is emailed, who may open this" },
-        { b: [480, 657, 960, 252], from: 110 },
-      ],
+      img: "34-help-note", h: 1433, dur: 190,
+      cam: [cam(0, 960, 540, 1), cam(80, 960, 820, 1.35)],
+      hl: [{ b: [647, 776, 888, 129], from: 60, to: 120, label: "a staff note, not the fellow’s words" }, { b: [647, 866, 186, 40], from: 120, label: "I’m picking this up" }],
+      ...click([647, 866, 186, 40], 120, 170),
     },
     {
-      img: "34-help-note", h: 1080, dur: 110,
-      cam: [cam(0, 960, 780, 1.4)],
-      hl: [{ b: [500, 821, 920, 28], from: 5, to: 50, label: "staff note" }, { b: [500, 857, 135, 32], from: 50 }],
-      cur: [{ f: 30, x: 1100, y: 830 }, mid([500, 857, 135, 32], 65)], clicks: [80],
-    },
-    {
-      img: "36-help-acknowledged", h: 1080, dur: 100,
-      cam: [cam(0, 960, 760, 1.3)],
-      hl: [{ b: [500, 829, 920, 116], from: 5, to: 55, label: "picked up" }, { b: [500, 913, 60, 32], from: 55, label: "Close when done" }],
+      img: "36-help-acknowledged", h: 1280, dur: 100,
+      cam: [cam(0, 960, 800, 1.3)],
+      hl: [{ b: [647, 836, 888, 129], from: 5, to: 50, label: "picked up" }, { b: [647, 926, 75, 40], from: 50, label: "Close when done" }],
     },
   ],
   lines: [
     { from: 0, text: "Fellows who ticked “I’d like someone to check in with me”. Only the people named for it can open this screen." },
-    { from: 150, text: "Add a note on what you did, then “I’m picking this up”. Nothing the fellow typed is copied here." },
-    { from: 260, text: "Close it once handled. Asking for help never lowers participation and appears in no report or count." },
+    { from: 120, text: "Add a note on what you did, then pick it up. Close it when handled." },
+    { from: 190, text: "A help request never lowers participation and appears in no report, export, count or score." },
   ],
 };
 
-const COHORT: SceneDef = {
-  step: "15",
-  title: "Cohort filter",
+const DASHBOARD: SceneDef = {
+  step: "14",
+  title: "Staff dashboard",
   beats: [
     {
-      img: "32-shoutout-linked", h: 1080, dur: 80,
-      cam: [cam(0, 700, 380, 1.6)],
-      hl: [{ b: [480, 372, 115, 28], from: 5, label: "Cohort" }],
-      cur: [{ f: 10, x: 800, y: 500 }, mid([480, 372, 115, 28], 40)], clicks: [50],
-    },
-    {
-      img: "25-review-needs", h: 5000, dur: 70,
-      cam: [cam(0, 700, 320, 1.6)],
-      hl: [{ b: [480, 290, 125, 50], from: 5, label: "same filter on Review" }],
+      img: "50-dashboard", h: 5000, dur: 330,
+      cam: [cam(0, 960, 540, 1), cam(60, 960, 520, 1.15), cam(140, 960, 1150, 1.15), cam(220, 960, 1650, 1.15), cam(320, 960, 2000, 1.15)],
+      hl: [
+        { b: [627, 335, 928, 345], from: 10, to: 70, label: "attendance, fellows, requests, unrostered" },
+        { b: [779, 272, 126, 40], from: 70, to: 130, label: "Export CSV" },
+        { b: [627, 945, 928, 440], from: 140, to: 220, label: "needs a human — incl. Slack /checkin" },
+        { b: [627, 1457, 928, 300], from: 225, to: 330, label: "attention index, with its reasons" },
+        { b: [815, 2071, 141, 32], from: 290, label: "Reached out" },
+      ],
     },
   ],
   lines: [
-    { from: 0, text: "Sessions, Review, Shoutouts and Help requests all share one cohort filter. Pick a cohort, or All cohorts." },
+    { from: 0, text: "New on main: /dashboard. Overall attendance, active fellows, open check-in requests and unrostered Slack accounts." },
+    { from: 70, text: "Export CSV downloads the engagement table. “Last data in” shows when each source last produced anything." },
+    { from: 140, text: "Needs a human: check-in requests (including ones pressed in Slack) and roster alerts." },
+    { from: 225, text: "Fellows sorted by attention index, parts always shown. Help requests and assignment scores never enter it." },
   ],
 };
 
-const SCREENS = [SIGNIN, CONNECT, TEMPLATE, ROTATION, SESSIONS, BLOCK, PROVISION, LESSON, PULL, RESPONSES, REVIEW, TABS, SHOUTOUTS, HELP, COHORT];
+const FELLOW: SceneDef = {
+  step: "15",
+  title: "Fellow page, assignments and roster",
+  beats: [
+    {
+      img: "51-fellow", h: 2502, dur: 150,
+      cam: [cam(0, 960, 540, 1), cam(70, 960, 600, 1.15), cam(140, 960, 1200, 1.1)],
+      hl: [{ b: [835, 428, 193, 32], from: 20, to: 90, label: "Mark reached out" }],
+    },
+    {
+      img: "52-assignments", h: 1280, dur: 90,
+      cam: [cam(0, 960, 500, 1.2)],
+      hl: [{ b: [611, 340, 960, 86], from: 5, to: 50, label: "assignments with reminders" }, { b: [627, 284, 173, 40], from: 45 }],
+      ...click([627, 284, 173, 40], 40, 75),
+    },
+    {
+      img: "53-assignment-new", h: 1280, dur: 100,
+      cam: [cam(0, 960, 560, 1.25)],
+      hl: [{ b: [656, 276, 870, 24], from: 5, to: 60, label: "title, due, link, status" }, { b: [647, 867, 176, 40], from: 60 }],
+    },
+    {
+      img: "54-roster", h: 2522, dur: 130,
+      cam: [cam(0, 960, 540, 1), cam(70, 960, 560, 1.2)],
+      hl: [{ b: [627, 270, 928, 230], from: 5, to: 70, label: "load a roster CSV" }, { b: [1339, 595, 216, 32], from: 70, label: "per-fellow timezone" }],
+    },
+  ],
+  lines: [
+    { from: 0, text: "A fellow’s page: what they see, plus attention index, aliases, interventions and airtime. Mark reached out here." },
+    { from: 150, text: "Assignments: create and edit Solvathons and case briefs. Fellows get reminders 24 h, 1 h and 10 min before." },
+    { from: 340, text: "Roster: load fellows from CSV and set each fellow’s timezone so reminders land at the right local time." },
+  ],
+};
+
+const SCREENS1 = [SIGNIN, CONNECT, TEMPLATE, ROTATION, SESSIONS, BLOCK, PROVISION, LESSON, RESPONSES, REVIEW, TABS, SHOUTOUTS, HELP, DASHBOARD, FELLOW];
+
+/* ---------------- Slack ---------------- */
+
+const X = (k: string, dur: number, extra: Partial<SlackExchange> = {}): SlackExchange => ({ ...SLACK[k], dur, ...extra });
+
+const SLACK_STAFF: { step: string; title: string; ex: SlackExchange[]; lines: CaptionLine[] } = {
+  step: "16",
+  title: "Slack — staff slash commands",
+  ex: [
+    X("report", 150),
+    X("fellow", 160),
+    X("attendance", 150),
+    X("leaderboard", 120),
+    X("asg_create", 130),
+    X("asg_list", 100),
+    X("score", 100),
+    X("zoom", 110),
+    X("outreach", 100),
+    X("alias", 120),
+    X("alerts", 120),
+    X("link", 100),
+    X("alerts_resolve", 90),
+    X("digest", 90),
+    X("sync", 90),
+    X("admindash", 110),
+  ],
+  lines: [],
+};
+{
+  const text: Record<string, string> = {
+    report: "`/report` — the cohort so far, and when each data source last produced anything.",
+    fellow: "`/fellow` — one fellow’s card: attendance, activity vs. cohort mean, attention index and why, badges, funnel.",
+    attendance: "`/attendance next` — who checked in, who filled the exit ticket, who is missing.",
+    leaderboard: "`/leaderboard` — a staff-only ranking. Fellows never see it.",
+    asg_create: "`/assignment create` — an assignment with automatic reminders…",
+    asg_list: "…and `/assignment list` shows what is due, handed in and scored.",
+    score: "`/score` records a Solvathon or case-brief score you gave by hand.",
+    zoom: "`/zoom next <link>` puts the Zoom link on the next session; it rides in every reminder.",
+    outreach: "`/outreach` marks that someone has reached out, with who and when.",
+    alias: "`/alias` adds a second address to one roster record — history re-attributes, past included.",
+    alerts: "`/alerts` lists Slack accounts that joined but are not on the roster.",
+    link: "`/link` attaches a Slack account to a fellow…",
+    alerts_resolve: "…or `/alerts resolve` marks it as staff or ignored.",
+    digest: "`/digest` posts the weekly digest now…",
+    sync: "…and `/sync` pulls members, channels and messages from Slack now.",
+    admindash: "`/admin-dashboard` links the staff dashboard. The password is never sent over Slack.",
+  };
+  let at = 0;
+  const keys = ["report", "fellow", "attendance", "leaderboard", "asg_create", "asg_list", "score", "zoom", "outreach", "alias", "alerts", "link", "alerts_resolve", "digest", "sync", "admindash"];
+  SLACK_STAFF.ex.forEach((e, i) => {
+    SLACK_STAFF.lines.push({ from: at, text: text[keys[i]] });
+    at += e.dur;
+  });
+}
+
+const SLACK_REFUSE = {
+  step: "17",
+  title: "Slack — not staff? Refused.",
+  ex: [
+    X("refused", 130, { who: "Ardith Aldergrove", channel: "general" }),
+    X("checkin", 130, { who: "Ardith Aldergrove", channel: "general" }),
+  ],
+  lines: [
+    { from: 0, text: "Staff commands check CUFA_SLACK_ADMINS. A fellow who tries `/report` is refused, and told why." },
+    { from: 130, text: "Fellows do have `/checkin`: it pings staff privately. It lands in the staff channel and on the dashboard." },
+  ],
+};
+
+const SlackScene: React.FC<{ def: { step: string; title: string; ex: SlackExchange[]; lines: CaptionLine[] } }> = ({ def }) => (
+  <AbsoluteFill style={{ background: theme.bg }}>
+    <Series>
+      {def.ex.map((e, i) => (
+        <Series.Sequence key={i} durationInFrames={e.dur}>
+          <SlackPane ex={e} />
+        </Series.Sequence>
+      ))}
+    </Series>
+    <Caption step={def.step} title={def.title} lines={def.lines} />
+    <div
+      style={{
+        position: "absolute",
+        right: 60,
+        top: 56,
+        fontFamily: theme.font,
+        fontSize: 18,
+        fontWeight: 700,
+        color: theme.text,
+        background: "rgba(14,26,43,0.82)",
+        padding: "6px 14px",
+        borderRadius: 8,
+        letterSpacing: 1,
+      }}
+    >
+      REAL BOT REPLY · from `cufa slack cmd` on the demo
+    </div>
+  </AbsoluteFill>
+);
+const slackLen = (d: { ex: SlackExchange[] }) => d.ex.reduce((a, e) => a + e.dur, 0);
+
+const WORKSPACE: SceneDef = {
+  step: "18",
+  title: "The private staff channel, in the fake Slack",
+  beats: [
+    {
+      img: "61-fake-slack", h: 5000, dur: 520,
+      cam: [
+        cam(0, 960, 540, 1),
+        cam(40, 860, 1560, 1.35),
+        cam(130, 860, 1800, 1.35),
+        cam(220, 860, 1540, 1.35),
+        cam(320, 860, 1000, 1.35),
+        cam(420, 860, 1300, 1.35),
+        cam(510, 860, 1300, 1.35),
+      ],
+      hl: [
+        { b: [415, 1965, 871, 40], from: 50, to: 120, label: "/checkin → #cohort-private" },
+        { b: [415, 1652, 871, 128], from: 120, to: 210, label: "session summary" },
+        { b: [415, 1420, 871, 232], from: 210, to: 300, label: "weekly digest" },
+        { b: [415, 1195, 871, 155], from: 330, to: 400, label: "“asked before” pointer in #q-and-a" },
+        { b: [415, 707, 871, 468], from: 400, to: 470, label: "@bot summary for the teacher" },
+        { b: [415, 1370, 871, 42], from: 470, label: "poll posted by the bot" },
+      ],
+    },
+  ],
+  lines: [
+    { from: 0, text: "This is the fake Slack workspace wired to the real bot. Everything under “What the bot posted” is real output." },
+    { from: 50, text: "A fellow’s /checkin lands in the private staff channel, with who to follow up and how." },
+    { from: 120, text: "`cufa slack tick` posts the session summary after each session ends: check-ins, exit tickets, who is missing." },
+    { from: 210, text: "The Monday digest: this week, what is due, who has gone quiet, and who needs a human that nobody has reached." },
+    { from: 330, text: "In #q-and-a a repeated question gets a pointer to the earlier answer…" },
+    { from: 400, text: "…and “@bot summary” posts the session’s Q&A digest for the teacher. No names in it." },
+    { from: 470, text: "`cufa slack poll` posts a poll; fellows vote with buttons and `cufa slack polls` shows the totals." },
+  ],
+};
+
+const PRIVACY: SceneDef = {
+  step: "19",
+  title: "Slack privacy boundaries",
+  beats: [
+    {
+      img: "60-bot-status", h: 1280, dur: 170,
+      cam: [cam(0, 960, 540, 1), cam(60, 960, 300, 1.4)],
+      hl: [{ b: [512, 65, 896, 20], from: 20, to: 170, label: "text stored: no" }],
+    },
+    {
+      img: "61-fake-slack", h: 5000, dur: 150,
+      cam: [cam(0, 700, 420, 1.2), cam(60, 700, 1100, 1.2)],
+      hl: [{ b: [415, 119, 871, 475], from: 5, to: 60, label: "every delivery: signed, 200" }, { b: [43, 1010, 315, 240], from: 60, label: "replay + bad-signature tests" }],
+    },
+  ],
+  lines: [
+    { from: 0, text: "The bot records that a message happened — who, where, when, length — never the text. Status says so." },
+    { from: 90, text: "It never subscribes to or stores direct messages. Only named Q&A channels keep text, in their own tables." },
+    { from: 170, text: "Every delivery is signature-checked; replays are dropped and forged requests are rejected." },
+  ],
+};
+
+/* ---------------- CLI ---------------- */
 
 const CliScene: React.FC = () => (
   <AbsoluteFill style={{ background: theme.bg }}>
-    <Sequence durationInFrames={190}>
-      <Terminal blocks={[{ at: 10, cmd: "cufa report --cohort demo", out: REPORT }]} />
+    <Sequence durationInFrames={210}>
+      <Terminal blocks={[{ at: 10, cmd: "cufa slack doctor", out: DOCTOR }]} />
     </Sequence>
-    <Sequence from={190}>
-      <Terminal blocks={[{ at: 5, cmd: "cufa report --cohort demo --confidence", out: CONFIDENCE }]} />
+    <Sequence from={210} durationInFrames={180}>
+      <Terminal blocks={[{ at: 5, cmd: "cufa report --cohort demo", out: REPORT }]} />
+    </Sequence>
+    <Sequence from={390} durationInFrames={170}>
+      <Terminal blocks={[{ at: 5, cmd: "cufa slack engagement", out: ENGAGEMENT }]} />
+    </Sequence>
+    <Sequence from={560}>
+      <Terminal
+        blocks={[
+          { at: 5, cmd: "curl …/dashboard/export.csv?cohort=demo | head -5", out: EXPORT },
+          { at: 70, cmd: "curl …/sessions/template.csv", out: TEMPLATE_CSV },
+        ]}
+      />
     </Sequence>
     <Caption
-      step="16"
-      title="The command line — cufa"
+      step="20"
+      title="Preflight and the command line"
       lines={[
-        { from: 0, text: "Everything in the console is also a command. `cufa report` gives the attendance picture for a cohort." },
-        { from: 190, text: "`--confidence` shows the weekly trend (median, IQR). Also: pull, ingest, review, decide, themes, --json." },
+        { from: 0, text: "`cufa slack doctor` checks tokens, scopes, channels, admins and the database before a first run." },
+        { from: 210, text: "Everything in the console is also a command: `cufa report` gives the cohort’s attendance picture." },
+        { from: 390, text: "`cufa slack engagement` prints the attention index table; `--json` for scripts." },
+        { from: 560, text: "The dashboard’s CSV export and the sessions CSV template are plain files — real output shown." },
       ]}
     />
   </AbsoluteFill>
 );
+const CLI_DUR = 720;
 
-const CLI_DUR = 360;
+const real = (d: SceneDef): [React.FC, number] => {
+  const S: React.FC = () => <RealScene def={d} />;
+  return [S, sceneLength(d)];
+};
+const slack = (d: typeof SLACK_STAFF): [React.FC, number] => {
+  const S: React.FC = () => <SlackScene def={d} />;
+  return [S, slackLen(d)];
+};
 
 const SCENES: [React.FC, number][] = [
   [TitleScene, 120],
-  ...SCREENS.map((d): [React.FC, number] => {
-    const S: React.FC = () => <RealScene def={d} />;
-    return [S, sceneLength(d)];
-  }),
+  ...SCREENS1.map(real),
+  slack(SLACK_STAFF),
+  slack(SLACK_REFUSE),
+  real(WORKSPACE),
+  real(PRIVACY),
   [CliScene, CLI_DUR],
   [RulesScene, 210],
   [ClosingScene, 120],
@@ -478,4 +644,3 @@ export const AdminGuide: React.FC = () => {
     </AbsoluteFill>
   );
 };
-

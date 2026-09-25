@@ -110,8 +110,8 @@ export const LinkScene: React.FC = () => (
         </div>
         <Rise delay={10}>
           <Shot
-            file="partA.png"
-            crop={{ x: 466, y: 175, w: 988, h: 590 }}
+            file="sess1.png"
+            crop={{ x: 617, y: 630, w: 948, h: 450 }}
             width={1020}
             dur={LINK_DUR}
             label="REAL SCREEN · what your teacher shares"
@@ -140,8 +140,8 @@ export const PhraseScene: React.FC = () => (
         </div>
         <Rise delay={10}>
           <Shot
-            file="s1.png"
-            crop={{ x: 466, y: 190, w: 988, h: 390 }}
+            file="sess1.png"
+            crop={{ x: 617, y: 160, w: 948, h: 440 }}
             width={1020}
             dur={PHRASE_DUR}
             label="REAL SCREEN · the session page your teacher projects"
@@ -268,7 +268,7 @@ export const MatchScene: React.FC = () => {
           <Rise delay={150}>
             <Shot
               file="review.png"
-              crop={{ x: 466, y: 180, w: 988, h: 700 }}
+              crop={{ x: 617, y: 160, w: 948, h: 700 }}
               width={960}
               dur={MATCH_DUR}
               label="REAL SCREEN · staff review queue"
@@ -350,7 +350,7 @@ export const EmailScene: React.FC = () => (
         <Rise delay={80}>
           <Shot
             file="ident.png"
-            crop={{ x: 466, y: 180, w: 988, h: 420 }}
+            crop={{ x: 617, y: 160, w: 948, h: 480 }}
             width={960}
             dur={EMAIL_DUR}
             label="REAL SCREEN · staff: unresolved addresses"
@@ -568,7 +568,7 @@ export const RotationScene: React.FC = () => (
         <Rise delay={60}>
           <Shot
             file="rotation.png"
-            crop={{ x: 466, y: 630, w: 988, h: 450 }}
+            crop={{ x: 617, y: 130, w: 948, h: 700 }}
             width={960}
             dur={ROTATION_DUR}
             label="REAL SCREEN · this cohort's weekly schedule"
@@ -602,7 +602,7 @@ export const Help2Scene: React.FC = () => (
         <Rise delay={60}>
           <Shot
             file="help.png"
-            crop={{ x: 466, y: 180, w: 988, h: 410 }}
+            crop={{ x: 617, y: 160, w: 948, h: 400 }}
             width={960}
             dur={HELP2_DUR}
             label="REAL SCREEN · who receives it"
@@ -642,24 +642,27 @@ export const PrivacyScene: React.FC = () => {
 };
 
 /* ---------- 13. FAQ ---------- */
-export const FAQ_DUR = 540;
+export const FAQ_DUR = 600;
 export const FaqScene: React.FC = () => {
   const qs = [
-    { q: "Missed the passphrase or joined late?", a: "Submit anyway and say so in the answer. Nothing is thrown away, and a person reviews it." },
-    { q: "Signed in with the wrong account?", a: "It's still recorded. Tell staff your roster email so it's linked to you." },
-    { q: "Made a typo?", a: "One letter off still counts. Anything else goes to a person, not an automatic \"absent\"." },
-    { q: "Missed the form entirely?", a: "Tell staff. Part A and Part B are separate, so answer whichever you still can." },
-    { q: "Having a hard week?", a: "Tick the check-in box. It costs you nothing." },
+    { q: "Missed the passphrase or joined late?", a: "Submit anyway and say so in the answer. Nothing is thrown away; a person reviews it." },
+    { q: "Signed in with the wrong account?", a: "It's still recorded. Tell staff your roster email so it links to you." },
+    { q: "Made a typo?", a: "One letter off still counts. Anything else goes to a person, never an automatic \"absent\"." },
+    { q: "Missed a form entirely?", a: "Part A and Part B are separate. Answer whichever you still can, and tell staff." },
+    { q: "Not getting reminders?", a: "Check /reminders. Overnight quiet hours skip reminders rather than send them late." },
+    { q: "Dashboard link stopped working?", a: "Links last 7 days. Type /dashboard for a fresh one." },
+    { q: "Too many badge messages?", a: "/badges off. Your badges still show in /badges and on your dashboard." },
+    { q: "Having a hard week?", a: "Tick the check-in box, press Check in with me, or type /checkin. It costs you nothing." },
   ];
   return (
     <Scene dur={FAQ_DUR}>
-      <AbsoluteFill style={{ padding: "60px 120px" }}>
+      <AbsoluteFill style={{ padding: "50px 80px" }}>
         <Header pill="FAQ" title="Something went wrong?" />
-        <div style={{ display: "flex", flexDirection: "column", gap: 22, marginTop: 40 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 22, marginTop: 34 }}>
           {qs.map((x, i) => (
-            <Rise key={x.q} delay={20 + i * 70} style={{ backgroundColor: theme.surface, borderRadius: 22, padding: "18px 30px" }}>
-              <div style={{ fontSize: 42, fontWeight: 900, color: theme.accent }}>{x.q}</div>
-              <div style={{ fontSize: 36, marginTop: 4 }}>{x.a}</div>
+            <Rise key={x.q} delay={20 + i * 50} style={{ backgroundColor: theme.surface, borderRadius: 22, padding: "16px 26px", height: 190 }}>
+              <div style={{ fontSize: 36, fontWeight: 900, color: theme.accent }}>{x.q}</div>
+              <div style={{ fontSize: 30, marginTop: 6, lineHeight: 1.3 }}>{x.a}</div>
             </Rise>
           ))}
         </div>
@@ -672,11 +675,12 @@ export const FaqScene: React.FC = () => {
 export const RECAP2_DUR = 330;
 export const Recap2Scene: React.FC = () => {
   const items = [
+    "Read your welcome DM; reminders come 24h, 1h and 10m before",
     "Stay signed into your roster Google account",
     "Part A (mid-lesson): type the passphrase, submit during class",
     "Part B (end): rate, one sentence, this week's question",
-    "Shoutout and check-in box are optional",
-    "Two separate forms: answer both",
+    "Ask in #q-and-a; mark the answer that helped with ✅",
+    "/me, /dashboard, /badges, /reminders, /checkin",
   ];
   return (
     <Scene dur={RECAP2_DUR}>
@@ -684,11 +688,11 @@ export const Recap2Scene: React.FC = () => {
         <Rise delay={0}>
           <div style={{ fontSize: 96, fontWeight: 900 }}>Quick recap</div>
         </Rise>
-        <div style={{ display: "flex", flexDirection: "column", gap: 32, marginTop: 50 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 26, marginTop: 40 }}>
           {items.map((t, i) => (
             <Rise key={t} delay={25 + i * 36} style={{ display: "flex", alignItems: "center", gap: 30 }}>
-              <Check start={35 + i * 36} size={76} />
-              <div style={{ fontSize: 52, fontWeight: 700 }}>{t}</div>
+              <Check start={35 + i * 36} size={66} />
+              <div style={{ fontSize: 46, fontWeight: 700 }}>{t}</div>
             </Rise>
           ))}
         </div>

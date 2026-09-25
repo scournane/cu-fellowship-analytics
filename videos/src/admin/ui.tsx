@@ -420,7 +420,15 @@ export const Caption: React.FC<{ step: string; title: string; lines: CaptionLine
             transform: `translateY(${shift}px)`,
           }}
         >
-          {cur.text}
+          {cur.text.split(/(`[^`]+`)/g).map((part, i) =>
+            part.startsWith("`") && part.endsWith("`") ? (
+              <span key={i} style={{ fontFamily: "'DejaVu Sans Mono', Menlo, monospace", color: theme.accent2, fontSize: "0.9em" }}>
+                {part.slice(1, -1)}
+              </span>
+            ) : (
+              <React.Fragment key={i}>{part}</React.Fragment>
+            ),
+          )}
         </div>
       </div>
     </div>

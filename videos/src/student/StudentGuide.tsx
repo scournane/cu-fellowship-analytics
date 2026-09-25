@@ -3,35 +3,20 @@ import { AbsoluteFill, Series } from "remotion";
 import { theme } from "../theme";
 import { CLOSING_DUR, ClosingScene, TIMELINE_DUR, TimelineScene, TITLE_DUR, TitleScene } from "./Scenes";
 import {
-  EMAIL_DUR,
-  EmailScene,
-  FAQ_DUR,
-  FaqScene,
-  FORM_A_DUR,
-  FORM_B_DUR,
-  FormAScene,
-  FormBScene,
-  HELP2_DUR,
-  Help2Scene,
-  LINK_DUR,
-  LinkScene,
-  MATCH_DUR,
-  MatchScene,
-  PHRASE_DUR,
-  PhraseScene,
-  PRIVACY_DUR,
-  PrivacyScene,
-  RECAP2_DUR,
-  Recap2Scene,
-  ROTATION_DUR,
-  RotationScene,
-  WINDOW_DUR,
-  WindowScene,
+  EMAIL_DUR, EmailScene, FAQ_DUR, FaqScene, FORM_A_DUR, FORM_B_DUR, FormAScene, FormBScene, HELP2_DUR, Help2Scene,
+  LINK_DUR, LinkScene, MATCH_DUR, MatchScene, PHRASE_DUR, PhraseScene, PRIVACY_DUR, PrivacyScene, RECAP2_DUR,
+  Recap2Scene, ROTATION_DUR, RotationScene, WINDOW_DUR, WindowScene,
 } from "./Guide";
+import {
+  BADGE_DUR, BadgesScene, CHECKIN_DUR, CheckinScene, CMDS_DUR, CommandsScene, DASH_DUR, DashboardScene, POLL_DUR,
+  PollScene, QA_DUR, QAScene, REMIND_DUR, RemindScene, SPRIV_DUR, SlackPrivacyScene, WELCOME_DUR, WelcomeScene,
+} from "./SlackScenes";
 
 const SCENES: [React.FC, number][] = [
   [TitleScene, TITLE_DUR],
   [TimelineScene, TIMELINE_DUR],
+  [WelcomeScene, WELCOME_DUR],
+  [RemindScene, REMIND_DUR],
   [LinkScene, LINK_DUR],
   [PhraseScene, PHRASE_DUR],
   [FormAScene, FORM_A_DUR],
@@ -41,7 +26,14 @@ const SCENES: [React.FC, number][] = [
   [FormBScene, FORM_B_DUR],
   [RotationScene, ROTATION_DUR],
   [Help2Scene, HELP2_DUR],
+  [CommandsScene, CMDS_DUR],
+  [DashboardScene, DASH_DUR],
+  [BadgesScene, BADGE_DUR],
+  [CheckinScene, CHECKIN_DUR],
+  [QAScene, QA_DUR],
+  [PollScene, POLL_DUR],
   [PrivacyScene, PRIVACY_DUR],
+  [SlackPrivacyScene, SPRIV_DUR],
   [FaqScene, FAQ_DUR],
   [Recap2Scene, RECAP2_DUR],
   [ClosingScene, CLOSING_DUR],
@@ -60,3 +52,6 @@ export const StudentGuide: React.FC = () => (
     </Series>
   </AbsoluteFill>
 );
+
+/** Start frame of each scene, handy for stills. */
+export const SCENE_STARTS = SCENES.reduce<number[]>((acc, [, d], i) => [...acc, (acc[i - 1] ?? 0) + (i ? SCENES[i - 1][1] : 0)], []);
