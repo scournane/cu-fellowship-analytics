@@ -11,6 +11,7 @@ import { DOCTOR, ENGAGEMENT, EXPORT, REPORT, TEMPLATE_CSV } from "./cliOutput";
 import { CornerPill, RealScene, SceneDef, SlackExchange, SlackPane, Terminal, sceneLength } from "./real";
 import { SLACK } from "./slackOutput";
 import { Caption, CaptionLine } from "./ui";
+import { Music, Sfx } from "../sound";
 
 type Box = [number, number, number, number];
 const mid = (b: Box, f: number) => ({ f, x: b[0] + b[2] / 2, y: b[1] + b[3] / 2 });
@@ -52,6 +53,7 @@ const CONNECT: SceneDef = {
     },
     {
       img: "04-connect-after", h: 1280, dur: 200,
+      sfx: [{ at: 6, name: "success" }],
       cam: [cam(0, 960, 500, 1.2), cam(150, 960, 560, 1.35)],
       hl: [
         { b: [627, 267, 928, 60], from: 5, to: 60, label: "no Google call was made" },
@@ -83,6 +85,7 @@ const TEMPLATE: SceneDef = {
     },
     {
       img: "07-template-verified", h: 2237, dur: 100,
+      sfx: [{ at: 10, name: "success" }],
       cam: [cam(0, 960, 600, 1.15)],
       hl: [{ b: [647, 1019, 269, 40], from: 10, label: "read back from the API" }],
     },
@@ -100,6 +103,7 @@ const ROTATION: SceneDef = {
   beats: [
     {
       img: "08-rotation", h: 2115, dur: 210,
+      sfx: [{ at: 120, name: "error" }],
       cam: [cam(0, 960, 540, 1), cam(80, 960, 1000, 1.1), cam(160, 960, 1450, 1.3)],
       hl: [
         { b: [627, 683, 928, 700], from: 20, to: 110, label: "week → rotating question" },
@@ -160,6 +164,7 @@ const BLOCK: SceneDef = {
   beats: [
     {
       img: "14-detail-before", h: 2581, dur: 150,
+      sfx: [{ at: 50, name: "error" }],
       cam: [cam(0, 960, 540, 1), cam(70, 960, 1000, 1.3)],
       hl: [{ b: [645, 1020, 885, 145], from: 50, label: "Part B blocked", color: theme.danger }],
     },
@@ -188,6 +193,7 @@ const PROVISION: SceneDef = {
     },
     {
       img: "19-mid-lesson", h: 3884, dur: 230,
+      sfx: [{ at: 10, name: "success" }],
       cam: [cam(0, 960, 800, 1.2), cam(90, 960, 950, 1.2), cam(150, 960, 1400, 1.2), cam(220, 960, 1400, 1.2)],
       hl: [
         { b: [655, 692, 141, 20], from: 10, to: 90, label: "published and verified" },
@@ -220,6 +226,7 @@ const LESSON: SceneDef = {
     },
     {
       img: "20-announced", h: 3942, dur: 110,
+      sfx: [{ at: 5, name: "success" }],
       cam: [cam(0, 960, 2900, 1.3)],
       hl: [{ b: [647, 2834, 274, 40], from: 5, to: 55, label: "T0 recorded" }, { b: [627, 2915, 928, 150], from: 55, label: "live counter, every 5 s" }],
     },
@@ -269,6 +276,7 @@ const REVIEW: SceneDef = {
   beats: [
     {
       img: "26-review-note", h: 5000, dur: 200,
+      sfx: [{ at: 80, name: "error" }],
       cam: [cam(0, 960, 500, 1), cam(70, 1100, 480, 1.4)],
       hl: [
         { b: [627, 222, 560, 40], from: 5, to: 70, label: "four queues" },
@@ -278,6 +286,7 @@ const REVIEW: SceneDef = {
     },
     {
       img: "27-review-decided", h: 5000, dur: 90,
+      sfx: [{ at: 6, name: "success" }],
       cam: [cam(0, 960, 400, 1.15)],
     },
   ],
@@ -319,7 +328,8 @@ const SHOUTOUTS: SceneDef = {
       hl: [{ b: [640, 278, 180, 30], from: 5, to: 50, label: "cohort filter" }, { b: [1291, 450, 264, 68], from: 60, label: "roster candidates" }],
       ...click([1291, 450, 264, 32], 70, 125),
     },
-    { img: "32-shoutout-linked", h: 2501, dur: 90, cam: [cam(0, 960, 500, 1.2)] },
+    { img: "32-shoutout-linked", h: 2501, dur: 90,
+      sfx: [{ at: 6, name: "success" }], cam: [cam(0, 960, 500, 1.2)] },
   ],
   lines: [
     { from: 0, text: "Names fellows typed for “who helped you” that matched nobody, or more than one person. Pick the right one to link." },
@@ -339,6 +349,7 @@ const HELP: SceneDef = {
     },
     {
       img: "36-help-acknowledged", h: 1280, dur: 100,
+      sfx: [{ at: 6, name: "success" }],
       cam: [cam(0, 960, 800, 1.3)],
       hl: [{ b: [647, 836, 888, 129], from: 5, to: 50, label: "picked up" }, { b: [647, 926, 75, 40], from: 50, label: "Close when done" }],
     },
@@ -467,7 +478,7 @@ const SLACK_REFUSE = {
   step: "17",
   title: "Slack — not staff? Refused.",
   ex: [
-    X("refused", 130, { who: "Ardith Aldergrove", channel: "general" }),
+    X("refused", 130, { who: "Ardith Aldergrove", channel: "general", sound: "error" }),
     X("checkin", 130, { who: "Ardith Aldergrove", channel: "general" }),
   ],
   lines: [
@@ -478,6 +489,7 @@ const SLACK_REFUSE = {
 
 const SlackScene: React.FC<{ def: { step: string; title: string; ex: SlackExchange[]; lines: CaptionLine[] } }> = ({ def }) => (
   <AbsoluteFill style={{ background: theme.bg }}>
+    <Sfx name="whoosh" at={0} />
     <Series>
       {def.ex.map((e, i) => (
         <Series.Sequence key={i} durationInFrames={e.dur}>
@@ -497,6 +509,13 @@ const WORKSPACE: SceneDef = {
   beats: [
     {
       img: "61-fake-slack", h: 5000, dur: 520,
+      sfx: [
+        { at: 50, name: "notify" },
+        { at: 120, name: "notify" },
+        { at: 210, name: "notify" },
+        { at: 330, name: "notify" },
+        { at: 400, name: "notify" },
+      ],
       cam: [
         cam(0, 960, 540, 1),
         cam(40, 860, 1880, 1.35),
@@ -554,6 +573,7 @@ const PRIVACY: SceneDef = {
 
 const CliScene: React.FC = () => (
   <AbsoluteFill style={{ background: theme.bg }}>
+    <Sfx name="whoosh" at={0} />
     <Sequence durationInFrames={210}>
       <Terminal blocks={[{ at: 10, cmd: "cufa slack doctor", out: DOCTOR }]} />
     </Sequence>
@@ -652,6 +672,7 @@ export const AdminGuide: React.FC = () => {
   useFonts();
   return (
     <AbsoluteFill style={{ background: theme.bg }}>
+      <Music />
       <Series>
         {SCENES.map(([Scene, d], i) => (
           <Series.Sequence key={i} durationInFrames={d}>
