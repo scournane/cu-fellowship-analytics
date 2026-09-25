@@ -1,4 +1,11 @@
-"""The words on the form, in one place.
+"""The fixed words around Part A, the exit ticket, in one place.
+
+Part A's *questions* are no longer here: they are data, written and versioned
+by staff (``part_a_questions``, ``question_sets``), with the team's own week-1
+exit ticket as the cohort default in ``config/part_a_default_questions.json``.
+What stays in code is the handful of strings that are not a question — the
+template form's own title and notice, the Drive file name, and the reminder
+staff see before they share the link.
 
 Kept out of the provisioning code because these are the strings a CU staff
 member is most likely to want to change, and they should not have to read an
@@ -7,12 +14,11 @@ API integration to find them.
 
 from __future__ import annotations
 
-TEMPLATE_TITLE = "Civic Innovators check-in (template — do not submit)"
+TEMPLATE_TITLE = "Civic Innovators exit ticket (template — do not submit)"
 
-# Shown as the form's header. Plain language, no jargon, and specific about what
-# happens to the answer. Research on adolescent survey participation is
-# consistent that transparency drives honest responding — a fellow who cannot
-# tell what a form is for fills it in defensively or not at all.
+# The template form's header. Fellows never see the template — every session
+# gets its own copy, retitled and re-described from its question set — so this
+# is written for the staff member who opens it in Drive and wonders what it is.
 #
 # TODO(retention): CU has not defined how long check-in records are kept.
 # Replace the bracketed sentence below with the real retention period once CU
@@ -20,33 +26,37 @@ TEMPLATE_TITLE = "Civic Innovators check-in (template — do not submit)"
 # written here becomes the policy fellows were told, and an assumed retention
 # period is the kind of thing nobody revisits.
 HEADER_NOTICE = """\
-This is the attendance check-in for today's live lesson.
+This is the template every session's exit ticket is copied from. Do not share
+it and do not submit it.
 
-What we collect: your email address (confirmed by Google, so you don't type it),
-the time you submit this, and today's passphrase.
+Each session's form is a copy of this one: the copy keeps this form's
+"Collect email addresses → Verified" setting, and gets its title, description
+and questions from the exit-ticket questions set in the console (Templates →
+Default exit ticket questions, or the session's own page).
 
-Who sees it: Civics Unplugged staff.
+What the session forms collect: the fellow's email address (confirmed by
+Google, so nobody types it), the time they submit, and their answers.
+Attendance is the verified address plus a submit time inside the session's
+window. Answers are read by staff, counted — never graded — and no AI reads
+them.
 
-What it's used for: recording that you were at today's lesson. Attendance is one
-part of fellowship participation.
-
-How long we keep it: [TODO(retention) — CU has not set a retention period yet.]
-
-If something goes wrong — you missed the passphrase, you joined late, your
-connection dropped — submit anyway and tell us in the answer. Nothing here is
-thrown away, and a person reviews anything the system can't decide.\
+How long we keep it: [TODO(retention) — CU has not set a retention period yet.]\
 """
 
-QUESTION_HELP = (
-    "The word your teacher said out loud and put on screen during today's "
-    "lesson. Spelling doesn't have to be perfect."
+#: Shown to staff wherever the Part A link is about to be shared — the console
+#: puts it next to the link and the QR code. Both, not either: a QR code alone fails the fellow on a
+#: phone who cannot scan their own screen, a link alone fails the one who joined
+#: from a laptop with Zoom chat closed — and the window is minutes long.
+LINK_REMINDER = (
+    "Put the QR code on screen AND paste the link in the Zoom chat. Some fellows "
+    "join on the phone they would scan with; others have chat hidden. Attendance "
+    "counts only submissions inside the session window, so share both, and early."
 )
 
 
 def session_form_title(session_title: str, scheduled_local: str) -> str:
-    """The title a fellow sees, and staff see in Drive."""
-    return f"Check-in — {session_title} ({scheduled_local})"
+    """The Drive file name staff see. Fellows see the question set's own title."""
+    return f"Exit ticket — {session_title} ({scheduled_local})"
 
 
-def session_form_description(session_title: str) -> str:
-    return f"{session_title}\n\n{HEADER_NOTICE}"
+__all__ = ["HEADER_NOTICE", "LINK_REMINDER", "TEMPLATE_TITLE", "session_form_title"]

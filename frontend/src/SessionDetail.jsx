@@ -16,6 +16,8 @@ import {useCallback, useEffect, useState} from 'react'
 
 import {Notices, PageHeader, PostForm, StatusToken} from './AppFrame.jsx'
 import {Prose} from './Prose.jsx'
+import {typeInfo} from './QuestionListEditor.jsx'
+import {scopeLabel} from './QuestionSetEditor.jsx'
 import {fmtLong, fmtStamp} from './format.js'
 
 const KIND_LABEL = {
@@ -331,6 +333,138 @@ function PartB({
   )
 }
 
+/** What this session's exit ticket asks, and whether that can still change.
+ *
+ *  The questions are shown filled in for this session, as a fellow will read
+ *  them. Changing them is offered until the form is published and refused
+ *  after, with the reason: a published form's answers are read against the
+ *  questions it was published with.
+ */
+function PartAQuestions({questions = {}, questionMap = [], questionTypes}) {
+  const {scope, rendered, locked, lock_reason: lockReason, provisioned} = questions
+  const set = questions.set
+  const list = (rendered && rendered.questions) || []
+  const reason = lockReason || 'The Part A form has been published.'
+
+  return (
+    <Stack gap={3}>
+      <Stack direction="horizontal" gap={2} align="center" wrap="wrap">
+        <Heading level={3}>Questions</Heading>
+        {set ? (
+          <Token label={scopeLabel(set)} color={scope === 'session' ? 'purple' : 'blue'} size="sm" />
+        ) : (
+          <Token label="none" color="orange" size="sm" />
+        )}
+        {locked ? <Token label="locked" color="default" size="sm" /> : null}
+      </Stack>
+
+      {set ? (
+        <Text type="supporting">
+          {scope === 'session'
+            ? `This session’s own questions, version ${set.version}.`
+            : `The ${set.cohort_id} default, version ${set.version}.`}
+          {provisioned ? ` The form was built from ${scopeLabel(provisioned)}.` : ''}
+        </Text>
+      ) : null}
+
+      {questions.changed_since_provisioning ? (
+        <Banner
+          status="info"
+          title="The questions changed after this form was built"
+          description={`The copy was built from ${scopeLabel(provisioned)} and this session now asks ${scopeLabel(set)}. Provision again to rebuild the form with the current questions before it is published.`}
+        />
+      ) : null}
+
+      {list.length ? (
+        <Stack gap={1}>
+          {rendered.title ? <Text type="label">{rendered.title}</Text> : null}
+          <Table density="compact" dividers="rows">
+            <TableRow isHeaderRow>
+              <TableHeaderCell>#</TableHeaderCell>
+              <TableHeaderCell>Question</TableHeaderCell>
+              <TableHeaderCell>Type</TableHeaderCell>
+            </TableRow>
+            {list.map((q, i) => (
+              <TableRow key={q.key || i}>
+                <TableCell><Text hasTabularNumbers>{i + 1}</Text></TableCell>
+                <TableCell>
+                  <Stack direction="horizontal" gap={1} align="center" wrap="wrap">
+                    <Text>{q.title}</Text>
+                    {q.required ? <Token label="required" color="default" size="sm" /> : null}
+                  </Stack>
+                </TableCell>
+                <TableCell>
+                  <Text type="supporting">{typeInfo(questionTypes, q.type).label || q.type}</Text>
+                </TableCell>
+              </TableRow>
+            ))}
+          </Table>
+        </Stack>
+      ) : null}
+
+      <Stack direction="horizontal" gap={2} align="center" wrap="wrap">
+        {locked ? (
+          <>
+            <Button label={scope === 'session' ? 'Edit' : 'Customise for this session'} isDisabled tooltip={reason} />
+            {scope === 'session' ? (
+              <Button label="Revert to the cohort default" isDisabled tooltip={reason} />
+            ) : null}
+            <Link href={questions.edit_url}>{'View them read-only'}</Link>
+          </>
+        ) : scope === 'session' ? (
+          <>
+            <Button label="Edit" variant="primary" href={questions.edit_url} />
+            <PostForm
+              action={questions.revert_action}
+              confirm="Drop this session’s own questions and follow the cohort default again? Its versions stay in the history."
+            >
+              <input type="hidden" name="return_to" value="detail" />
+              <Button label="Revert to the cohort default" type="submit" />
+            </PostForm>
+          </>
+        ) : (
+          <>
+            <Button
+              label={set ? 'Customise for this session' : 'Write questions for this session'}
+              href={questions.edit_url}
+            />
+            <Link href={questions.defaults_url}>{'Edit the cohort default'}</Link>
+          </>
+        )}
+      </Stack>
+      {locked ? <Text type="supporting">{reason}</Text> : null}
+
+      {questionMap.length ? (
+        <Collapsible trigger={`Part A question id map (${questionMap.length} questions)`} defaultIsOpen={false}>
+          <Stack gap={2}>
+            <Text type="supporting">
+              Read off this form after it was built. Answers are stored as they arrive, keyed
+              by question id, and matched to a question through this table when they are
+              read — so a missing row leaves an answer unlabelled rather than lost.
+            </Text>
+            <Table density="compact" dividers="rows">
+              <TableRow isHeaderRow>
+                <TableHeaderCell>#</TableHeaderCell>
+                <TableHeaderCell>Key</TableHeaderCell>
+                <TableHeaderCell>Question id</TableHeaderCell>
+                <TableHeaderCell>Text shown</TableHeaderCell>
+              </TableRow>
+              {questionMap.map((row) => (
+                <TableRow key={row.question_id}>
+                  <TableCell><Text hasTabularNumbers>{row.item_index + 1}</Text></TableCell>
+                  <TableCell><Token label={row.question_key} color="default" size="sm" /></TableCell>
+                  <TableCell><Text type="code">{row.question_id}</Text></TableCell>
+                  <TableCell><Text type="supporting">{row.question_text}</Text></TableCell>
+                </TableRow>
+              ))}
+            </Table>
+          </Stack>
+        </Collapsible>
+      ) : null}
+    </Stack>
+  )
+}
+
 /** Who spoke, from the Zoom transcript for this session.
  *
  *  Two things this screen is careful about.
@@ -460,7 +594,11 @@ export function SessionDetail({
   help_routing = {},
   help_option,
   survey_rationale,
-  accessibility_reminder,
+  link_reminder,
+  a_questions = {},
+  a_question_map = [],
+  a_blocked,
+  question_types,
   provisioning_log = [],
   speaking = [],
   silent = [],
@@ -494,8 +632,8 @@ export function SessionDetail({
 
       <Banner
         status="info"
-        title="Say it aloud and put it on screen"
-        description={accessibility_reminder}
+        title="On screen and in the chat"
+        description={link_reminder}
       />
 
       <Notices notice={notice} error={error} errorTitle="This did not work — the form is not ready" />
@@ -507,32 +645,6 @@ export function SessionDetail({
           </Stack>
         </Banner>
       ) : null}
-
-      <Card padding={5}>
-        <Stack gap={2}>
-          <Heading level={2}>Today&apos;s passphrase</Heading>
-          {session.passphrase ? (
-            <>
-              <Text type="code" size="2xl">{session.passphrase}</Text>
-              <Text type="supporting">
-                Read this out and display it. It is one signal among several and never proof
-                on its own.
-              </Text>
-            </>
-          ) : (
-            <>
-              <Stack direction="horizontal">
-                <Token label="none set" color="default" size="sm" />
-              </Stack>
-              <Text type="supporting">
-                No passphrase is configured for this session. That is legal: check-ins will
-                adjudicate as not_set rather than as failures.
-              </Text>
-              <Link href={`/sessions/${session.session_id}/edit`}>{"Set one"}</Link>
-            </>
-          )}
-        </Stack>
-      </Card>
 
       {template_blocked ? (
         <Banner
@@ -550,7 +662,21 @@ export function SessionDetail({
 
       <Card padding={5}>
         <Stack gap={3}>
-          <Heading level={2}>Part A — the mid-lesson form</Heading>
+          <Heading level={2}>Part A — exit ticket</Heading>
+          <Text type="supporting">
+            Released as the lesson ends. Submitting it inside the session window with the
+            Google-verified address is what records someone as present; the answers are
+            counted and read, never graded.
+          </Text>
+
+          {a_blocked ? (
+            <Banner
+              status="warning"
+              title="No questions for this session, so Part A cannot be provisioned"
+              description={a_questions.missing || `The ${session.cohort_id} cohort has no default exit ticket questions, and this session has none of its own.`}
+              endContent={<Button label="Set the cohort default" size="sm" href={a_questions.defaults_url} />}
+            />
+          ) : null}
 
           {ready && form_url ? (
             <>
@@ -573,6 +699,7 @@ export function SessionDetail({
                     {session.edit_url ? (
                       <Link href={session.edit_url} isExternalLink>{"Edit it in Google Forms"}</Link>
                     ) : null}
+                    <Link href={`/sessions/${session.session_id}/responses`}>{"See the answers"}</Link>
                   </Stack>
                   <MetadataList columns="single">
                     <MetadataListItem label="Form ID">
@@ -628,19 +755,28 @@ export function SessionDetail({
               label={ready ? 'Re-check provisioning' : 'Provision Part A'}
               variant="primary"
               type="submit"
-              isDisabled={Boolean(template_blocked)}
+              isDisabled={Boolean(template_blocked) || Boolean(a_blocked)}
             />
             <Button
               label="Dry run"
               type="submit"
               name="dry_run"
               value="1"
-              isDisabled={Boolean(template_blocked)}
+              isDisabled={Boolean(template_blocked) || Boolean(a_blocked)}
             />
           </PostForm>
           <Text type="supporting">
             Provisioning is safe to press twice: an existing form is shown, never duplicated.
+            Publishing it locks this session’s questions.
           </Text>
+
+          <Divider />
+
+          <PartAQuestions
+            questions={a_questions}
+            questionMap={a_question_map}
+            questionTypes={question_types}
+          />
         </Stack>
       </Card>
 
@@ -664,8 +800,8 @@ export function SessionDetail({
           <Heading level={2}>Announce</Heading>
           <Text>
             {session.announced_at_utc
-              ? `Announced at ${fmtStamp(session.announced_at_utc)}. Latency for every check-in in this session is measured from that moment.`
-              : 'Not announced yet. Until it is, latency is measured from the earliest matched submission instead — which means the first person to submit always reads zero.'}
+              ? `Announced at ${fmtStamp(session.announced_at_utc)}, when the exit ticket link went on screen. Latency for every check-in in this session is measured from that moment.`
+              : 'Press this when the exit ticket link goes on screen. Until it is pressed, latency is measured from the earliest submission instead — which means the first person to submit always reads zero.'}
           </Text>
           <PostForm action={`/sessions/${session.session_id}/announce`}>
             <Button

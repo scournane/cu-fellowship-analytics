@@ -11,7 +11,15 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from conftest import TEST_COHORT, TEST_TZ, count, make_fellow, make_session, write_csv
+from conftest import (
+    TEST_COHORT,
+    TEST_TZ,
+    count,
+    make_fellow,
+    make_session,
+    seed_part_a,
+    write_csv,
+)
 
 from cufa.ingest.common import assign_session, source_event_id
 from cufa.ingest.csv_path import MissingTimezone, ingest_csv
@@ -19,12 +27,15 @@ from cufa.ingest.forms_api import pull_session
 from cufa.provisioning import provision_session
 from cufa.timeutil import UTC, iso_utc, parse_local_naive, parse_rfc3339
 
-HEADERS = ["Timestamp", "Email Address", "Today's passphrase"]
+# The shape of a Sheets export of a hand-made exit ticket: two columns this
+# path understands, and one column per question, which it keeps verbatim.
+TAKEAWAY = "What was your biggest takeaway from Lesson 1?"
+HEADERS = ["Timestamp", "Email Address", TAKEAWAY]
 
 
 def _rows(*triples: tuple[str, str, str]) -> list[dict[str, str]]:
     return [
-        {"Timestamp": ts, "Email Address": email, "Today's passphrase": answer}
+        {"Timestamp": ts, "Email Address": email, TAKEAWAY: answer}
         for ts, email, answer in triples
     ]
 
@@ -37,8 +48,8 @@ def test_1_same_input_twice_writes_no_second_row(db, tmp_path):
     path = write_csv(
         tmp_path / "r.csv",
         _rows(
-            ("2026-09-15 19:20:00", "ada@example.invalid", "justice"),
-            ("2026-09-15 19:21:00", "bob@example.invalid", "justice"),
+            ("2026-09-15 19:20:00", "ada@example.invalid", "budgets"),
+            ("2026-09-15 19:21:00", "bob@example.invalid", "budgets"),
         ),
         HEADERS,
     )
@@ -65,15 +76,17 @@ def test_2_api_then_csv_does_not_duplicate(db, fake, verified_template, tmp_path
     result = provision_session(db, fake, session_id)
 
     # 19:20 America/New_York == 23:20Z on 2026-09-15 (EDT, UTC-4).
-    fake.seed_responses(
-        result.form_id, [("ada@example.invalid", "2026-09-15T23:20:00.482Z", "justice")]
-    )
+    seed_part_a(db, fake, result.form_id, [{
+        "email": "ada@example.invalid",
+        "submitted_at": "2026-09-15T23:20:00.482Z",
+        "answers": {"q_takeaway": "budgets"},
+    }])
     pull_session(db, fake, session_id)
     assert count(db, "checkin") == 1
 
     path = write_csv(
         tmp_path / "export.csv",
-        _rows(("2026-09-15 19:20:00", "ada@example.invalid", "justice")),
+        _rows(("2026-09-15 19:20:00", "ada@example.invalid", "budgets")),
         HEADERS,
     )
     csv_result = ingest_csv(db, path, TEST_COHORT, TEST_TZ)
@@ -86,9 +99,9 @@ def test_2_api_then_csv_does_not_duplicate(db, fake, verified_template, tmp_path
 # --- 3. row order ----------------------------------------------------------
 
 _ROWS_3 = (
-    ("2026-09-15 19:20:00", "ada@example.invalid", "justice"),
-    ("2026-09-15 19:21:00", "bob@example.invalid", "justice"),
-    ("2026-09-15 19:22:00", "cy@example.invalid", "justice"),
+    ("2026-09-15 19:20:00", "ada@example.invalid", "budgets"),
+    ("2026-09-15 19:21:00", "bob@example.invalid", "budgets"),
+    ("2026-09-15 19:22:00", "cy@example.invalid", "budgets"),
 )
 
 
@@ -154,7 +167,7 @@ def test_4b_conversion_is_recorded_for_audit(db, tmp_path):
     make_session(db, local=datetime(2026, 9, 15, 13, 0))
     path = write_csv(
         tmp_path / "r.csv",
-        _rows(("2026-09-15 13:05:00", "ada@example.invalid", "justice")),
+        _rows(("2026-09-15 13:05:00", "ada@example.invalid", "budgets")),
         HEADERS,
     )
     ingest_csv(db, path, TEST_COHORT, "America/New_York")
@@ -184,8 +197,8 @@ def test_5b_dst_rows_both_ingest(db, tmp_path):
     path = write_csv(
         tmp_path / "dst.csv",
         _rows(
-            ("2026-11-01 01:30:00", "ada@example.invalid", "justice"),
-            ("2026-11-01 03:30:00", "bob@example.invalid", "justice"),
+            ("2026-11-01 01:30:00", "ada@example.invalid", "budgets"),
+            ("2026-11-01 03:30:00", "bob@example.invalid", "budgets"),
         ),
         HEADERS,
     )
@@ -204,7 +217,7 @@ def test_5b_dst_rows_both_ingest(db, tmp_path):
 def test_6_missing_sheet_timezone_errors_and_names_the_flag(db, tmp_path):
     path = write_csv(
         tmp_path / "r.csv",
-        _rows(("2026-09-15 19:20:00", "ada@example.invalid", "justice")),
+        _rows(("2026-09-15 19:20:00", "ada@example.invalid", "budgets")),
         HEADERS,
     )
 
@@ -229,11 +242,11 @@ def test_7_session_assignment_matched_none_ambiguous_all_write_rows(db, tmp_path
         tmp_path / "r.csv",
         _rows(
             # 18:50 is inside Main's grace window only.
-            ("2026-09-15 18:50:00", "one@example.invalid", "justice"),
+            ("2026-09-15 18:50:00", "one@example.invalid", "budgets"),
             # 19:45 is inside both Main and Overlapping.
-            ("2026-09-15 19:45:00", "two@example.invalid", "justice"),
+            ("2026-09-15 19:45:00", "two@example.invalid", "budgets"),
             # The following afternoon is inside nothing.
-            ("2026-09-16 15:00:00", "three@example.invalid", "justice"),
+            ("2026-09-16 15:00:00", "three@example.invalid", "budgets"),
         ),
         HEADERS,
     )
@@ -262,8 +275,8 @@ def test_8_unknown_email_queues_for_review_and_still_writes(db, tmp_path):
     path = write_csv(
         tmp_path / "r.csv",
         _rows(
-            ("2026-09-15 19:20:00", "ada@example.invalid", "justice"),
-            ("2026-09-15 19:21:00", "stranger@example.invalid", "justice"),
+            ("2026-09-15 19:20:00", "ada@example.invalid", "budgets"),
+            ("2026-09-15 19:21:00", "stranger@example.invalid", "budgets"),
         ),
         HEADERS,
     )
@@ -288,9 +301,9 @@ def test_9_gmail_dots_and_plus_suffixes_are_preserved(db, tmp_path):
     path = write_csv(
         tmp_path / "r.csv",
         _rows(
-            ("2026-09-15 19:20:00", "a.b@gmail.com", "justice"),
-            ("2026-09-15 19:21:00", "ab+fellowship@gmail.com", "justice"),
-            ("2026-09-15 19:22:00", "AB@gmail.com", "justice"),
+            ("2026-09-15 19:20:00", "a.b@gmail.com", "budgets"),
+            ("2026-09-15 19:21:00", "ab+fellowship@gmail.com", "budgets"),
+            ("2026-09-15 19:22:00", "AB@gmail.com", "budgets"),
         ),
         HEADERS,
     )
@@ -317,14 +330,14 @@ def test_10_unexpected_column_is_preserved_not_dropped(db, tmp_path):
         [
             {
                 # Deliberately not the order the parser expects.
-                "Today's passphrase": "justice",
+                TAKEAWAY: "budgets",
                 "Device": "iPhone 14",
                 "Score": "7",
                 "Timestamp": "2026-09-15 19:20:00",
                 "Email Address": "ada@example.invalid",
             }
         ],
-        ["Today's passphrase", "Device", "Score", "Timestamp", "Email Address"],
+        [TAKEAWAY, "Device", "Score", "Timestamp", "Email Address"],
     )
     result = ingest_csv(db, path, TEST_COHORT, TEST_TZ)
 
@@ -332,6 +345,35 @@ def test_10_unexpected_column_is_preserved_not_dropped(db, tmp_path):
     extra = _all(db, "select extra_fields from checkin")[0]["extra_fields"]
     assert extra["Device"] == "iPhone 14"
     assert extra["Score"] == "7"
+    # Every question column is an answer, kept under the header it was asked as.
+    assert extra[TAKEAWAY] == "budgets"
+
+
+def test_10b_a_csv_row_has_no_answers_column_and_no_passphrase(db, tmp_path):
+    """A spreadsheet has no question ids, so nothing goes in `answers`.
+
+    Its answers live in extra_fields under their headers (test 10); `answers`
+    stays the empty object, `form_id` NULL, and the legacy passphrase columns
+    NULL — not an empty string that would read as "typed nothing".
+    """
+    make_session(db)
+    path = write_csv(
+        tmp_path / "r.csv",
+        _rows(("2026-09-15 19:20:00", "ada@example.invalid", "budgets")),
+        HEADERS,
+    )
+    ingest_csv(db, path, TEST_COHORT, TEST_TZ)
+
+    row = _all(
+        db,
+        "select answers, form_id, passphrase_raw, passphrase_match, edit_distance "
+        "from checkin",
+    )[0]
+    assert row["answers"] == {}
+    assert row["form_id"] is None
+    assert row["passphrase_raw"] is None
+    assert row["passphrase_match"] is None
+    assert row["edit_distance"] is None
 
 
 # --- supporting unit checks -------------------------------------------------
@@ -380,7 +422,7 @@ def test_unmatched_row_from_an_unknown_address_is_still_in_the_cohort_report(db,
     make_session(db, local=datetime(2026, 9, 15, 19, 0))
     path = write_csv(
         tmp_path / "r.csv",
-        _rows(("2026-11-30 09:00:00", "nobody@example.invalid", "justice")),
+        _rows(("2026-11-30 09:00:00", "nobody@example.invalid", "budgets")),
         HEADERS,
     )
     ingest_csv(db, path, TEST_COHORT, TEST_TZ)
@@ -409,7 +451,7 @@ def test_a_session_with_observations_cannot_be_deleted(db, tmp_path):
     session_id = make_session(db, local=datetime(2026, 9, 15, 19, 0))
     path = write_csv(
         tmp_path / "r.csv",
-        _rows(("2026-09-15 19:20:00", "a@example.invalid", "justice")),
+        _rows(("2026-09-15 19:20:00", "a@example.invalid", "budgets")),
         HEADERS,
     )
     ingest_csv(db, path, TEST_COHORT, TEST_TZ)

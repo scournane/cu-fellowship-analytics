@@ -10,12 +10,16 @@ things that are not `cufa` commands:
                     is a real gate rather than a formality: run the demo without
                     this step and provisioning is blocked, which is the point.
 
-  --seed-responses  fellows submitting the forms. Loads
+  --seed-responses  fellows submitting the exit ticket. Loads
                     fixtures/api_responses.json into the fake's provisioned
-                    forms, matched by session title.
+                    Part A forms, matched by session title. Answers are keyed
+                    by question KEY in the fixture and resolved to question ids
+                    through part_a_form_question — the table ingest resolves
+                    through — so they load whatever ids the copy ended up with.
 
-  --announce        the teacher pressing "Announce now" mid-lesson, stamped at
-                    the fixture time so latency is reproducible.
+  --announce        the teacher pressing "Announce now" when they share the
+                    link, stamped at the fixture time so latency is
+                    reproducible.
 
   --seed-responses-b  the same, for the end-of-session form. Answers are keyed
                     by SLOT and resolved to question ids through
@@ -91,11 +95,18 @@ def set_verified(part: str = "a") -> int:
 
 
 def seed_responses(fixtures_dir: Path) -> int:
-    """Load the fixture responses into each session's provisioned form."""
+    """Load the Part A fixture responses into each session's provisioned form.
+
+    The fixture keys answers by question KEY, because the id a question ends up
+    with is Google's to choose. Each key is resolved through the form's own
+    ``part_a_form_question`` rows, recorded when provisioning read the form
+    back. A key the form does not have is a fixture bug, not something to
+    paper over, so it stops the run.
+    """
     client = _client()
     payload = json.loads((fixtures_dir / "api_responses.json").read_text(encoding="utf-8"))
 
-    seeded = 0
+    seeded = skipped = 0
     with connection() as conn:
         for title, rows in payload.items():
             session = fetch_one(
@@ -110,49 +121,86 @@ def seed_responses(fixtures_dir: Path) -> int:
                 (title,),
             )
             if session is None:
-                log.warning("no provisioned form for session %r; skipping", title)
+                log.warning("no provisioned Part A form for session %r; skipping", title)
                 continue
 
             form_id = session["form_id"]
-            existing = {r.response_id for r in client.forms[form_id].responses}
-            fresh = [
-                {"email": row["email"], "submitted_at": row["submitted_at"],
-                 "passphrase": row["passphrase"]}
-                for row in rows
-            ]
-            if existing:
+            question_by_key = {
+                row["question_key"]: row["question_id"]
+                for row in fetch_all(
+                    conn,
+                    "select question_key, question_id from part_a_form_question "
+                    "where form_id = %s",
+                    (form_id,),
+                )
+            }
+            if not question_by_key:
+                log.warning("form %s has no Part A question map yet; skipping", form_id)
+                continue
+
+            if client.forms[form_id].responses:
                 # Re-running the demo must not stack duplicate responses inside
                 # the fake — the idempotency being demonstrated is the
                 # pipeline's, and pre-duplicated input would hide a real bug.
-                log.info("form %s already seeded (%d responses); skipping", form_id, len(existing))
+                skipped += 1
                 continue
-            client.seed_responses(form_id, fresh)
+
+            fresh = []
+            for row in rows:
+                missing = sorted(set(row["answers"]) - set(question_by_key))
+                if missing:
+                    raise SystemExit(
+                        f"fixture answers {', '.join(missing)} for {title!r}, but "
+                        f"form {form_id} has no such question. Regenerate the "
+                        "fixtures (`make fixtures`) and re-provision."
+                    )
+                fresh.append(
+                    {
+                        "respondent_email": row["email"],
+                        "create_time": row["submitted_at"],
+                        "answers": {
+                            question_by_key[key]: list(values)
+                            for key, values in row["answers"].items()
+                        },
+                    }
+                )
+
+            client.seed_answers(form_id, fresh)
             seeded += len(fresh)
 
-    print(f"[fellows submit] seeded {seeded} response(s) into the fake forms")
+    print(
+        f"[fellows submit] seeded {seeded} exit-ticket response(s) into the fake forms"
+        + (f"; {skipped} form(s) already had some" if skipped else "")
+    )
     return 0
 
 
 def announce(fixtures_dir: Path) -> int:
     """Stamp announced_at_utc for every session that has responses.
 
-    Uses the fixture's announcement instant (18 minutes into the lesson) rather
-    than "now", so latency values are reproducible across runs.
+    Uses the fixture's release instant rather than "now", so latency values are
+    reproducible across runs. Only responses that arrived after the link went
+    out count towards it: the one sent two days early, and the ones at the
+    window's edges, are there to test the window, not to date the release.
     """
     payload = json.loads((fixtures_dir / "api_responses.json").read_text(encoding="utf-8"))
     stamped = 0
     with connection() as conn:
         for title, rows in payload.items():
-            if not rows:
+            released = [
+                parse_rfc3339(row["submitted_at"])
+                for row in rows
+                if row.get("timing", "in_window") == "in_window"
+            ]
+            if not released:
                 continue
-            earliest = min(parse_rfc3339(row["submitted_at"]) for row in rows)
             session = fetch_one(
                 conn, 'select session_id from "session" where title = %s', (title,)
             )
             if session is None:
                 continue
-            # The fixture's first submission is 40 seconds after the announcement.
-            announce_now(conn, str(session["session_id"]), earliest - timedelta(seconds=40))
+            # The fixture's first submission is 40 seconds after the link went out.
+            announce_now(conn, str(session["session_id"]), min(released) - timedelta(seconds=40))
             stamped += 1
     print(f"[teacher announces] stamped announced_at_utc on {stamped} session(s)")
     return 0

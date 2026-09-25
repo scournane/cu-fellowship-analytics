@@ -1,7 +1,9 @@
-"""String normalization and edit distance for passphrase comparison.
+"""String normalization, email normalization and the idempotency hash.
 
-Normalization is shared by tier 1 and by the AI cache key, so a cache hit means
-the same comparison, not a coincidentally similar one.
+``normalize_answer`` is shared wherever two typed strings have to compare as
+the same text regardless of case, punctuation or a phone keyboard's smart
+characters — the Slack Q&A matcher uses it. ``normalize_email`` is the only
+address normalization in the codebase, and deliberately a minimal one.
 """
 
 from __future__ import annotations
@@ -39,43 +41,6 @@ def normalize_email(value: str | None) -> str:
     if not value:
         return ""
     return value.strip().casefold()
-
-
-def levenshtein(a: str, b: str, *, max_distance: int | None = None) -> int:
-    """Edit distance between two strings.
-
-    Implemented directly rather than pulled in as a dependency: it is twenty
-    lines, and every dependency is maintenance CU inherits without a data
-    manager to carry it.
-
-    ``max_distance`` short-circuits once every cell in a row exceeds the bound,
-    which is the only case tier 1 cares about.
-    """
-    if a == b:
-        return 0
-    if not a:
-        return len(b)
-    if not b:
-        return len(a)
-
-    if max_distance is not None and abs(len(a) - len(b)) > max_distance:
-        return max_distance + 1
-
-    previous = list(range(len(b) + 1))
-    for i, ca in enumerate(a, start=1):
-        current = [i]
-        for j, cb in enumerate(b, start=1):
-            current.append(
-                min(
-                    previous[j] + 1,        # deletion
-                    current[j - 1] + 1,     # insertion
-                    previous[j - 1] + (ca != cb),  # substitution
-                )
-            )
-        if max_distance is not None and min(current) > max_distance:
-            return max_distance + 1
-        previous = current
-    return previous[-1]
 
 
 def sha256_hex(*parts: str) -> str:

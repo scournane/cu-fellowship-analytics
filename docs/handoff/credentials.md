@@ -48,7 +48,7 @@ gitignored and must stay that way.
 | 13 | `GOOGLE_CLIENT_ID` | Google Cloud | APIs & Services → Credentials → the Web application OAuth client. | | New OAuth client. |
 | 14 | `GOOGLE_CLIENT_SECRET` | Google Cloud | Same OAuth client as #13. | | Credentials → the client → reset secret. |
 | 15 | `GOOGLE_OAUTH_REDIRECT_URI` | Google Cloud | Not a secret, but must match the registered URI **byte for byte**. Default `http://127.0.0.1:8000/google/callback`. | | n/a — but change it in both `.env` and the Cloud Console together. |
-| 16 | `GEMINI_API_KEY` | Google AI Studio | AI Studio → Get API key. Optional: without it the pipeline still finishes, and mismatches land in `needs_review` with `rule_name='ai_unavailable'`. | | Delete and re-issue in AI Studio. |
+| 16 | `GEMINI_API_KEY` | Google AI Studio | AI Studio → Get API key. Optional: it powers muddiest-point themes and the Slack Q&A summary, and both degrade with a clear message without it. Attendance never uses a model. | | Delete and re-issue in AI Studio. |
 | 17 | `SLACK_BOT_TOKEN` (`xoxb-…`) | Slack app | App → OAuth & Permissions → Bot User OAuth Token. Needed in **every** mode. | | OAuth & Permissions → Revoke, then reinstall the app. |
 | 18 | `SLACK_SIGNING_SECRET` | Slack app | App → Basic Information → Signing Secret. Verifies every inbound delivery; HTTP mode only (`cufa slack serve`). | | Basic Information → Regenerate. |
 | 19 | `SLACK_APP_TOKEN` (`xapp-…`) | Slack app | App → Basic Information → App-Level Tokens, scope `connections:write`. Socket Mode only (`cufa slack socket`) — the mode needing no public URL. | | Revoke the app-level token and mint a new one. |

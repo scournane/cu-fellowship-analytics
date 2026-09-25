@@ -12,6 +12,19 @@ Polling is incremental via ``filter=timestamp > <watermark>``. The watermark
 advances **only after a complete successful pass** over every page, so a failure
 halfway through re-reads rather than skipping — and re-reading is free, because
 ``source_event_id`` makes the writes idempotent.
+
+Part A is the exit ticket, so a response is several answers. They are stored
+**raw**: every value the API returned, keyed by ``questionId``, with the title
+the question had at the time — on the immutable check-in row, never joined and
+never resolved here. ``part_a_form_question`` turns ids into question keys at
+read time (``v_checkin_answer``). So a form with no recorded map is a warning,
+not a refusal: the answers are kept exactly as they arrived and resolve the
+moment the map is re-recorded. Refusing would lose nothing today and cost the
+attendance record for a whole session — the wrong way round for invariant 1.
+
+Nothing here reads what an answer *says*. Attendance is decided later from the
+verified address and the submit time; answers are counted and shown, never
+graded, and no model sees them.
 """
 
 from __future__ import annotations
@@ -22,9 +35,9 @@ from typing import Any
 
 import psycopg
 
-from ..config import Settings, get_settings
+from ..config import Settings
 from ..db import execute, fetch_all, fetch_one
-from ..google.base import PASSPHRASE_QUESTION_TITLE, FormsClient, GoogleApiError
+from ..google.base import FormResponse, FormsClient, GoogleApiError, ResponsePage
 from ..latency import recompute_for_session
 from ..logging_setup import get_logger
 from ..sessions import sessions_for_matching
@@ -32,7 +45,6 @@ from ..timeutil import iso_utc, parse_rfc3339
 from .common import (
     IngestResult,
     assign_session,
-    compare_passphrase,
     finish_load_run,
     resolve_identity,
     source_event_id,
@@ -45,21 +57,19 @@ log = get_logger(__name__)
 _MAX_RATE_LIMIT_RETRIES = 4
 
 
-def _answer_for_passphrase(answers: dict[str, str]) -> str:
-    """Find the passphrase answer without depending on exact question wording."""
-    if not answers:
-        return ""
-    wanted = PASSPHRASE_QUESTION_TITLE.casefold()
-    for title, value in answers.items():
-        if (title or "").casefold() == wanted:
-            return value or ""
-    for title, value in answers.items():
-        if "passphrase" in (title or "").casefold():
-            return value or ""
-    # A single-question form: whatever the one answer is, that is the answer.
-    if len(answers) == 1:
-        return next(iter(answers.values())) or ""
-    return ""
+def raw_answers(response: FormResponse, page: ResponsePage) -> dict[str, dict[str, Any]]:
+    """``{questionId: {"values": [...], "title": ...}}`` for one response.
+
+    Every value kept, in order, unjoined: a checkbox answer ticked three times
+    is three values, and "Budgets, taxes" stays distinguishable from "Budgets"
+    plus "taxes". The title is what the question was called when this page was
+    read — a snapshot that travels with the answer even if the map is missing.
+    """
+    titles = page.titles_by_id or {}
+    return {
+        question_id: {"values": list(values), "title": titles.get(question_id)}
+        for question_id, values in response.values_by_id().items()
+    }
 
 
 def list_with_backoff(
@@ -90,16 +100,19 @@ def pull_session(
     session_id: str,
     settings: Settings | None = None,
 ) -> IngestResult:
-    """Pull every new response for one provisioned session."""
-    settings = settings or get_settings()
+    """Pull every new response for one provisioned session.
+
+    ``settings`` is accepted for signature compatibility and not read.
+    """
     result = IngestResult()
 
     session_row = fetch_one(
         conn,
         """
         select s.session_id, s.cohort_id, s.title, s.scheduled_at_utc,
-               s.duration_minutes, s.grace_minutes, s.passphrase,
-               sf.form_id, sf.response_watermark, sf.publish_verified_at
+               s.duration_minutes, s.grace_minutes,
+               sf.form_id, sf.response_watermark, sf.publish_verified_at,
+               sf.question_set_id
           from "session" s
           join session_form sf
             on sf.session_id = s.session_id and sf.part = 'a'
@@ -122,6 +135,28 @@ def pull_session(
     watermark = session_row["response_watermark"]
     cohort_id = session_row["cohort_id"]
     sessions = sessions_for_matching(conn, cohort_id)
+
+    # The map is consulted only to warn. Answers are stored raw either way.
+    mapped = {
+        row["question_id"]
+        for row in fetch_all(
+            conn, "select question_id from part_a_form_question where form_id = %s", (form_id,)
+        )
+    }
+    if not mapped and session_row["question_set_id"] is None:
+        # A passphrase-era form: provisioned before question sets existed, so
+        # there is no set to map it against. Its answers keep their titles.
+        result.warnings.append(
+            f"session {session_id}: form {form_id} predates exit-ticket questions, so "
+            "its answers are stored by question id with the title each question had."
+        )
+    elif not mapped:
+        result.warnings.append(
+            f"session {session_id}: form {form_id} has no recorded question map, so "
+            "its answers are stored by question id and cannot be shown against their "
+            "questions yet. Nothing is lost: provision this session's Part A again to "
+            "re-record the map, and every stored answer resolves."
+        )
 
     load_id = start_load_run(
         conn, source="forms_api", origin=form_id, cohort_id=cohort_id
@@ -160,10 +195,17 @@ def pull_session(
                         "scheduled_at, duration_minutes and grace_minutes"
                     )
                 elif assignment.match == "none":
+                    # Expected, not an error: a fellow who opens the exit ticket
+                    # the next morning is exactly the case the window exists to
+                    # tell apart. The row is kept with the form's session and
+                    # attendance decides it (outside_session_window). Only when
+                    # *every* response is outside is the schedule worth a look.
                     result.warn(
-                        f"config error: responses on form {form_id} land outside "
-                        f"session {implied_session_id}'s own window — check "
-                        "scheduled_at, duration_minutes and grace_minutes",
+                        f"note: some responses on form {form_id} arrived outside "
+                        f"session {implied_session_id}'s window; they are kept and "
+                        "will be decided as outside the window (review them under "
+                        "“Outside the window”). If all of them are, check the "
+                        "session's scheduled time, duration and grace",
                         detail=f"(first seen at {iso})",
                     )
                 elif assignment.match == "ambiguous":
@@ -176,19 +218,19 @@ def pull_session(
                 effective_session_id = implied_session_id
                 effective_match = "matched"
 
-                passphrase_raw = _answer_for_passphrase(response.answers)
-                match, distance = compare_passphrase(
-                    session_row["passphrase"],
-                    passphrase_raw,
-                    max_edit_distance=settings.max_edit_distance,
-                    session_matched=True,
-                )
+                answers = raw_answers(response, page)
+                unmapped = sorted(set(answers) - mapped) if mapped else []
+                if unmapped:
+                    # A question somebody added in the Forms UI after
+                    # provisioning. Kept, and said out loud.
+                    result.warn(
+                        f"form {form_id} has answers to question(s) not in its map "
+                        f"({', '.join(unmapped)}); they are stored and shown by title"
+                    )
 
-                extra = {
-                    k: v
-                    for k, v in (response.answers or {}).items()
-                    if (k or "").casefold() != PASSPHRASE_QUESTION_TITLE.casefold()
-                }
+                # Only provenance goes here now. The answers themselves have a
+                # column of their own, keyed by question id.
+                extra: dict[str, Any] = {}
                 if response.response_id:
                     extra["_response_id"] = response.response_id
                 if assignment.match != "matched" or assignment.session_id != implied_session_id:
@@ -207,11 +249,10 @@ def pull_session(
                     source_timezone=None,  # already UTC; nothing was converted
                     session_id=effective_session_id,
                     session_match=effective_match,
-                    passphrase_raw=passphrase_raw,
-                    passphrase_match=match,
-                    edit_distance=distance,
                     extra_fields=extra,
                     load_id=load_id,
+                    form_id=form_id,
+                    answers=answers,
                 )
                 if written:
                     result.rows_written += 1

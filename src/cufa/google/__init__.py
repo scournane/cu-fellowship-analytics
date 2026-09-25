@@ -11,7 +11,6 @@ from .base import (
     ResponsePage,
     EMAIL_COLLECTION_VERIFIED,
     EMAIL_COLLECTION_RESPONDER_INPUT,
-    PASSPHRASE_QUESTION_TITLE,
     SCOPES,
 )
 
@@ -26,6 +25,5 @@ __all__ = [
     "ResponsePage",
     "EMAIL_COLLECTION_VERIFIED",
     "EMAIL_COLLECTION_RESPONDER_INPUT",
-    "PASSPHRASE_QUESTION_TITLE",
     "SCOPES",
 ]

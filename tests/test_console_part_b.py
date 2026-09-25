@@ -33,7 +33,7 @@ os.environ["CUFA_HELP_ALLOWLIST"] = "dop@example.invalid"
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from cufa import crypto  # noqa: E402
+from cufa import crypto, question_sets  # noqa: E402
 from cufa.config import reset_settings_cache  # noqa: E402
 from cufa.console.app import app  # noqa: E402
 from cufa.db import connection, execute, fetch_all, fetch_one  # noqa: E402
@@ -67,6 +67,7 @@ def _reset_google_state() -> None:
     fake_ids = "fake-form-%"
     with connection() as conn:
         execute(conn, "delete from form_question_map where form_id like %s", (fake_ids,))
+        execute(conn, "delete from part_a_form_question where form_id like %s", (fake_ids,))
         execute(
             conn,
             "delete from session_form sf using form_template ft "
@@ -99,6 +100,18 @@ def verified_both(fake: FakeGoogleClient) -> FakeGoogleClient:
     return fake
 
 
+#: Part A needs questions to provision; one is enough for these screens.
+ONE_QUESTION = {
+    "schema_version": 1,
+    "title": "Exit ticket",
+    "description": "",
+    "questions": [
+        {"key": "q_takeaway", "type": "short_answer", "title": "One thing you learned",
+         "description": "", "required": True}
+    ],
+}
+
+
 @pytest.fixture
 def cohort() -> str:
     cohort_id = f"test-{uuid.uuid4().hex[:8]}"
@@ -108,6 +121,7 @@ def cohort() -> str:
             "insert into cohort (cohort_id, label) values (%s, %s)",
             (cohort_id, "part b console cohort"),
         )
+        question_sets.save_default(conn, cohort_id, ONE_QUESTION, created_by=STAFF)
     return cohort_id
 
 
@@ -154,7 +168,6 @@ def make_session(
             "timezone": "America/New_York",
             "duration_minutes": "90",
             "grace_minutes": "15",
-            "passphrase": f"pass-{uuid.uuid4().hex[:6]}",
             "cohort_id": cohort_id,
             "week_index": week_index,
             "teacher_question": teacher_question,

@@ -872,11 +872,11 @@ footer p {{ margin:.35rem 0 }}
 <h2>Where the numbers come from</h2>
 <figure>
   {prov_table}
-  <p class="note">A source whose last run is old, or not <b>succeeded</b>, is the first thing to check when a number looks wrong. Part A decisions: {_n(t.get("by_rule"))} by rule, {_n(t.get("by_ai"))} by the AI tier, {_n(t.get("by_human"))} by a person.</p>
+  <p class="note">A source whose last run is old, or not <b>succeeded</b>, is the first thing to check when a number looks wrong. Part A decisions: {_n(t.get("by_rule"))} by rule, {_n(t.get("by_human"))} by a person{(", " + _n(t.get("by_ai")) + " by the retired AI tier (passphrase era)") if t.get("by_ai") else ""}.</p>
 </figure>
 
 <footer>
-  <p><b>What is counted.</b> Attendance is the current decision on each mid-session check-in: a rule, the AI tier for ambiguous passphrases, or a person, in that order of precedence, with a person's decision never overridden. Part B counts responses that arrived; free text is counted, never graded. Slack counts messages sent and reactions given; message text is not stored.</p>
+  <p><b>What is counted.</b> Attendance is the current decision on each Part A exit ticket. A rule reads two facts, a Google-verified address and a submission time inside the session window; a person's decision takes precedence and is never overridden. The exit-ticket answers take no part in it, and no model judges them. Part B counts responses that arrived; free text is counted, never graded. Slack counts messages sent and reactions given; message text is not stored.</p>
   <p><b>The attention index.</b> A triage order for staff, not a grade, not a prediction, and not a label that follows
      anybody. Its three components are printed beside it so it can be taken apart, its weights are named above, and a
      fellow never sees it. The help checkbox and assignment scores are excluded from it by test.</p>

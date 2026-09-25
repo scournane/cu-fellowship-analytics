@@ -173,10 +173,10 @@ def test_27e_pipeline_logs_carry_counts_not_addresses(db, tmp_path, caplog):
             {
                 "Timestamp": "2026-09-15 19:20:00",
                 "Email Address": "ada.lovelace@example.invalid",
-                "Today's passphrase": "justice",
+                "What stood out today?": "budgets",
             }
         ],
-        ["Timestamp", "Email Address", "Today's passphrase"],
+        ["Timestamp", "Email Address", "What stood out today?"],
     )
 
     configure_logging("INFO")

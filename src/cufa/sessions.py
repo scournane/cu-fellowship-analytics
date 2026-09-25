@@ -3,6 +3,13 @@
 The local wall-clock time and the IANA zone a human typed are stored alongside
 the UTC instant they produce. Keeping all three means a mistake is visible — if
 the zone was wrong, the local value still says what the person meant.
+
+The schedule is also what attendance is judged against: a Part A exit ticket
+counts when it comes from a verified address inside
+``[start - grace, end + grace]``, so fixing a session's time and re-running
+``cufa adjudicate`` re-judges its check-ins. There is no passphrase any more.
+The legacy ``session.passphrase`` column stays for passphrase-era history, and
+nothing here reads or writes it.
 """
 
 from __future__ import annotations
@@ -31,7 +38,6 @@ class SessionInput:
     timezone: str
     duration_minutes: int
     grace_minutes: int = 15
-    passphrase: str | None = None
 
     #: Which week of the fellowship this is. Drives Part B's rotating question,
     #: and is typed in rather than derived from the date — sessions get
@@ -71,10 +77,10 @@ def create_session(conn: psycopg.Connection, data: SessionInput) -> str:
         """
         insert into "session" (
             cohort_id, title, scheduled_at_local, timezone, scheduled_at_utc,
-            duration_minutes, grace_minutes, passphrase, week_index, teacher_question,
+            duration_minutes, grace_minutes, week_index, teacher_question,
             zoom_url, agenda, slack_channel_id
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         returning session_id
         """,
         (
@@ -85,7 +91,6 @@ def create_session(conn: psycopg.Connection, data: SessionInput) -> str:
             data.scheduled_at_utc(),
             data.duration_minutes,
             data.grace_minutes,
-            (data.passphrase or "").strip() or None,
             data.week_index,
             (data.teacher_question or "").strip() or None,
             zoom_url,
@@ -111,7 +116,6 @@ def update_session(conn: psycopg.Connection, session_id: str, data: SessionInput
                scheduled_at_utc = %s,
                duration_minutes = %s,
                grace_minutes = %s,
-               passphrase = %s,
                week_index = %s,
                teacher_question = %s,
                zoom_url = %s,
@@ -127,7 +131,6 @@ def update_session(conn: psycopg.Connection, session_id: str, data: SessionInput
             data.scheduled_at_utc(),
             data.duration_minutes,
             data.grace_minutes,
-            (data.passphrase or "").strip() or None,
             data.week_index,
             (data.teacher_question or "").strip() or None,
             zoom_url,
@@ -184,7 +187,7 @@ def list_sessions(conn: psycopg.Connection, cohort_id: str | None = None) -> lis
         """
         select s.session_id, s.cohort_id, s.title, s.scheduled_at_local, s.timezone,
                s.scheduled_at_utc, s.duration_minutes, s.grace_minutes,
-               s.passphrase, s.announced_at_utc, s.week_index, s.teacher_question,
+               s.announced_at_utc, s.week_index, s.teacher_question,
                s.zoom_url, s.agenda, s.slack_channel_id,
                fa.form_id, fa.form_url, fa.publish_verified_at,
                fb.form_id             as b_form_id,
@@ -234,7 +237,7 @@ def sessions_for_matching(conn: psycopg.Connection, cohort_id: str) -> list[dict
         conn,
         """
         select session_id, cohort_id, title, scheduled_at_utc,
-               duration_minutes, grace_minutes, passphrase, announced_at_utc,
+               duration_minutes, grace_minutes, announced_at_utc,
                week_index, teacher_question, zoom_url, agenda, slack_channel_id
           from "session"
          where cohort_id = %s

@@ -41,7 +41,7 @@ def main() -> int:
 
     with connection() as conn:
         # 1. Never drop a submission. Every fixture response is in `checkin`,
-        #    whatever its passphrase or session outcome — minus the one
+        #    whatever its answers, timing or session outcome — minus the one
         #    deliberate duplicate, which is there to prove idempotency.
         actual = (fetch_one(conn, "select count(*) as n from checkin") or {})["n"]
         expected = manifest["expected_checkin_rows"]
@@ -106,20 +106,8 @@ def main() -> int:
                 f"{matches.get(kind, 0)} rows",
             )
 
-        # 5. Every passphrase comparison outcome appears.
-        outcomes = {
-            row["passphrase_match"]: row["n"]
-            for row in fetch_all(
-                conn,
-                "select passphrase_match, count(*) as n from checkin group by passphrase_match",
-            )
-        }
-        for kind in ("exact", "fuzzy", "mismatch", "not_set", "no_session"):
-            check(
-                f"passphrase_match '{kind}' present",
-                outcomes.get(kind, 0) > 0,
-                f"{outcomes.get(kind, 0)} rows",
-            )
+        # 5. Part A, the exit ticket.
+        part_a_checks(conn, check, args.cohort, manifest, Path(args.fixtures))
 
         # 6. An unknown address did not block ingest and did reach the queue.
         unresolved = (
@@ -437,6 +425,183 @@ def main() -> int:
         return 1
     print("all acceptance checks passed")
     return 0
+
+
+def part_a_checks(conn, check, cohort: str, manifest: dict, fixtures: Path) -> None:
+    """Attendance is a verified address inside the window; the questions are
+    whatever that session's form asked, recorded when it was provisioned."""
+
+    # 5a. Every outcome the rules can reach was reached, and by exactly as many
+    #     check-ins as the fixture says. A count, not just presence: a rule that
+    #     fires on the wrong rows would still be "present".
+    rules = {
+        row["rule_name"]: row["n"]
+        for row in fetch_all(
+            conn,
+            """
+            select d.rule_name, count(*) as n
+              from attendance_decision d
+             where d.superseded_at is null and d.decided_by = 'rule'
+             group by d.rule_name
+            """,
+        )
+    }
+    for rule, expected in manifest["expected_rules"].items():
+        check(
+            f"rule '{rule}' decided {expected} check-in(s)",
+            rules.get(rule, 0) == expected,
+            f"{rules.get(rule, 0)} rows",
+        )
+    unexpected = sorted(
+        f"{rule or '(none)'}={n}"
+        for rule, n in rules.items()
+        if rule not in manifest["expected_rules"]
+    )
+    check(
+        "no decision came from a rule the fixture does not expect",
+        not unexpected,
+        ", ".join(unexpected),
+    )
+
+    # 5b. The API path keeps what the fellow answered, on the immutable row,
+    #     keyed by the form it came from.
+    missing = (
+        fetch_one(
+            conn,
+            """
+            select count(*) as n from checkin
+             where source = 'forms_api'
+               and (form_id is null or answers = '{}'::jsonb)
+            """,
+        )
+        or {}
+    )["n"]
+    check(
+        "every API check-in has a form_id and its answers",
+        missing == 0,
+        f"{missing} without",
+    )
+
+    # 5c. Every Part A form records which question set it was built from, so
+    #     "what did week 3 ask" is answerable from the database alone.
+    unset = (
+        fetch_one(
+            conn,
+            """
+            select count(*) as n from session_form
+             where part = 'a' and question_set_id is null
+            """,
+        )
+        or {}
+    )["n"]
+    check("every Part A form names its question set", unset == 0, f"{unset} without")
+
+    # 5c'. Attendance rests on the address being Google-verified, and that is a
+    #      property of each copy, not only of the template. Read back per form.
+    unverified_email = (
+        fetch_one(
+            conn,
+            """
+            select count(*) as n from session_form
+             where part = 'a' and email_collection_verified_at is null
+            """,
+        )
+        or {}
+    )["n"]
+    check(
+        "every Part A form was read back as collecting Verified email",
+        unverified_email == 0,
+        f"{unverified_email} not confirmed",
+    )
+
+    # 5d. Session 3 was customised before it was published. Its form must ask
+    #     the override's questions, in the override's order, with the lesson
+    #     number filled in — and nothing from the default it replaced.
+    meta = manifest["part_a_questions"]
+    override = json.loads((fixtures / meta["override_file"]).read_text(encoding="utf-8"))
+    session = fetch_one(
+        conn,
+        """
+        select s.session_id, s.title, s.week_index, sf.form_id, sf.question_set_id
+          from "session" s
+          join session_form sf on sf.session_id = s.session_id and sf.part = 'a'
+         where s.cohort_id = %s and s.week_index = %s
+        """,
+        (cohort, meta["override_week"]),
+    )
+    if session is None:
+        check(f"week {meta['override_week']} has a provisioned Part A form", False)
+    else:
+        mapped = fetch_all(
+            conn,
+            """
+            select question_key, question_text
+              from part_a_form_question
+             where form_id = %s
+             order by item_index
+            """,
+            (session["form_id"],),
+        )
+
+        def rendered(text: str) -> str:
+            return text.replace("{lesson}", str(session["week_index"])).replace(
+                "{session_title}", session["title"]
+            )
+
+        answerable = [
+            q for q in override["questions"] if q["type"] not in ("section", "text")
+        ]
+        check(
+            "Session 3's form asks its override's questions, in order",
+            [r["question_key"] for r in mapped] == [q["key"] for q in answerable],
+            ", ".join(r["question_key"] for r in mapped),
+        )
+        check(
+            "Session 3's recorded question text has the placeholders filled in",
+            [r["question_text"] for r in mapped]
+            == [rendered(q["title"]) for q in answerable],
+        )
+        current = fetch_one(
+            conn,
+            """
+            select question_set_id from part_a_question_set
+             where session_id = %s and superseded_at is null
+            """,
+            (session["session_id"],),
+        )
+        check(
+            "Session 3's form was built from its current override",
+            bool(current)
+            and str(current["question_set_id"]) == str(session["question_set_id"]),
+        )
+
+    # 5e. Seeding the same file again, and setting the same override again, is
+    #     a no-op. The demo does both; each set must still have ONE version.
+    versions = {
+        row["scope"]: row["n"]
+        for row in fetch_all(
+            conn,
+            """
+            select case when session_id is null then 'default' else 'override' end
+                       as scope,
+                   count(*) as n
+              from part_a_question_set
+             where cohort_id = %s
+             group by 1
+            """,
+            (cohort,),
+        )
+    }
+    check(
+        "re-seeding the default created no new version",
+        versions.get("default") == 1,
+        f"{versions.get('default', 0)} version(s)",
+    )
+    check(
+        "the refused late edit created no new version of Session 3",
+        versions.get("override") == 1,
+        f"{versions.get('override', 0)} version(s)",
+    )
 
 
 if __name__ == "__main__":

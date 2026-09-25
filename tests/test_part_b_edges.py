@@ -785,7 +785,6 @@ def test_one_blocked_session_does_not_stop_the_rest_of_the_cohort(db, capsys):
             local=SESSION_LOCAL + timedelta(weeks=week),
             week_index=week,
             teacher_question=None,  # only week 1 actually needs one
-            passphrase=f"p{week}",
         )
     db.commit()
 
@@ -826,10 +825,9 @@ def test_a_failure_partway_through_a_batch_does_not_orphan_earlier_forms(db, cap
     fake = _fake()
     _template(db, fake)
     # Week 3 is fine and comes first by date; week 4 needs a question and does not.
-    make_session(db, title="First", local=SESSION_LOCAL, week_index=3,
-                 passphrase="p1")
+    make_session(db, title="First", local=SESSION_LOCAL, week_index=3)
     make_session(db, title="Second", local=SESSION_LOCAL + timedelta(weeks=1),
-                 week_index=4, teacher_question=None, passphrase="p2")
+                 week_index=4, teacher_question=None)
     db.commit()
 
     assert main(["provision", "--cohort", TEST_COHORT, "--part", "b"]) == 1

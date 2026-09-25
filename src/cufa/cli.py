@@ -355,6 +355,8 @@ def cmd_load_sessions(args: argparse.Namespace) -> int:
     with connection() as conn:
         summary = load_sessions(conn, args.csv)
     print(f"sessions: {summary}")
+    for warning in summary.warnings:
+        print(f"WARNING: {warning}", file=sys.stderr)
     return 0
 
 
@@ -363,7 +365,6 @@ def cmd_load_sessions(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------
 
 def cmd_session(args: argparse.Namespace) -> int:
-    from .passphrase import GUIDANCE, check_reuse, suggest
     from .sessions import (
         SessionInput,
         announce_now,
@@ -372,12 +373,6 @@ def cmd_session(args: argparse.Namespace) -> int:
         list_sessions,
         update_session,
     )
-
-    if args.session_action == "suggest-passphrase":
-        for word in suggest(args.count):
-            print(word)
-        print(f"\n{GUIDANCE}", file=sys.stderr)
-        return 0
 
     if args.session_action == "list":
         with connection() as conn:
@@ -412,7 +407,6 @@ def cmd_session(args: argparse.Namespace) -> int:
             timezone=args.timezone,
             duration_minutes=args.duration,
             grace_minutes=args.grace,
-            passphrase=args.passphrase,
             week_index=args.week,
             teacher_question=args.teacher_question,
             zoom_url=args.zoom_url,
@@ -420,18 +414,10 @@ def cmd_session(args: argparse.Namespace) -> int:
             slack_channel_id=args.slack_channel,
         )
         with connection() as conn:
-            warnings = check_reuse(conn, args.cohort, args.passphrase)
-            if warnings and not args.allow_reuse:
-                for warning in warnings:
-                    print(f"WARNING: {warning.message()}", file=sys.stderr)
-                print("Refusing to save. Pass --allow-reuse to override.", file=sys.stderr)
-                return 1
             try:
                 session_id = create_session(conn, data)
             except ValueError as exc:
                 raise CufaError(str(exc)) from None
-        for warning in warnings:
-            print(f"WARNING: {warning.message()}", file=sys.stderr)
         print(session_id)
         return 0
 
@@ -441,28 +427,17 @@ def cmd_session(args: argparse.Namespace) -> int:
             if existing is None:
                 raise CufaError(f"No session with id {args.session}")
 
-            # Every field is optional: editing only the passphrase should not
+            # Every field is optional: editing only the title should not
             # require re-typing the schedule, and re-typing it is how a time
-            # gets changed by accident.
+            # gets changed by accident — which, now that the schedule is what
+            # attendance is judged against, would move every decision with it.
             local_raw = args.scheduled_at
             local = (
                 datetime.fromisoformat(local_raw)
                 if local_raw
                 else existing["scheduled_at_local"]
             )
-            passphrase = (
-                existing["passphrase"] if args.passphrase is None else args.passphrase
-            )
             cohort_id = existing["cohort_id"]
-
-            warnings = check_reuse(
-                conn, cohort_id, passphrase, exclude_session_id=args.session
-            )
-            if warnings and not args.allow_reuse:
-                for warning in warnings:
-                    print(f"WARNING: {warning.message()}", file=sys.stderr)
-                print("Refusing to save. Pass --allow-reuse to override.", file=sys.stderr)
-                return 1
 
             try:
                 update_session(
@@ -479,7 +454,6 @@ def cmd_session(args: argparse.Namespace) -> int:
                             if args.grace is None
                             else args.grace
                         ),
-                        passphrase=passphrase,
                         week_index=(
                             existing["week_index"] if args.week is None else args.week
                         ),
@@ -505,8 +479,6 @@ def cmd_session(args: argparse.Namespace) -> int:
                 )
             except ValueError as exc:
                 raise CufaError(str(exc)) from None
-        for warning in warnings:
-            print(f"WARNING: {warning.message()}", file=sys.stderr)
         print(f"updated {_session_id(args.session)}")
         return 0
 
@@ -777,24 +749,55 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------
 
 def cmd_adjudicate(args: argparse.Namespace) -> int:
-    """Run the decision tiers over a cohort.
+    """Run the timing rules over a cohort.
 
-    Exits zero even when tier 2 was unavailable: that case is a completed run
-    whose undecidable rows are in needs_review, not a failure.
+    ``--no-ai`` is accepted and ignored with a notice: no model takes part in
+    attendance any more, and a scheduled job that still passes the flag should
+    keep working rather than fail on an unknown option.
+
+    ``--redecide-legacy`` says how many passphrase-era decisions it is about to
+    re-judge *before* it touches any, the same way ``--force`` names every
+    human decision it overwrites.
     """
-    from .adjudicate.engine import adjudicate_cohort
+    from .adjudicate.engine import adjudicate_cohort, legacy_counts
+
+    if args.no_ai:
+        print(
+            "note: --no-ai is no longer needed and is ignored — no model takes "
+            "part in attendance decisions.",
+            file=sys.stderr,
+        )
 
     with connection() as conn:
+        if args.redecide_legacy:
+            counts = legacy_counts(conn, args.cohort)
+            reached = counts["total"] - (0 if args.force else counts["human"])
+            by = [f"{counts['rule']} by rule", f"{counts['ai']} by the AI tier"]
+            if args.force:
+                by.append(f"{counts['human']} by a person")
+            print(
+                f"--redecide-legacy: re-judging {reached} passphrase-era "
+                f"check-in(s) by timing ({', '.join(by)})."
+            )
+            if counts["human"] and not args.force:
+                print(
+                    f"  {counts['human']} passphrase-era decision(s) made by a "
+                    "person are kept; only --force reaches those."
+                )
         result = adjudicate_cohort(
-            conn, args.cohort, use_ai=not args.no_ai, force=args.force
+            conn,
+            args.cohort,
+            force=args.force,
+            redecide_legacy=args.redecide_legacy,
         )
     print(f"adjudicate: {result}")
     for warning in result.warnings:
         print(f"  {warning}")
-    if result.ai_unavailable:
+    if result.legacy_frozen:
         print(
-            f"  note: {result.ai_unavailable} case(s) went to needs_review because "
-            "tier 2 was unavailable. The pipeline completed."
+            f"  note: {result.legacy_frozen} passphrase-era check-in(s) kept the "
+            "decision they already had. Pass --redecide-legacy to re-judge them "
+            "by timing."
         )
     return 0
 
@@ -817,25 +820,50 @@ def cmd_decide(args: argparse.Namespace) -> int:
     if before:
         print(
             f"superseding: status={before['status']} by={before['decided_by']} "
-            f"rule={before['rule_name']} ai={before['ai_model']}"
+            f"rule={before['rule_name']}"
+            + (f" ai={before['ai_model']}" if before.get("ai_model") else "")
         )
     print(f"checkin {checkin_id} -> {args.status} (human)")
     return 0
 
 
-def cmd_review(args: argparse.Namespace) -> int:
-    """Print one of the three review queues.
+_SOURCE_LABEL = {
+    "forms_api": "Google Form (verified address)",
+    "csv": "sheet export (address not verified)",
+}
 
-    The `ai` queue matters as much as `needs_review`: tier 2 has to be auditable
-    by a person sampling its judgments, not trusted because it is a model.
+
+def cmd_review(args: argparse.Namespace) -> int:
+    """Print one of the review queues.
+
+    ``needs_review`` is what the rules could not decide: a sheet-export row
+    whose address Google did not verify, a timestamp inside two overlapping
+    windows. ``outside-window`` is what they decided at 0.6 because of when a
+    response arrived — most often a session time entered wrongly, which is why
+    it gets a queue of its own.
+
+    Each row says where it falls against the window ("12 min after the
+    window") and how many exit-ticket questions were answered. A count, never
+    the answers: they take no part in attendance, and a reviewer should not be
+    reading them while deciding it.
+
+    ``ai`` lists the passphrase era's AI decisions, kept for audit.
     """
-    from .report import ai_decisions, needs_review_queue, unresolved_identities
+    from .report import (
+        ai_decisions,
+        needs_review_queue,
+        outside_window_queue,
+        timing_phrase,
+        unresolved_identities,
+    )
 
     with connection() as conn:
         if args.status == "ai":
             rows = ai_decisions(conn, args.cohort)
         elif args.status == "unresolved-identity":
             rows = unresolved_identities(conn, args.cohort)
+        elif args.status == "outside-window":
+            rows = outside_window_queue(conn, args.cohort)
         else:
             rows = needs_review_queue(conn, args.cohort)
 
@@ -843,12 +871,15 @@ def cmd_review(args: argparse.Namespace) -> int:
         for row in rows:
             print(
                 f"{row['checkin_id']}  {row['session_title'] or '(no session)'}\n"
-                f"    typed:      {row['passphrase_raw']!r}\n"
+                f"    timing:     {timing_phrase(row)}\n"
                 f"    status:     {row['status']} (confidence {row['confidence']})\n"
                 f"    model:      {row['ai_model']} prompt={row['ai_prompt_version']}\n"
                 f"    reasoning:  {row['ai_reasoning']}\n"
             )
-        print(f"{len(rows)} AI decision(s). Spot-check these; do not assume them.")
+        print(
+            f"{len(rows)} passphrase-era AI decision(s), kept for audit. No model "
+            "decides attendance now."
+        )
         return 0
 
     if args.status == "unresolved-identity":
@@ -861,14 +892,28 @@ def cmd_review(args: argparse.Namespace) -> int:
         return 0
 
     for row in rows:
+        why = row["rule_name"] or row["ai_reasoning"] or "(no reason recorded)"
+        if row.get("note") and row["rule_name"]:
+            why = f"{why} ({row['note']})"
+        if row.get("passphrase_match") is not None:
+            why = f"{why} [passphrase era]"
         print(
             f"{row['checkin_id']}  {row['submitted_at_utc']}  "
             f"{row['session_title'] or '(no session)'}\n"
             f"    fellow:  {row['full_name'] or '(not on roster)'}\n"
-            f"    typed:   {row['passphrase_raw']!r}  match={row['passphrase_match']}\n"
-            f"    why:     {row['rule_name'] or row['ai_reasoning'] or '(no reason recorded)'}\n"
+            f"    source:  {_SOURCE_LABEL.get(row['source'], row['source'])}\n"
+            f"    timing:  {row['timing']}\n"
+            f"    answers: {row['answered']}\n"
+            f"    why:     {why}\n"
         )
-    print(f"{len(rows)} check-in(s) need review, oldest first.")
+    if args.status == "outside-window":
+        print(
+            f"{len(rows)} check-in(s) marked not attended because of when they "
+            "arrived, oldest first. Check the session's time before assuming "
+            "the fellow was absent."
+        )
+    else:
+        print(f"{len(rows)} check-in(s) need review, oldest first.")
     return 0
 
 
@@ -1510,8 +1555,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cufa",
         description=(
-            "Civic Innovators Fellowship — mid-session passphrase check-in "
-            "(part a) and end-of-session check-in (part b)."
+            "Civic Innovators Fellowship — exit ticket (part a: attendance "
+            "+ reflection) and end-of-session check-in (part b)."
         ),
     )
     parser.add_argument("--version", action="version", version=f"cufa {__version__}")
@@ -1538,7 +1583,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "template_action", choices=["create", "verify", "status", "replace"]
     )
-    p.add_argument("--part", default="a", choices=["a", "b"], help="a = mid-session passphrase check-in, b = end-of-session check-in. Each part has its own template and its own form per session.")
+    p.add_argument("--part", default="a", choices=["a", "b"], help="a = exit ticket (attendance + reflection), b = end-of-session check-in. Each part has its own template and its own form per session.")
     p.set_defaults(func=cmd_template)
 
     p = sub.add_parser("load-roster", help="load fellows from CSV")
@@ -1561,9 +1606,15 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--scheduled-at", required=True, help="local time, e.g. 2026-09-15T19:00")
     q.add_argument("--timezone", required=True, help="IANA name, e.g. America/New_York")
     q.add_argument("--duration", type=int, required=True)
-    q.add_argument("--grace", type=int, default=15)
-    q.add_argument("--passphrase", default=None)
-    q.add_argument("--allow-reuse", action="store_true", help="save despite a reuse warning")
+    q.add_argument(
+        "--grace",
+        type=int,
+        default=15,
+        help=(
+            "minutes added to BOTH ends of the session; an exit ticket counts "
+            "when submitted inside [start - grace, end + grace]"
+        ),
+    )
     q.add_argument(
         "--week",
         type=int,
@@ -1593,8 +1644,6 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--timezone", default=None)
     q.add_argument("--duration", type=int, default=None)
     q.add_argument("--grace", type=int, default=None)
-    q.add_argument("--passphrase", default=None)
-    q.add_argument("--allow-reuse", action="store_true")
     q.add_argument("--week", type=int, default=None)
     q.add_argument("--teacher-question", default=None)
     q.add_argument("--zoom-url", default=None)
@@ -1608,8 +1657,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="ISO-8601 instant WITH offset, e.g. 2026-09-27T23:18:00+00:00. Defaults to now.",
     )
-    q = sp.add_parser("suggest-passphrase")
-    q.add_argument("--count", type=int, default=5)
     p.set_defaults(func=cmd_session)
 
     p = sub.add_parser("assignment", help="cohort assignments and due dates")
@@ -1643,14 +1690,14 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("provision", help="create the Google Form for a session")
     p.add_argument("--session", default=None)
     p.add_argument("--cohort", default=None, help="provision every session in a cohort")
-    p.add_argument("--part", default="a", choices=["a", "b"], help="a = mid-session passphrase check-in, b = end-of-session check-in. Each part has its own template and its own form per session.")
+    p.add_argument("--part", default="a", choices=["a", "b"], help="a = exit ticket (attendance + reflection), b = end-of-session check-in. Each part has its own template and its own form per session.")
     p.add_argument("--dry-run", action="store_true", help="log the calls without making them")
     p.set_defaults(func=cmd_provision)
 
     p = sub.add_parser("pull", help="pull responses via the Forms API")
     p.add_argument("--session", default=None)
     p.add_argument("--cohort", default=None)
-    p.add_argument("--part", default="a", choices=["a", "b"], help="a = mid-session passphrase check-in, b = end-of-session check-in. Each part has its own template and its own form per session.")
+    p.add_argument("--part", default="a", choices=["a", "b"], help="a = exit ticket (attendance + reflection), b = end-of-session check-in. Each part has its own template and its own form per session.")
     p.set_defaults(func=cmd_pull)
 
     p = sub.add_parser("ingest", help="fallback CSV ingest")
@@ -1665,15 +1712,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.set_defaults(func=cmd_ingest)
 
-    p = sub.add_parser("adjudicate", help="run the decision tiers over a cohort")
+    p = sub.add_parser(
+        "adjudicate", help="judge a cohort's check-ins: verified address + inside the window"
+    )
     p.add_argument("--cohort", required=True)
-    p.add_argument("--no-ai", action="store_true", help="skip tier 2 entirely")
+    p.add_argument(
+        "--no-ai",
+        action="store_true",
+        help="accepted and ignored: no model takes part in attendance any more",
+    )
     p.add_argument(
         "--force", action="store_true", help="also overwrite HUMAN decisions (loudly)"
     )
+    p.add_argument(
+        "--redecide-legacy",
+        action="store_true",
+        help=(
+            "re-judge passphrase-era check-ins that already have a decision, by "
+            "timing; says how many first. Human decisions still need --force"
+        ),
+    )
     p.set_defaults(func=cmd_adjudicate)
 
-    p = sub.add_parser("decide", help="human override (tier 3)")
+    p = sub.add_parser("decide", help="human decision; always wins over a rule")
     p.add_argument("--checkin", required=True)
     p.add_argument("--status", required=True, choices=["attended", "not_attended", "needs_review"])
     p.add_argument("--by", required=True, help="the deciding person's email")
@@ -1684,7 +1745,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--status",
         default="needs_review",
-        choices=["needs_review", "ai", "unresolved-identity"],
+        choices=["needs_review", "outside-window", "ai", "unresolved-identity"],
     )
     p.add_argument("--cohort", default=None)
     p.set_defaults(func=cmd_review)
@@ -1815,6 +1876,10 @@ def build_parser() -> argparse.ArgumentParser:
     from .cli_slack import add_parsers as _add_bot_parsers
 
     _add_bot_parsers(sub, slack_sub=sp, assignment_sub=assignment_sp)
+
+    from .cli_questions import add_parsers as _add_questions_parsers
+
+    _add_questions_parsers(sub)  # dispatches through set_defaults(func=...)
 
     return parser
 

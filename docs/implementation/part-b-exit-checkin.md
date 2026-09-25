@@ -1,6 +1,7 @@
 # Implementation Prompt: Part B — End-of-Session Check-in
 
-**This builds on Part A.** See `docs/implementation/part-a-passphrase-checkin.md`.
+**This builds on Part A.** See `docs/implementation/part-a-passphrase-checkin.md`
+(since superseded: Part A is now the exit ticket, ADR-037 to ADR-040).
 Part A's console, Google OAuth, template-and-copy provisioning, Supabase schema,
 adjudication tiers, and test harness already exist. Extend them. Do not rebuild
 them, and do not fork a parallel set of tables or a second web app.

@@ -445,7 +445,7 @@ def test_19_no_report_or_participation_query_reads_help_request(db):
     straightliners(recording, TEST_COHORT)
     review_queue(recording, TEST_COHORT)
     themes_for(recording, session_id)
-    adjudicate_cohort(recording, TEST_COHORT, use_ai=False)
+    adjudicate_cohort(recording, TEST_COHORT)
 
     # The HTML report, and each query only it makes.
     from cufa.report_html import (
@@ -827,6 +827,11 @@ FELLOW_DATA_TABLES = (
     "google_credential",
     "fellow_reminder_preference",
     "bot_delivery",
+    # Staff-written rather than fellow data, but they sit one join away from
+    # check-in answers (v_checkin_answer) and follow the same everything-off
+    # rule until CU decides otherwise.
+    "part_a_question_set",
+    "part_a_form_question",
 )
 
 

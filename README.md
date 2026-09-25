@@ -3,17 +3,23 @@
 Two forms per live lesson for the Civics Unplugged Civic Innovators Fellowship,
 and a Slack bot plus staff dashboard built on what those forms record.
 
-**Part A** goes out **mid-lesson** and proves someone was there: a
-**Google-verified email**, a **timestamp**, and a **session passphrase** the
-teacher says aloud and puts on screen.
+**Part A is the exit ticket.** Its questions are CU's own week-1 exit ticket
+by default — name, a 1–5 rating of the session, the biggest takeaway, what to
+see more and less of, open questions, other feedback — and staff can edit the
+default, or customise one session, until that session's form is published.
+Submitting it is also the attendance record: a **Google-verified email** and a
+**submit time inside the session window**. The answers are collected and
+counted, and never used to decide attendance.
 
 **Part B** goes out at the **end** and measures what landed: a 1–7 confidence
 rating, a one-sentence takeaway, one question that rotates weekly, an optional
 peer shoutout, and an optional "I'd like someone to check in with me" checkbox.
 
-They are two forms because they are released at two different moments, and one
-form cannot be both. A fellow may answer one and not the other — both are valid
-data, and neither is ever used to fill in the other.
+They are two forms because they do different jobs. Part A's questions belong to
+staff and change when staff want them to; Part B's are fixed, in a
+research-backed order, so its numbers compare week to week. A fellow may answer
+one and not the other — both are valid data, and neither is ever used to fill in
+the other.
 
 **The Slack bot** sits on the same database. Fellows get reminders they control
 (24 h / 1 h / 10 min, with the Zoom link, in their own time zone), private badge
@@ -36,9 +42,22 @@ signed into Zoom. For an unauthenticated joiner the entire record is a
 self-typed display name and a duration. Renaming yourself, or joining and
 walking away, produces a record identical to real attendance.
 
-A form released 15–25 minutes in proves something Zoom cannot: the fellow was
-present at a moment they could not have predicted. The passphrase is what makes
-that provable — a timestamp on its own is satisfied by an idle open tab.
+A form with Google-verified email collection proves something Zoom cannot:
+which Google account submitted it, and when. Attendance is that address plus a
+submit time inside the session window — scheduled start minus the grace minutes
+to scheduled end plus the grace minutes, inclusive.
+
+That is weaker evidence than it sounds, and weaker than what came before. It
+shows the fellow's account submitted the form while the lesson was on; it does
+not show the fellow was watching. The link left open in an idle tab satisfies
+it, and so does the link forwarded to someone who was not there. Part A used to
+close part of that gap with a passphrase the teacher said aloud — never all of
+it, since a spoken and displayed word reaches anyone who can see a fellow's
+screen — at the cost of a word to choose every week, fuzzy matching, a model to
+read the answers matching could not, and a review queue for the rest. CU chose
+the exit ticket over the passphrase knowing this. Attendance is decided at
+confidence 0.7 rather than 1.0 to say so, and it is one of three participation
+signals, never a verdict on its own (ADR-037).
 
 The full reasoning, and every alternative rejected, is in
 [`docs/decisions.md`](docs/decisions.md).
@@ -89,22 +108,29 @@ the [Supabase CLI](https://supabase.com/docs/guides/local-development/cli/gettin
 ### What the demo actually does
 
 1. Resets the database and generates deterministic fixtures — 20 invented
-   fellows on `@example.invalid`, 11 sessions, 100 Part A responses covering 19
-   edge cases and 83 Part B responses covering 57 field combinations.
-2. Creates **both** template forms, and for each one **proves `template verify`
+   fellows on `@example.invalid`, 11 sessions, 98 Part A responses and 6 rows of
+   a hand-made form's CSV export covering 23 cases, and 83 Part B responses
+   covering 57 field combinations.
+2. Seeds the cohort's default exit ticket from
+   `config/part_a_default_questions.json`, seeds it again to show that writes no
+   new version, and **customises Session 3** — one question added (checkboxes,
+   with *Other*), one removed, one moved.
+3. Creates **both** template forms, and for each one **proves `template verify`
    blocks** before a human sets email collection to Verified, performs that step,
    and verifies. The manual step is per part, because email collection lives on
    a form and is carried only by a Drive copy.
-3. Prints the rotation schedule, then **proves provisioning refuses** a
+4. Prints the rotation schedule, then **proves provisioning refuses** a
    teacher-question week with no question set — no generic substitute.
-4. Provisions two forms per session — copy, set content, publish, **read the
-   publish state back and assert it**, and for Part B **read the question ids
-   back and record the map**.
-5. Pulls Part A through the Forms API, then imports a manually created form's
+5. Provisions two forms per session — copy, write the questions, publish, **read
+   the publish state and Verified email back and assert them**, and **read the
+   question ids back and record the map** — then **proves Session 3's questions
+   are locked** now its form is published.
+6. Pulls Part A through the Forms API, then imports a manually created form's
    CSV export through the fallback path.
-6. Seeds the end-of-session responses, then **proves ingest refuses** a form
-   whose question map is incomplete, repairs it by re-provisioning, and pulls.
-7. Adjudicates Part A with tier 1 only, clusters muddiest-point themes
+7. Seeds the end-of-session responses, then **proves ingest refuses** a Part B
+   form whose question map is incomplete, repairs it by re-provisioning, and
+   pulls.
+8. Adjudicates Part A by address and timing, clusters muddiest-point themes
    (degrading cleanly with no `GEMINI_API_KEY`), prints the reports, and runs
    the acceptance checks.
 
@@ -113,8 +139,8 @@ the [Supabase CLI](https://supabase.com/docs/guides/local-development/cli/gettin
 ```
 python tasks.py demo-console   # demo data plus the web console, zero Google calls
 python tasks.py demo-again     # re-run over the same database, to show idempotency
-python tasks.py demo-ai        # tier 2 live; skips with a message if no GEMINI_API_KEY
-python tasks.py test           # 597 tests, no network
+python tasks.py demo-ai        # the demo, then muddiest-point themes live; skips without GEMINI_API_KEY
+python tasks.py test           # the whole suite, no network
 python tasks.py clean          # stop Supabase, remove generated fixtures
 ```
 
@@ -165,27 +191,32 @@ and the database. Configuration and operating commands are in the
 ## How it works
 
 ```
-  staff fill in a session  ─────►  console  ─────►  Google Form (provisioned,
-  (title, time, passphrase)                          published, verified)
-                                                            │
-  teacher says the passphrase aloud AND shows it             │ fellows submit
-  on screen, then presses "Announce now"                     ▼
-                                                    forms.responses.list
+  staff fill in a session  ─────►  console  ─────►  Google Form (copied, questions
+  (title, time, week)                                written, published, verified)
+  default or custom questions                               │
+  (editable until published)                                │
+                                                            │ fellows submit
+  teacher shares the link — QR on screen AND in             ▼
+  the Zoom chat — then presses "Announce now"      forms.responses.list
                                                             │
                                                             ▼
-                                          checkin  ── immutable observation
-                                                            │
-                                       ┌────────────────────┼────────────────────┐
-                                       ▼                    ▼                    ▼
-                                 tier 1: rules      tier 2: Gemini        tier 3: a human
-                                 (exact / fuzzy /   (only mismatch-       (always wins)
-                                  not_set /          in-window cases)
-                                  no_session)
-                                       └────────────────────┼────────────────────┘
+                                          checkin  ── immutable observation:
+                                                            │  verified email, time,
+                                                            │  raw answers by questionId
+                                       ┌────────────────────┴────────────────────┐
+                                       ▼                                         ▼
+                                 rules: verified address,                 a human
+                                 submit time inside the                   (always wins)
+                                 session window?
+                                       └────────────────────┬────────────────────┘
                                                             ▼
                                               attendance_decision
                                           append-only, versioned, provenanced
 ```
+
+The rules never read the answers. They are kept exactly as Google returned
+them, keyed by question id, and resolved to the questions they answered only
+when something reads them (`v_checkin_answer`) — counted, never graded.
 
 The load-bearing separation is between the two tables. **`checkin` is what was
 observed** and is immutable — a database trigger refuses every update to an
@@ -199,13 +230,13 @@ evidence it was applied to.
 
 ### Design invariants
 
-1. **Never drop a submission.** A wrong passphrase, an unknown address, a
-   timestamp outside every window — all recorded, with the reason. A dropped row
-   is an unrecoverable observation, and it hides exactly the cases worth
-   looking at.
+1. **Never drop a submission.** A blank answer, an unknown address, a
+   timestamp outside every window, an answer to a question nobody mapped — all
+   recorded, with the reason. A dropped row is an unrecoverable observation, and
+   it hides exactly the cases worth looking at.
 2. **The observation is separate from the decision.** See above.
-3. **Every decision carries its provenance** — which rule, which model, which
-   human, and when.
+3. **Every decision carries its provenance** — which rule, judged against
+   which window, which human, and when.
 4. **A human override always wins**, and is never silently overwritten.
    `--force` overrides that and names exactly what it is about to destroy.
 5. **Ingest is idempotent**, including across both ingestion paths.
@@ -254,7 +285,7 @@ in `src/cufa/google/`, `template.py`, `provisioning.py` or `question_map.py`.
 | 2 | `emailCollectionType: VERIFIED` is rejected by `batchUpdate` with a 400 | One template form; a human sets Verified by hand once; the API confirms it before anything proceeds; each session form is a Drive `files.copy` of that template. Re-verified on **every** provisioning run. |
 | 3 | No REST equivalent of `Form.setDestination()`, so there is no linked Sheet to export | Read `forms.responses.list` directly — `respondentEmail` plus RFC3339 UTC, which removes the Sheets timezone trap entirely. Incremental via a watermark that advances only after a complete pass. |
 | 4 | A service account cannot own a Google Form | User OAuth, exactly two scopes, refresh token encrypted at rest. The forms end up in a CU staff member's Drive, which is where CU wants them. |
-| 5 | Responses are keyed by `questionId`, and `files.copy` **preserves** them — so every form copied from one template answers under the *same* ids, and the rotating slot's id is identical in week 2 and week 5 | Nothing is assumed. Each Part B form is read back with `forms.get` after it is built and the `questionId` → slot map recorded **per form**, with the exact question text snapshotted; slots are matched by **item index**, never by title. A form whose map is missing or incomplete **refuses to ingest**. Measured against a live account in August 2026; the fake reproduces both possible behaviours and the suite still runs the mapping tests under each. |
+| 5 | Responses are keyed by `questionId`, and `files.copy` **preserves** them — so every form copied from one template answers under the *same* ids, and the rotating slot's id is identical in week 2 and week 5 | Nothing is assumed. Each Part B form is read back with `forms.get` after it is built and the `questionId` → slot map recorded **per form**, with the exact question text snapshotted; slots are matched by **item index**, never by title. A form whose map is missing or incomplete **refuses to ingest**. Part A records the same kind of map per form, but keeps each answer raw under its `questionId` and resolves it at read time, so there a missing map is a warning, never a dropped check-in (ADR-039). Measured against a live account in August 2026; the fake reproduces both possible behaviours and the suite still runs the mapping tests under each. |
 | 6 | `updateItem` with only the field named in `updateMask` is rejected — the body must describe the whole item, or Google reads it as turning a question into a text block | Both requests are built from one shared item body (`ItemSpec`). Part B retitles the rotating slot on every provision, so this broke Part B entirely while Part A — which always sent a full body — kept working. The fake now raises the same 400, so every Part B test exercises the correct shape. |
 
 ---
@@ -272,14 +303,15 @@ cufa google connect | status | disconnect
 cufa template create | verify | status | replace   [--part a|b]
 cufa load-roster    --csv <path> --cohort <id>
 cufa load-sessions  --csv <path>
-cufa session        list | create | edit | announce | suggest-passphrase
+cufa session        list | create | edit | announce
+cufa questions      show | seed-default | import-form | set | revert | export
 cufa rotation       [--cohort <id>] [--from-week N] [--weeks N]
 cufa provision      --session <id> | --cohort <id> [--part a|b] [--dry-run]
 cufa pull           --session <id> | --cohort <id> [--part a|b]
 cufa ingest part-a  --csv <path> --cohort <id> --sheet-timezone <IANA>
-cufa adjudicate     --cohort <id> [--no-ai] [--force]
+cufa adjudicate     --cohort <id> [--force] [--redecide-legacy]
 cufa decide         --checkin <id> --status <s> --by <email> --note "<text>"
-cufa review         [--status needs_review | ai | unresolved-identity]
+cufa review         [--status needs_review | outside-window | ai | unresolved-identity]
 cufa themes         --session <id> [--regenerate]
 cufa shoutouts      review | link --shoutout <id> --fellow <id> --by <email>
 cufa help-requests  list | ack --id <id> --by <email> --note "<text>" | close
@@ -296,34 +328,43 @@ cufa zoom           ingest --session <id> --vtt <file> | share --session <id>
 machine's zone. A Sheets export writes wall-clock times with no offset marker,
 so guessing shifts every check-in by hours without failing.
 
+`cufa questions` edits Part A's questions: `--cohort` for the default, `--session`
+for one session's override. `set` takes a JSON file in the shape of
+`config/part_a_default_questions.json`; `export` writes one out to edit;
+`import-form` reads the questions off an existing Google Form; `revert` sends a
+session back to the default. Every save is a new version, the old one kept, and
+a session's set cannot change once its Part A form is published.
+
 ---
 
 ## Adjudication
 
-Tier 1 is deterministic and decides everything it can:
+Rules decide what they can, and a human decides the rest. No model takes part
+(ADR-040): every decision is reproducible from the row and the schedule alone.
 
 | Observation | Decision | Rule | Confidence |
 |---|---|---|---|
-| `exact` in window | attended | `exact_match` | 1.0 |
-| `fuzzy` (Levenshtein ≤ 1) in window | attended | `fuzzy_match` | 0.9 |
-| `not_set` in window | attended | `no_passphrase_required` | 0.7 |
-| no session matched | not attended | `outside_all_windows` | 0.6 |
-| `mismatch` in window | → tier 2 | — | — |
+| Forms API, inside the form's session window | attended | `verified_email_in_window` | 0.7 |
+| Forms API, outside that window | not attended | `outside_session_window` | 0.6 |
+| CSV, inside exactly one window | needs review | `unverified_email_in_window` | — |
+| CSV, inside no window | not attended | `outside_all_windows` | 0.6 |
+| CSV, inside two overlapping windows | needs review | `ambiguous_session` | — |
 
-Fuzzy is on by default because the passphrase is *heard aloud* and typed on a
-phone. Rejecting `justise` for `justice` penalises someone who was in the room
-and heard it, which is backwards from the intent.
+The window is `[scheduled start − grace, scheduled end + grace]`, inclusive at
+both ends, read from the session as it is scheduled **now** — so fixing a
+wrongly entered time and re-running `cufa adjudicate` re-judges, and each
+decision's note names the window it was judged against. The answers are never
+read: a blank, one-word or off-topic reflection from someone in the window is
+someone in the window.
 
-Tier 2 exists only for what edit distance genuinely cannot read —
-`"the word was justice"`, `"justice i think?"`, `"jushtis"`, `"sorry I missed
-it"`. It is sent **two strings and nothing else**: the expected passphrase and
-the submitted answer. No names, no addresses, no history. Narrower context is
-better privacy and better accuracy at once.
+A CSV row is never attended on its own, because a hand-made form's export
+cannot show that Google verified the address. Outside-the-window decisions have
+their own review tab, since the commonest cause is a session time entered
+wrongly rather than a fellow who was absent. **`needs_review` is never turned
+into `not_attended`** — absent evidence is not evidence of absence.
 
-Without a key, without a network, or out of quota, tier 2 degrades to
-`needs_review` with `rule_name='ai_unavailable'` and the pipeline finishes.
-**`needs_review` is never turned into `not_attended`** — absent evidence is not
-evidence of absence.
+Check-ins from the passphrase era keep the decisions they were given;
+`--redecide-legacy` re-judges them by timing.
 
 ---
 
@@ -428,11 +469,16 @@ person who restarts it.
 
 ## Accessibility
 
-The passphrase must be **said aloud AND displayed on screen**. Audio-only
-excludes deaf and hard-of-hearing fellows, and anyone whose audio drops. This
-widens who could copy the word down, which is exactly why the passphrase is one
-signal among several and never proof on its own. The console says this on the
-session screen, not only here.
+Share the exit ticket's link **both ways: a QR code on screen AND the link in
+the Zoom chat**. A QR code alone excludes anyone on a phone that is also their
+Zoom screen, and anyone using a screen reader; a chat link alone misses anyone
+who joined after it was posted. The console says this on the session screen,
+not only here.
+
+The window's grace minutes are also an accessibility setting. A fellow who
+types slowly, uses assistive technology, or finishes after the lesson ends must
+still land inside `end + grace`; the week-1 form stayed open ten minutes after
+the lesson, which the default of 15 covers.
 
 ---
 
@@ -462,21 +508,22 @@ because a plausible-looking guess in any of them quietly becomes the policy.
 | Document | What it is for |
 |---|---|
 | [`docs/setup/local-dev.md`](docs/setup/local-dev.md) | Docker, Supabase, Studio, make targets, SQL snippets |
-| [`docs/setup/console.md`](docs/setup/console.md) | Running the console, connecting Google, the one manual step |
+| [`docs/setup/console.md`](docs/setup/console.md) | Running the console, connecting Google, the one manual step, editing the exit ticket |
 | [`docs/setup/google-cloud.md`](docs/setup/google-cloud.md) | Enabling the APIs, the OAuth client, the exact scopes |
 | [`docs/setup/part-b-form.md`](docs/setup/part-b-form.md) | The end-of-session form, its own Verified step, the rotation, what a teacher prepares |
 | [`docs/setup/slack-bot.md`](docs/setup/slack-bot.md) | The Slack bot: app setup, scopes, every command, the tick, the dashboards, aliases, Zoom transcripts, retention, the funnel |
 | [`docs/safeguarding.md`](docs/safeguarding.md) | The help-request path — **written for CU staff, not engineers** |
-| [`docs/google-api-traps.md`](docs/google-api-traps.md) | The five traps — **read this before touching the Google code** |
-| [`docs/decisions.md`](docs/decisions.md) | 36 ADRs: what was decided, what was rejected, and why |
+| [`docs/google-api-traps.md`](docs/google-api-traps.md) | The six traps — **read this before touching the Google code** |
+| [`docs/decisions.md`](docs/decisions.md) | 40 ADRs: what was decided, what was rejected, and why |
 | [`docs/handoff/credentials.md`](docs/handoff/credentials.md) | Every account, key and secret — the handover checklist |
 
 ---
 
 ## Scope
 
-**Part A** — verified email, timestamp, passphrase — and **Part B** — confidence,
-takeaway, a rotating question, a peer shoutout, and the help checkbox.
+**Part A** — the exit ticket: verified email and submit time for attendance,
+plus the questions staff set — and **Part B** — confidence, takeaway, a rotating
+question, a peer shoutout, and the help checkbox.
 
 **The Slack bot and dashboards** — reminders, badges, the check-in button,
 staff commands, session summaries, the weekly digest, roster alerts, aliases,

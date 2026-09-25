@@ -54,7 +54,53 @@ function DecideForm({checkinId, tab, cohort, withNote}) {
   )
 }
 
-function NeedsReview({rows, expected, tab, cohort}) {
+/** "12 min", "3 h", "2 days" — a gap a reviewer can take in at a glance. */
+function gap(minutes) {
+  if (minutes < 120) return `${minutes} min`
+  if (minutes < 48 * 60) return `${Math.round(minutes / 60)} h`
+  return `${Math.round(minutes / (24 * 60))} days`
+}
+
+function timingText(row) {
+  const t = row.timing || {}
+  if (t.relation === 'before') return `${gap(t.minutes)} before the window`
+  if (t.relation === 'after') return `${gap(t.minutes)} after the window`
+  if (t.relation === 'inside') return 'inside the window'
+  return row.session_id ? 'window not known' : 'inside no session’s window'
+}
+
+/** "answered 5 of 8": how much of the exit ticket came back. A count, never a
+ *  judgement — a one-word answer and an essay both count once. */
+function answeredText(row) {
+  if (row.questions_answered === null || row.questions_answered === undefined) return null
+  if (row.answer_total === null || row.answer_total === undefined) {
+    return `answered ${row.questions_answered}`
+  }
+  return `answered ${row.questions_answered} of ${row.answer_total}`
+}
+
+/** When it arrived against the session window, and how much was answered. */
+function Timing({row}) {
+  const answered = answeredText(row)
+  return (
+    <Stack gap={0.5}>
+      <Text type="supporting">{fmtStamp(row.submitted_at_utc)}</Text>
+      <Token
+        label={timingText(row)}
+        color={row.timing && row.timing.relation === 'inside' ? 'green' : 'orange'}
+        size="sm"
+      />
+      {answered ? <Text type="supporting">{answered}</Text> : null}
+    </Stack>
+  )
+}
+
+const RULE_LABEL = {
+  outside_session_window: 'outside its session’s window',
+  outside_all_windows: 'inside no session’s window',
+}
+
+function NeedsReview({rows, tab, cohort}) {
   if (!rows.length) return <Empty title="Nothing is waiting for a human" />
   return (
     <Stack gap={2}>
@@ -63,7 +109,7 @@ function NeedsReview({rows, expected, tab, cohort}) {
           <TableHeaderCell>Who</TableHeaderCell>
           <TableHeaderCell>Session</TableHeaderCell>
           <TableHeaderCell>Submitted</TableHeaderCell>
-          <TableHeaderCell>Passphrase</TableHeaderCell>
+          <TableHeaderCell>Why it is here</TableHeaderCell>
           <TableHeaderCell>Decide</TableHeaderCell>
         </TableRow>
         {rows.map((row) => (
@@ -84,25 +130,16 @@ function NeedsReview({rows, expected, tab, cohort}) {
               </Stack>
             </TableCell>
             <TableCell>
-              <Stack gap={0.5}>
-                <Text type="supporting">{fmtStamp(row.submitted_at_utc)}</Text>
-                {row.latency_seconds !== null && row.latency_seconds !== undefined ? (
-                  <Text type="supporting">{row.latency_seconds}s after T0</Text>
-                ) : null}
-              </Stack>
+              <Timing row={row} />
             </TableCell>
             <TableCell>
               <Stack gap={0.5}>
-                <Text type="supporting">typed: <Text type="code">{row.passphrase_raw || '(blank)'}</Text></Text>
+                <Text type="code">{row.rule_name || '—'}</Text>
                 <Text type="supporting">
-                  expected: <Text type="code">{expected[String(row.session_id)] || '—'}</Text>
+                  {row.source === 'csv'
+                    ? 'CSV export — the address was typed, not confirmed by Google'
+                    : 'the form — address confirmed by Google'}
                 </Text>
-                <Stack direction="horizontal" gap={1} align="center" wrap="wrap">
-                  <Token label={row.passphrase_match} color="default" size="sm" />
-                  {row.edit_distance !== null && row.edit_distance !== undefined ? (
-                    <Text type="supporting">distance {row.edit_distance}</Text>
-                  ) : null}
-                </Stack>
                 {row.ai_reasoning ? (
                   <Text type="supporting">model said: {row.ai_reasoning}</Text>
                 ) : null}
@@ -122,13 +159,68 @@ function NeedsReview({rows, expected, tab, cohort}) {
   )
 }
 
-function AiDecisions({rows, expected, tab, cohort}) {
+/** Submitted, but not while the lesson was on.
+ *
+ *  Recorded as not attended by the rules, with less than full confidence, and
+ *  listed here so a person can see how far out each one was. A fellow who
+ *  filled it in the next morning was probably not in the room; one who was
+ *  three minutes late with a slow connection probably was — the timing is
+ *  shown so that call is made by someone, rather than by the cut-off.
+ */
+function OutsideWindow({rows, tab, cohort}) {
+  if (!rows.length) return <Empty title="Nothing arrived outside a session window" />
+  return (
+    <Stack gap={2}>
+      <Table density="compact" dividers="rows">
+        <TableRow isHeaderRow>
+          <TableHeaderCell>Who</TableHeaderCell>
+          <TableHeaderCell>Session</TableHeaderCell>
+          <TableHeaderCell>Submitted</TableHeaderCell>
+          <TableHeaderCell>Recorded as</TableHeaderCell>
+          <TableHeaderCell>Override</TableHeaderCell>
+        </TableRow>
+        {rows.map((row) => (
+          <TableRow key={row.checkin_id}>
+            <TableCell>
+              <Stack gap={0.5}>
+                {row.full_name ? <Text>{row.full_name}</Text> : null}
+                <Text type="code">{row.submitted_email}</Text>
+                {!row.fellow_id ? <Token label="not on the roster" color="orange" size="sm" /> : null}
+              </Stack>
+            </TableCell>
+            <TableCell>
+              <Text type="supporting">{row.session_title || 'no session matched'}</Text>
+            </TableCell>
+            <TableCell>
+              <Timing row={row} />
+            </TableCell>
+            <TableCell>
+              <Stack gap={0.5}>
+                <StatusToken value={row.status} fallback="orange" />
+                <Text type="supporting">{RULE_LABEL[row.rule_name] || row.rule_name}</Text>
+                <Text type="supporting">confidence {row.confidence}</Text>
+              </Stack>
+            </TableCell>
+            <TableCell>
+              <DecideForm checkinId={row.checkin_id} tab={tab} cohort={cohort} withNote />
+            </TableCell>
+          </TableRow>
+        ))}
+      </Table>
+      <Text type="supporting">
+        Overriding one takes it off this list: it is then your decision, not the rule’s, and
+        no later automated pass changes it.
+      </Text>
+    </Stack>
+  )
+}
+
+function AiDecisions({rows, tab, cohort}) {
   if (!rows.length) return <Empty title="No AI decisions recorded yet" />
   return (
     <Table density="compact" dividers="rows">
       <TableRow isHeaderRow>
         <TableHeaderCell>Who</TableHeaderCell>
-        <TableHeaderCell>Typed / expected</TableHeaderCell>
         <TableHeaderCell>Verdict</TableHeaderCell>
         <TableHeaderCell>Reasoning</TableHeaderCell>
         <TableHeaderCell>Model</TableHeaderCell>
@@ -140,12 +232,6 @@ function AiDecisions({rows, expected, tab, cohort}) {
             <Stack gap={0.5}>
               <Text type="supporting">{row.full_name || row.submitted_email}</Text>
               <Text type="supporting">{row.session_title || '—'}</Text>
-            </Stack>
-          </TableCell>
-          <TableCell>
-            <Stack gap={0.5}>
-              <Text type="code">{row.passphrase_raw || '(blank)'}</Text>
-              <Text type="code">{expected[String(row.session_id)] || '—'}</Text>
             </Stack>
           </TableCell>
           <TableCell>
@@ -250,22 +336,31 @@ function Identities({rows}) {
 }
 
 // One table per tab: the link label, the sentence above the table, and the
-// table itself. Adding a fourth tab is one entry here, not an entry plus a
-// blurb plus another arm of a ternary.
+// table itself. Adding a tab is one entry here, not an entry plus a blurb plus
+// another arm of a ternary. `legacyOnly` tabs appear only while there is
+// something from before the change to show.
 const TABS = [
   {
     value: 'needs_review',
     label: 'Needs review',
     Body: NeedsReview,
     blurb:
-      'Oldest first — the longest-waiting judgment is the most overdue. Needs review is not “did not attend.” Absent evidence is not evidence of absence, so nothing here has been counted either way.',
+      'Oldest first — the longest-waiting judgment is the most overdue. Mostly check-ins from a CSV export, whose address was typed rather than confirmed by Google, and ones that fit two sessions at once. Needs review is not “did not attend”: nothing here has been counted either way.',
+  },
+  {
+    value: 'outside_window',
+    label: 'Outside the window',
+    Body: OutsideWindow,
+    blurb:
+      'Exit tickets submitted before a session’s window opened or after it closed (the scheduled time, widened by the grace minutes on both sides). The rules recorded them as not attended, with confidence below 1, and they are listed with how far out they were so a person can correct the ones that were plainly there.',
   },
   {
     value: 'ai',
     label: 'AI decisions',
     Body: AiDecisions,
+    legacyOnly: true,
     blurb:
-      'Every decision the model made, with the reasoning it gave. This tab exists so a person can sample the model’s judgment rather than trust it. Overriding one here supersedes it permanently.',
+      'Decisions a model made while check-ins were judged by passphrase. That tier is retired and makes no new decisions; these are kept, with the reasoning given, so they can still be read and overridden.',
   },
   {
     value: 'straightlining',
@@ -286,13 +381,14 @@ const TABS = [
 export function Review({
   tab = 'needs_review',
   rows = [],
-  expected = {},
+  has_ai_decisions = false,
   cohorts = [],
   selected_cohort,
   straightline_note,
   notice,
 }) {
-  const current = TABS.find((t) => t.value === tab) ?? TABS[0]
+  const tabs = TABS.filter((t) => !t.legacyOnly || has_ai_decisions)
+  const current = tabs.find((t) => t.value === tab) ?? tabs[0]
   const Body = current.Body
 
   return (
@@ -301,7 +397,7 @@ export function Review({
       <Notices notice={notice} />
 
       <TabList value={current.value} hasDivider>
-        {TABS.map((t) => (
+        {tabs.map((t) => (
           <Tab
             key={t.value}
             value={t.value}
@@ -323,7 +419,6 @@ export function Review({
 
       <Body
         rows={rows}
-        expected={expected}
         tab={current.value}
         cohort={selected_cohort}
         note={straightline_note}

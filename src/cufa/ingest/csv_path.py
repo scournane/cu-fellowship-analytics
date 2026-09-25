@@ -12,6 +12,14 @@ So ``--sheet-timezone`` is mandatory and has **no default**. Not UTC, not the
 machine's local zone. Defaulting it would make the most dangerous case — an
 operator who did not think about it — the silent one. The raw string and the
 zone that was applied are both stored, so any conversion can be re-derived.
+
+Only two columns mean anything to this path: the address and the timestamp.
+Every other column — each exit-ticket question the hand-made form asked — is
+kept verbatim in ``extra_fields`` under its header. A spreadsheet has no
+question ids, so there is nothing to put in ``answers`` and nothing to resolve
+through a map; the header *is* the question as it was asked. And an address a
+fellow typed into a hand-made form is not a Google-verified one, which is why
+attendance treats CSV rows as needing a human look rather than as proof.
 """
 
 from __future__ import annotations
@@ -23,7 +31,7 @@ from typing import Any
 
 import psycopg
 
-from ..config import Settings, get_settings
+from ..config import Settings
 from ..errors import CufaError
 from ..latency import recompute_for_session
 from ..logging_setup import get_logger
@@ -32,7 +40,6 @@ from ..timeutil import parse_local_naive
 from .common import (
     IngestResult,
     assign_session,
-    compare_passphrase,
     finish_load_run,
     origin_key_for_session,
     resolve_identity,
@@ -62,12 +69,6 @@ MISSING_TIMEZONE_MESSAGE = (
 # recognised is preserved into extra_fields rather than dropped.
 _EMAIL_HEADERS = ("email address", "email", "respondent email", "username")
 _TIMESTAMP_HEADERS = ("timestamp", "submitted at", "submission time", "date")
-_PASSPHRASE_HEADERS = (
-    "today's passphrase",
-    "todays passphrase",
-    "passphrase",
-    "today’s passphrase",
-)
 
 
 class MissingTimezone(CufaError):
@@ -99,11 +100,12 @@ def ingest_csv(
     ``sheet_timezone`` being None raises rather than defaulting — see the module
     docstring. Every row produces a check-in, including rows with a blank
     answer, an unknown address, or a timestamp in no session's window.
+
+    ``settings`` is accepted for signature compatibility and not read.
     """
     if not sheet_timezone or not str(sheet_timezone).strip():
         raise MissingTimezone()
 
-    settings = settings or get_settings()
     file_path = Path(path)
     raw_bytes = file_path.read_bytes()
     digest = hashlib.sha256(raw_bytes).hexdigest()
@@ -128,7 +130,6 @@ def ingest_csv(
 
         email_col = _find(headers, _EMAIL_HEADERS)
         timestamp_col = _find(headers, _TIMESTAMP_HEADERS)
-        passphrase_col = _find(headers, _PASSPHRASE_HEADERS)
 
         if not email_col or not timestamp_col:
             raise CufaError(
@@ -140,7 +141,6 @@ def ingest_csv(
             result.rows_read += 1
             email = (row.get(email_col) or "").strip()
             raw_timestamp = (row.get(timestamp_col) or "").strip()
-            passphrase_raw = (row.get(passphrase_col) or "").strip() if passphrase_col else ""
 
             if not email or not raw_timestamp:
                 result.rows_skipped += 1
@@ -152,10 +152,8 @@ def ingest_csv(
             _local, submitted_at_utc = parse_local_naive(raw_timestamp, sheet_timezone)
             assignment = assign_session(sessions, submitted_at_utc)
 
-            session = None
             if assignment.match == "matched":
-                session = assignment.candidates[0]
-                touched_sessions.add(str(session["session_id"]))
+                touched_sessions.add(str(assignment.candidates[0]["session_id"]))
                 result_session_id: str | None = assignment.session_id
             else:
                 result_session_id = None
@@ -173,17 +171,9 @@ def ingest_csv(
                         detail=f"(first seen at {raw_timestamp} {sheet_timezone})",
                     )
 
-            match, distance = compare_passphrase(
-                session["passphrase"] if session else None,
-                passphrase_raw,
-                max_edit_distance=settings.max_edit_distance,
-                session_matched=assignment.match == "matched",
-            )
-
-            # Unrecognised columns are preserved verbatim. A column someone
-            # added to the form is data we were not expecting, not data we get
-            # to discard.
-            known = {email_col, timestamp_col, passphrase_col}
+            # Every other column is preserved verbatim — each one is a question
+            # the form asked, and an answer somebody gave is not ours to discard.
+            known = {email_col, timestamp_col}
             extra: dict[str, Any] = {
                 key: value
                 for key, value in row.items()
@@ -206,9 +196,6 @@ def ingest_csv(
                 source_timezone=sheet_timezone,
                 session_id=result_session_id,
                 session_match=assignment.match,
-                passphrase_raw=passphrase_raw,
-                passphrase_match=match,
-                edit_distance=distance,
                 extra_fields=extra,
                 load_id=load_id,
             )

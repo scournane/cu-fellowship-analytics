@@ -10,36 +10,42 @@ from __future__ import annotations
 import re
 from datetime import datetime
 
-from conftest import TEST_COHORT, TEST_TZ, make_fellow, make_session, write_csv
+from conftest import TEST_COHORT, make_fellow, make_session
 
 from cufa.adjudicate.engine import adjudicate_cohort
 from cufa.cli import main
 from cufa.db import execute
-from cufa.ingest.csv_path import ingest_csv
 from cufa.report_html import fellow_grid, render_report_html, slack_summary
 from cufa.slack.events import parse_event
 from cufa.slack.fake import FakeSlackWebClient, FakeWorkspace
 from cufa.slack.store import ensure_workspace, resolve_and_record
 
-HEADERS = ["Timestamp", "Email Address", "Today's passphrase"]
+def _checkin(db, session_id: str, email: str, at: str, source: str) -> None:
+    execute(
+        db,
+        """
+        insert into checkin (source_event_id, source, submitted_email, submitted_at_utc,
+                             submitted_at_raw, session_id, session_match)
+        values (%s, %s, %s, %s, %s, %s, 'matched')
+        """,
+        (f"{source}:{email}:{at}", source, email, at, at, session_id),
+    )
 
 
 def _populate(db, tmp_path) -> None:
-    """Two fellows, two sessions, one attended check-in, one mismatch, one Slack message."""
+    """Two fellows, two sessions, one attended check-in, one for review, one Slack message.
+
+    Ada's exit ticket came through the Google Form (a verified address) inside
+    the window. Bob's came from a sheet export, whose address nobody verified,
+    so a person decides it.
+    """
     make_fellow(db, "CU-0001", "ada@example.invalid", "Ada Testcase")
     make_fellow(db, "CU-0002", "bob@example.invalid", "Bob Fixture")
-    make_session(db, title="Week 1 — Foundations", local=datetime(2026, 9, 15, 19, 0), week_index=1)
-    make_session(db, title="Week 2 — Coalitions", local=datetime(2026, 9, 22, 19, 0), week_index=2, passphrase="harbor")
-    path = write_csv(
-        tmp_path / "r.csv",
-        [
-            {"Timestamp": "2026-09-15 19:20:00", "Email Address": "ada@example.invalid", "Today's passphrase": "justice"},
-            {"Timestamp": "2026-09-15 19:21:00", "Email Address": "bob@example.invalid", "Today's passphrase": "wrong word"},
-        ],
-        HEADERS,
-    )
-    ingest_csv(db, path, TEST_COHORT, TEST_TZ)
-    adjudicate_cohort(db, TEST_COHORT, use_ai=False)
+    week1 = make_session(db, title="Week 1 — Foundations", local=datetime(2026, 9, 15, 19, 0), week_index=1)
+    make_session(db, title="Week 2 — Coalitions", local=datetime(2026, 9, 22, 19, 0), week_index=2)
+    _checkin(db, week1, "ada@example.invalid", "2026-09-15T23:20:00Z", "forms_api")
+    _checkin(db, week1, "bob@example.invalid", "2026-09-15T23:21:00Z", "csv")
+    adjudicate_cohort(db, TEST_COHORT)
 
     ws = FakeWorkspace()
     ws.add_user(email="ada@example.invalid", real_name="Ada Testcase", user_id="U0ADA")
@@ -71,7 +77,7 @@ def test_attendance_states_render_as_cells(db, tmp_path):
     grid = fellow_grid(db, TEST_COHORT)
     by = {f["fellow_id"]: f for f in grid["fellows"]}
     assert by["CU-0001"]["states"] == ["attended", "none"]
-    assert by["CU-0002"]["states"][0] == "needs_review", "a mismatch with no AI lands in needs_review"
+    assert by["CU-0002"]["states"][0] == "needs_review", "an unverified address lands in needs_review"
     assert by["CU-0002"]["states"][1] == "none"
     out = render_report_html(db, TEST_COHORT)
     assert 'class="cell s-attended"' in out
@@ -156,6 +162,18 @@ def test_help_checkbox_is_named_as_excluded(db):
     assert "help checkbox appears nowhere" in out
     assert "help_request" not in out
     assert "check in with me" not in out
+
+
+def test_attendance_is_described_by_its_two_facts(db, tmp_path):
+    """The footer says what attendance is. It must not describe the retired
+    passphrase and model tier as if they still decided anything."""
+    _populate(db, tmp_path)
+    flat = re.sub(r"\s+", " ", render_report_html(db, TEST_COHORT))
+    assert "Google-verified address" in flat
+    assert "inside the session window" in flat
+    assert "no model judges them" in flat
+    assert "passphrase" not in flat.lower()
+    assert "by the AI tier" not in flat
 
 
 def test_cli_writes_the_file(db, tmp_path):

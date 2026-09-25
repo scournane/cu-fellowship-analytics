@@ -10,8 +10,9 @@ attributed to a person, or it is attributed to the wrong field. You find out wee
 later, when the data you needed does not exist and cannot be recreated.
 
 Traps 1 to 4 came from Part A. **Trap 5 came from Part B** and only bites a form with
-more than one question, which is why Part A never met it — and it is the only one where
-Google's actual behaviour could not be established at all. **Trap 6 came from the first
+more than one question, which is why Part A never met it until it became the exit ticket
+in September 2026 — and it is the only one where Google's actual behaviour could not be
+established at all. **Trap 6 came from the first
 real provisioning run against a live account**, which is also where trap 2 turned out to
 have been fixed by Google; see the note on it below.
 
@@ -182,8 +183,16 @@ Template-and-copy, in `src/cufa/template.py`:
    (`RealGoogleClient.copy_form` → `drive.files().copy(...)`, then `forms.get` for the
    responder URL). Copying a Google Form preserves its settings, including email
    collection. `forms.batchUpdate` is then used only for what it does reliably: title,
-   description, and the passphrase question — see `_content_requests()` in
-   `src/cufa/provisioning.py`, which deliberately contains no settings request.
+   description and questions — see `src/cufa/provisioning.py`, which deliberately
+   contains no settings request. Part A's copy is then read back on its own and must
+   report `VERIFIED` too (`session_form.email_collection_verified_at`), because
+   attendance rests on the address and the copy is the form fellows answer.
+
+A copy carries more than email collection: the theme (header image, colours, font), "send
+responders a copy", the progress bar and the confirmation message all come across from
+the template, and none of them can be set through the Forms API. They are set by hand on
+the template once, in the same visit as step 3 ([`setup/console.md`](setup/console.md)).
+Nothing reads them back, so a change reaches only forms copied afterwards.
 
 **The template is re-verified before every provisioning run.** `provision_session()`
 calls `require_verified_template()`, which calls `verify_template()` — it never reads
@@ -453,7 +462,10 @@ and email addresses at INFO and above.
 > defeats reasoning about ids in the abstract.
 
 Added with Part B. Trap 1 through trap 4 apply unchanged; this one only bites a form
-with more than one question, which is why Part A never met it.
+with more than one question, which is why Part A never met it — until September 2026,
+when Part A became the exit ticket and began asking whatever questions staff set. Part A
+handles it at provisioning exactly as Part B does, and at ingest differently; see "Part
+A" at the end of this section.
 
 ### What it is
 
@@ -468,7 +480,8 @@ question title, not by position in the form:
 ```
 
 Part A had one question, so "the answer" was whatever came back. Part B has five, and
-every one of them has to be told apart.
+every one of them has to be told apart. The Part A exit ticket has as many as staff give
+it.
 
 **When this was written, whether Drive's `files.copy` preserves question ids could not
 be verified either way.** It has since been measured — it preserves them, see the note
@@ -558,6 +571,23 @@ The tests that matter:
   answers stay where they were.
 - `test_3_an_incomplete_map_refuses_to_ingest` — a deleted slot stops the run and writes
   nothing.
+
+### Part A
+
+Since September 2026 Part A asks the exit-ticket questions staff set, so it meets this
+trap too. Provisioning handles it the same way: the copy is read back with `forms.get`
+after its questions are written, every question's id is recorded per form in
+`part_a_form_question` against its question key and item index, and the exact text shown
+is snapshotted there. A question index that comes back without an id, or with the wrong
+kind or option count, stops provisioning.
+
+Ingest is where it differs (ADR-039). Part A's answers do not decide attendance, so a
+missing or incomplete map is a **warning**, never a refusal: each response's answers are
+stored raw on the immutable `checkin` row, keyed by `questionId` exactly as the API
+returned them, and resolved to question keys only when something reads them
+(`v_checkin_answer`). Re-recording the map repairs every row already written, because
+none of them stored a derived key. An answer to a question the map does not know is
+still a row, with a NULL key.
 - `test_4_question_text_is_snapshot_and_survives_a_config_change` — rewriting
   `config/rotation.json` does not rewrite history.
 
@@ -613,7 +643,9 @@ decides what is applied; the body has to describe the item it still is.
 
 Part B only, and completely.
 
-Part A has always sent its full item body, so it works and goes on working. Part
+Part A has always sent its full item body, so it works and goes on working — and
+since it became the exit ticket it rebuilds a copy's items with `deleteItem` and
+`createItem`, each carrying a full body, rather than updating them in place. Part
 B retitles the rotating slot on **every single provision** — that is what the
 rotation *is* — so a title-only body means no Part B form can ever be created,
 while Part A carries on fine. The failure is loud but the cause is not: nothing
@@ -720,7 +752,8 @@ the fake is reachable *only* by code that handles the traps:
 | `simulate_human_sets_verified(form_id)` | The one manual step. It is **only** available explicitly, never as a side effect of an API call — because that is exactly the property being modelled. |
 | `simulate_human_breaks_verified(form_id)` | Someone edits the template and turns collection back to `RESPONDER_INPUT`. |
 | `simulate_teacher_retitles(form_id, index, title)` | A teacher fixes the wording of a question in the Forms editor. The question id does not change — which is exactly why answers are resolved by id and slots assigned by index. |
-| `seed_responses(form_id, rows)` | Load `(email, rfc3339, passphrase)` triples for Part A, or dicts with `answers_by_index` / `answers_by_id` for Part B, kept oldest-first the way the API returns them. Answers are stored keyed by question id, as the API returns them. |
+| `seed_answers(form_id, rows)` | Load Part A responses as `{"respondent_email", "create_time", "answers": {questionId: [values]}}`, kept oldest-first the way the API returns them. Resolve question keys to ids through `part_a_form_question` first; an id that is not on the form raises, because the real API could never return one. |
+| `seed_responses(form_id, rows)` | The older, convenience shape: `(email, rfc3339, answer)` triples answering the form's first question, or dicts with `answers_by_index` / `answers_by_id` — what Part B's fixtures use. Answers are stored keyed by question id, as the API returns them. |
 | `get_form(form_id)` | The form's items with their question ids — what provisioning reads back to build the map. |
 | `calls(action)` | Every recorded call of one kind — for assertions like "publish was called after every create". |
 | `demo_client()` | A fake already walked through create-template plus the human's Verified step, so the demo starts where a real CU install starts on day two. |
