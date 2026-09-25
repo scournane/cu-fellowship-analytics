@@ -1019,9 +1019,11 @@ def template_replace(
 ) -> Response:
     """Retire a template that cannot be opened and create a fresh one.
 
-    Offered only after verification has actually failed to reach the form —
-    making a new template silently would drop the human Verified step on the
-    floor while the screen still looked green.
+    Offered after verification has actually failed to reach the form, and for
+    a Part A template that is not yet verified (one made before the exit
+    ticket still carries the passphrase question). Never offered for a
+    verified template: making a new one silently would drop the human
+    Verified step on the floor while the screen still looked green.
     """
     part = _valid_part(part)
     notice: str | None = None

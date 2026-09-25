@@ -583,6 +583,34 @@ def test_verify_goes_green_only_after_the_api_confirms_it(
     assert "Downstream work is blocked" not in response.text
 
 
+def test_an_unverified_part_a_template_can_be_replaced_with_a_clean_one(
+    signed_in: TestClient, fake: FakeGoogleClient
+) -> None:
+    """A template made before the exit ticket still asks for a passphrase.
+
+    Replacing it while unverified loses nothing (the manual step was never
+    done) and leaves a form with a title and notice but no questions, which
+    is what every Part A session copy is rebuilt from.
+    """
+    from cufa.template import get_template
+
+    signed_in.post("/template/create", data={"part": "a"})
+    with connection() as conn:
+        old = get_template(conn, "a")
+    assert old is not None
+
+    response = signed_in.post("/template/replace", data={"part": "a"})
+    assert response.status_code == 200
+    assert "the old one retired" in boot_state(response)["notice"]
+
+    with connection() as conn:
+        new = get_template(conn, "a")
+    assert new is not None and new.form_id != old.form_id
+    assert not fake.get_form(new.form_id).items
+    # Still unverified: a new form needs the human step again.
+    assert boot_state(response)["blocked"] is True
+
+
 def test_provisioning_is_refused_while_the_template_is_unverified(
     signed_in: TestClient, fake: FakeGoogleClient, cohort: str
 ) -> None:
