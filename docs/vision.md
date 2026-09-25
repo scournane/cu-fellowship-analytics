@@ -7,7 +7,7 @@ early-warning systems, recognition bots (HeyTaco, Bonusly, Karma), connection
 bots (Donut), cohort platforms (Disco, Circle, Maven), mentoring software
 (Chronus, MentorcliQ), and Slack's own app surfaces.
 
-> **Last reconciled against the code on 2026-09-25, at commit `c377642`.** Every
+> **Last reconciled against the code on 2026-09-25, at commit `3e713cd`.** Every
 > mark below was re-derived by reading `src/` and `tests/` at that commit. A ✅
 > means an implementing file and a covering test both exist; it does not by
 > itself mean the path has been exercised against real Slack, and where the
@@ -19,6 +19,48 @@ with a decision this project has made, and why** · unmarked = possible, not
 started.
 
 This is the "room for improvement" half of the lessons-learned report.
+
+---
+
+## Who can actually do these
+
+A second axis, and the marks above do not show it: a feature can be built,
+tested and working and still be out of reach of the person whose job it is,
+because the only way in is a terminal. CU staff are not engineers. Anything
+that needs a checkout, a database URL and a command line is, for them, not
+built.
+
+Reachable from the console or Slack, by somebody who has neither:
+
+- Load a roster from a spreadsheet, with the file checked before anything is
+  written (`/roster`)
+- Load a term's schedule, with a template to start from (`/sessions`)
+- Create, edit and announce a session; provision and verify both forms; pull
+  responses
+- Upload a Zoom transcript and read the speaking share (`/sessions/<id>`)
+- Decide a needs-review check-in, link a shoutout, work the review queues
+- Read both dashboards; export a cohort or a fellow as CSV
+- Everything staff do in Slack: `/attendance`, `/fellow`, `/report`,
+  `/assignment`, `/score`, `/zoom`, `/outreach`, `/alias`, `/link`, `/alerts`
+
+Still only from a terminal — each of these is a job somebody non-technical
+will need to do, and cannot:
+
+- ⌨ Generate the HTML report (`cufa report --html`). The staff-facing artifact
+  of the whole system, and there is no button for it
+- ⌨ Re-run adjudication (`cufa adjudicate`)
+- ⌨ Backfill a gap in Slack capture (`cufa slack backfill`)
+- ⌨ Everything in `cufa slack doctor` — the preflight that catches a
+  misconfigured bot before a cohort does
+- ⌨ First-run setup: Docker, the Supabase CLI, `.env`, a Fernet key. The first
+  hour of this system is entirely a terminal
+
+And configuration, which is the largest one. The staff channel, the cohort,
+quiet hours, the admin list, the Q&A channels and the announcement channel are
+environment variables; the retention rubric and the question rotation are JSON
+files in the repo. Changing any of them means an engineer and a redeploy. §13's
+"configuration changed from Slack, not from code" is the bullet for this, and
+until it is done a program cannot run itself.
 
 ---
 
@@ -156,7 +198,7 @@ received recognition build popularity contests. So:
 - Peer-support response time in the help channel
 - ✅ Interaction network: who talks to whom, to find the isolated — `slack/insights.py:46`, which also returns the fellows nobody has replied to, test `tests/test_slack_signals.py:194`
 - ◑ Completion criteria and a completion report (completion is recordable and is the funnel's last stage — `funnel.py:113`, `:23`, test `tests/test_engagement.py:185`; the criteria are nowhere, so a human sets the flag by hand, and there is no completion report)
-- Scheduled regeneration and delivery of the report — the "evergreen" mechanism
+- ◑ Scheduled regeneration and delivery of the report — the "evergreen" mechanism (regeneration is done — `.github/workflows/report.yml`; delivery is not. The file is a workflow artifact, which needs a GitHub account to download, so nobody who would read the report can reach it without one. Posting it, or a link to it, to the staff channel is the missing half)
 - Export to Google Sheets for anyone who wants to slice it themselves
 - ⚠️ A single combined participation score — only after the Director sets the weights; the report shows the three signals side by side until then
 
@@ -177,7 +219,7 @@ received recognition build popularity contests. So:
 - ◑ Automatic backfill on restart, so a gap heals itself (the backfill works and is idempotent — `slack/backfill.py:113`, `:222`, test `tests/test_slack.py:114`, and the recovery was proven live in `FEATURES.md`; it is **not** automatic. Nothing calls it: its only caller in the tree is the `cufa slack backfill` CLI, and neither `slack/bot.py` startup nor `slack/digest.py:323`'s tick invokes it, so a gap heals only when a human notices and runs it)
 - ◑ One-command hosted deployment, so "who runs it" has an answer that is not a laptop (`deploy/vercel/` deploys both halves from one project and a real tick ran on it against Supabase — `deploy/vercel/api/index.py:49`, route tested at `tests/test_slack.py:389`; it is more than one command: there is no `deploy` target in `tasks.py`, the environment has to be populated by hand, and `deploy/vercel/README.md` explains that Vercel's own cron cannot hit `/bot/cron/tick` every minute, so an external `pg_cron` job plus a Vault secret has to be set up separately)
 - ✅ Health endpoint and status page
-- Scheduled report regeneration (a GitHub Action or cron)
+- ✅ Scheduled report regeneration (a GitHub Action or cron) — `.github/workflows/report.yml`, Monday 07:00 UTC, ahead of the bot's staff digest so the two describe the same week. It greps the generated file for anything shaped like an address and fails the run if it finds one
 - Errors posted to a staff channel, not only to a log
 - ◑ Configuration changed from Slack, not from code (per-session and per-fellow settings are: `/zoom` sets the link every reminder carries, `/assignment` creates due dates, `/reminders` sets a fellow's cadence — `slack/commands.py:530` for the full list, test `tests/test_slack_bot.py:440`; deployment configuration — staff channel, cohort, quiet hours, Q&A channels, admins — is environment-only, `config.py`)
 - ◑ Multiple workspaces at once: Spring and Fall side by side (the schema is keyed for it — every observation carries `team_id`, and `slack_workspace` maps a team to a cohort at `slack/store.py:79` — but one deployment carries one bot token and one `CUFA_SLACK_COHORT`, so two workspaces means two deployments)
