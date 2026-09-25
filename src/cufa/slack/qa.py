@@ -28,7 +28,7 @@ Neither is possible without the words. So the text of these channels — and
 only these — lives in ``slack_qa_question`` / ``slack_qa_answer`` (ADR-032).
 ``slack_event.text`` stays NULL for them like everywhere else.
 
-Two tiers, same shape as passphrase adjudication: everything token overlap can
+Two tiers: everything token overlap can
 decide, it decides; the model is asked only about the candidates overlap could
 not settle, and only when a key is configured.
 """

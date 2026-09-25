@@ -1,40 +1,54 @@
-"""Deliverable 10, tests 18-25: adjudication, latency and decision versioning."""
+"""Adjudication, latency and decision versioning.
+
+Attendance is a Google-verified address submitting inside the session window.
+The rule table is tested on its own, then through the engine against real
+rows: the window edges, a reschedule, the passphrase-era rows that stay frozen,
+and the proof that no model — and no answer — takes part.
+
+Most rows here are inserted directly rather than pulled through the fake
+Forms API. Adjudication reads four columns (source, session_match, the submit
+time and the session's schedule), and a test about those should not also be a
+test of provisioning. The CSV outcomes go through the real CSV ingest, because
+there the ingest-time session match is the thing under test.
+"""
 
 from __future__ import annotations
 
-from datetime import datetime
+import inspect
+import subprocess
+import sys
+from datetime import datetime, timedelta
 
 import psycopg
 import pytest
+from psycopg.types.json import Jsonb
 
-from conftest import (
-    TEST_COHORT,
-    TEST_TZ,
-    ExplodingAdjudicator,
-    StubAdjudicator,
-    count,
-    make_session,
-    write_csv,
-)
+from conftest import TEST_COHORT, TEST_TZ, count, make_session, write_csv
 
-from cufa.adjudicate.ai import PROMPT_VERSION, judge_with_cache
-from cufa.adjudicate.engine import adjudicate_cohort
-from cufa.adjudicate.rules import apply_rules
+from cufa.adjudicate.engine import adjudicate_cohort, legacy_counts
+from cufa.adjudicate.rules import OUTSIDE_WINDOW_RULES, RULES, apply_rules
 from cufa.db import execute, fetch_all, fetch_one
 from cufa.decisions import current_decision, decision_history, human_override, record_decision
-from cufa.ingest.common import compare_passphrase
 from cufa.ingest.csv_path import ingest_csv
 from cufa.latency import recompute_for_session, t0_for_session
-from cufa.sessions import announce_now
-from cufa.text import normalize_answer
+from cufa.sessions import SessionInput, announce_now, get_session, update_session
 from cufa.timeutil import UTC
 
-HEADERS = ["Timestamp", "Email Address", "Today's passphrase"]
+# 19:00 America/New_York on 2026-09-15 is 23:00Z. With the conftest defaults
+# (90 minutes, 15 minutes' grace) the window is 22:45Z..00:45Z.
+LOCAL = datetime(2026, 9, 15, 19, 0)
+WINDOW_START = datetime(2026, 9, 15, 22, 45, tzinfo=UTC)
+WINDOW_END = datetime(2026, 9, 16, 0, 45, tzinfo=UTC)
+WINDOW_NOTE = "window 2026-09-15T22:45:00Z..2026-09-16T00:45:00Z"
+
+# A Part A sheet export: the two columns ingest reads, plus an exit-ticket
+# question, which ingest keeps and adjudication never looks at.
+HEADERS = ["Timestamp", "Email Address", "What stood out today?"]
 
 
 def _rows(*triples):
     return [
-        {"Timestamp": ts, "Email Address": email, "Today's passphrase": answer}
+        {"Timestamp": ts, "Email Address": email, "What stood out today?": answer}
         for ts, email, answer in triples
     ]
 
@@ -43,80 +57,349 @@ def _ingest(db, tmp_path, *triples, cohort=TEST_COHORT, tz=TEST_TZ, name="r.csv"
     return ingest_csv(db, write_csv(tmp_path / name, _rows(*triples), HEADERS), cohort, tz)
 
 
-# --- 18. all five passphrase outcomes --------------------------------------
+def _checkin(
+    db,
+    session_id: str | None,
+    at: datetime,
+    *,
+    email: str = "ada@example.invalid",
+    source: str = "forms_api",
+    session_match: str = "matched",
+    passphrase_match: str | None = None,
+    answers: dict | None = None,
+) -> str:
+    """One observation, written the way ingest writes it.
 
-def test_18_all_five_passphrase_outcomes(db, tmp_path):
-    make_session(db, title="Main", local=datetime(2026, 9, 15, 19, 0), passphrase="justice")
-    make_session(
-        db, title="No passphrase", local=datetime(2026, 9, 22, 19, 0), passphrase=None
-    )
-    make_session(db, title="Overlap", local=datetime(2026, 9, 15, 19, 30), passphrase="justice")
-
-    _ingest(
+    ``passphrase_match`` set means a passphrase-era row. A row with no session
+    is tied to the cohort through its load run, exactly as ingest does it.
+    """
+    load = fetch_one(
         db,
-        tmp_path,
-        ("2026-09-15 18:50:00", "a@example.invalid", "justice"),    # exact
-        ("2026-09-15 18:51:00", "b@example.invalid", "justise"),    # fuzzy (d=1)
-        ("2026-09-15 18:52:00", "c@example.invalid", "committee"),  # mismatch
-        ("2026-09-22 19:20:00", "d@example.invalid", "anything"),   # not_set
-        ("2026-09-30 19:20:00", "e@example.invalid", "justice"),    # no_session
+        "insert into load_run (source, origin, cohort_id) values (%s, 'test', %s) "
+        "returning load_id",
+        (source, TEST_COHORT),
+    )
+    stamp = at.astimezone(UTC)
+    row = fetch_one(
+        db,
+        """
+        insert into checkin (source_event_id, source, submitted_email, submitted_at_utc,
+                             submitted_at_raw, session_id, session_match,
+                             passphrase_match, answers, load_id)
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        returning checkin_id
+        """,
+        (
+            f"{source}:{email}:{stamp.isoformat()}",
+            source,
+            email,
+            stamp,
+            stamp.isoformat(),
+            session_id,
+            session_match,
+            passphrase_match,
+            Jsonb(answers or {}),
+            load["load_id"],
+        ),
+    )
+    return str(row["checkin_id"])
+
+
+def _decision(db, checkin_id: str) -> tuple:
+    current = current_decision(db, checkin_id)
+    return current["status"], current["rule_name"], (
+        None if current["confidence"] is None else float(current["confidence"])
     )
 
-    outcomes = {
-        row["submitted_email"]: (row["passphrase_match"], row["edit_distance"])
-        for row in fetch_all(
-            db, "select submitted_email, passphrase_match, edit_distance from checkin"
-        )
-    }
-    assert outcomes["a@example.invalid"] == ("exact", 0)
-    assert outcomes["b@example.invalid"] == ("fuzzy", 1)
-    assert outcomes["c@example.invalid"] == ("mismatch", None)
-    assert outcomes["d@example.invalid"] == ("not_set", None)
-    assert outcomes["e@example.invalid"] == ("no_session", None)
 
+# --- the rule table ---------------------------------------------------------
 
-def _rule(passphrase_match: str, session_match: str) -> tuple:
-    outcome = apply_rules(passphrase_match, session_match)
+def _rule(source: str, session_match: str, in_window: bool | None) -> tuple:
+    outcome = apply_rules(source, session_match, in_window)
     return outcome.status, outcome.rule_name, outcome.confidence
 
 
-def test_18b_rules_map_each_outcome_to_the_specified_decision():
-    assert _rule("exact", "matched") == ("attended", "exact_match", 1.0)
-    assert _rule("fuzzy", "matched") == ("attended", "fuzzy_match", 0.9)
-    assert _rule("not_set", "matched") == ("attended", "no_passphrase_required", 0.7)
-    assert _rule("no_session", "none") == ("not_attended", "outside_all_windows", 0.6)
-    assert apply_rules("mismatch", "matched").escalates is True
-    # An overlapping window is a scheduling bug; answering it either way hides it.
-    assert _rule("no_session", "ambiguous") == ("needs_review", "ambiguous_session", None)
-
-
-# --- 19. normalization ------------------------------------------------------
-
-@pytest.mark.parametrize(
-    "typed", ["  Justice ", "JUSTICE", "justice.", "Justice!", "  justice  ", "jUsTiCe,"]
-)
-def test_19_normalization_variants_all_read_as_exact(typed):
-    match, distance = compare_passphrase(
-        "justice", typed, max_edit_distance=1, session_matched=True
+def test_rules_map_each_observation_to_the_specified_decision():
+    assert _rule("forms_api", "matched", True) == ("attended", "verified_email_in_window", 0.7)
+    assert _rule("forms_api", "matched", False) == (
+        "not_attended", "outside_session_window", 0.6
     )
-    assert (match, distance) == ("exact", 0)
+    # A sheet export's address was typed, not verified. A person decides.
+    assert _rule("csv", "matched", True) == ("needs_review", "unverified_email_in_window", None)
+    assert _rule("csv", "matched", False) == ("not_attended", "outside_session_window", 0.6)
+    assert _rule("csv", "none", None) == ("not_attended", "outside_all_windows", 0.6)
+    # An overlapping window is a scheduling bug; answering it either way hides it.
+    assert _rule("csv", "ambiguous", None) == ("needs_review", "ambiguous_session", None)
 
 
-def test_19b_normalization_is_shared_with_the_ai_cache_key():
-    """Tier 1 and the tier 2 cache must agree, or a cache hit means nothing."""
-    assert normalize_answer("  Justice. ") == normalize_answer("JUSTICE")
+def test_rule_table_is_exactly_the_five_named_rules():
+    assert set(RULES) == {
+        "verified_email_in_window",
+        "outside_session_window",
+        "unverified_email_in_window",
+        "outside_all_windows",
+        "ambiguous_session",
+    }
+    assert set(OUTSIDE_WINDOW_RULES) == {"outside_session_window", "outside_all_windows"}
+    # needs_review never carries a confidence: it is the absence of a judgment.
+    for outcome in RULES.values():
+        assert (outcome.status == "needs_review") == (outcome.confidence is None)
 
 
-# --- 20. latency ------------------------------------------------------------
+def test_an_unknown_observation_goes_to_a_person_not_to_a_guess():
+    assert _rule("carrier_pigeon", "matched", True)[0:2] == (
+        "needs_review", "unhandled_observation"
+    )
 
-def test_20_latency_derived_t0_makes_the_first_submitter_zero(db, tmp_path):
-    session_id = make_session(db, local=datetime(2026, 9, 15, 19, 0))
+
+# --- the window, through the engine ----------------------------------------
+
+def test_window_edges_are_inclusive_and_agree_with_the_view(db):
+    """Three definitions of the edge would disagree at exactly the minute
+    someone asks about. The engine and ``v_checkin_resolved`` must agree."""
+    session_id = make_session(db, local=LOCAL)
+    second = timedelta(seconds=1)
+    cases = {
+        "early@example.invalid": (WINDOW_START - second, False),
+        "start@example.invalid": (WINDOW_START, True),
+        "end@example.invalid": (WINDOW_END, True),
+        "late@example.invalid": (WINDOW_END + second, False),
+    }
+    ids = {
+        email: _checkin(db, session_id, at, email=email)
+        for email, (at, _inside) in cases.items()
+    }
+
+    adjudicate_cohort(db, TEST_COHORT)
+
+    view = {
+        row["submitted_email"]: row
+        for row in fetch_all(
+            db,
+            "select submitted_email, in_session_window, window_start_utc, window_end_utc, "
+            "rule_name, note from v_checkin_resolved",
+        )
+    }
+    for email, (_at, inside) in cases.items():
+        expected = (
+            ("attended", "verified_email_in_window", 0.7)
+            if inside
+            else ("not_attended", "outside_session_window", 0.6)
+        )
+        assert _decision(db, ids[email]) == expected, email
+        assert view[email]["in_session_window"] is inside, email
+        assert view[email]["window_start_utc"] == WINDOW_START
+        assert view[email]["window_end_utc"] == WINDOW_END
+        assert view[email]["note"] == WINDOW_NOTE
+
+
+def test_a_verified_response_long_after_the_lesson_is_not_attendance(db):
+    """The form stays open; the window does not. Opening the link the next
+    morning is a response, and not evidence of being in the room."""
+    session_id = make_session(db, local=LOCAL)
+    checkin_id = _checkin(db, session_id, WINDOW_END + timedelta(hours=10))
+
+    result = adjudicate_cohort(db, TEST_COHORT)
+
+    assert _decision(db, checkin_id) == ("not_attended", "outside_session_window", 0.6)
+    assert result.outside_window == 1
+
+
+def test_csv_rows_through_real_ingest(db, tmp_path):
+    make_session(db, title="Main", local=LOCAL)
+    make_session(db, title="Overlap", local=datetime(2026, 9, 22, 19, 0))
+    make_session(db, title="Overlap 2", local=datetime(2026, 9, 22, 19, 30))
+
     _ingest(
         db,
         tmp_path,
-        ("2026-09-15 19:20:00", "a@example.invalid", "justice"),
-        ("2026-09-15 19:22:00", "b@example.invalid", "justice"),
-        ("2026-09-15 19:25:00", "c@example.invalid", "justice"),
+        ("2026-09-15 19:20:00", "in@example.invalid", "budgets are values"),
+        ("2026-09-30 19:20:00", "none@example.invalid", "budgets are values"),
+        ("2026-09-22 19:45:00", "amb@example.invalid", "budgets are values"),
+    )
+    adjudicate_cohort(db, TEST_COHORT)
+
+    decided = {
+        row["submitted_email"]: (row["status"], row["rule_name"])
+        for row in fetch_all(db, "select submitted_email, status, rule_name from v_checkin_resolved")
+    }
+    assert decided == {
+        "in@example.invalid": ("needs_review", "unverified_email_in_window"),
+        "none@example.invalid": ("not_attended", "outside_all_windows"),
+        "amb@example.invalid": ("needs_review", "ambiguous_session"),
+    }
+
+
+# --- a reschedule re-judges -------------------------------------------------
+
+def test_a_reschedule_rejudges_and_the_note_names_the_new_window(db):
+    session_id = make_session(db, local=LOCAL)
+    checkin_id = _checkin(db, session_id, datetime(2026, 9, 15, 23, 20, tzinfo=UTC))
+
+    adjudicate_cohort(db, TEST_COHORT)
+    assert _decision(db, checkin_id) == ("attended", "verified_email_in_window", 0.7)
+    assert current_decision(db, checkin_id)["note"] == WINDOW_NOTE
+
+    # Staff typed the wrong day; the lesson was the 16th.
+    existing = get_session(db, session_id)
+    update_session(
+        db,
+        session_id,
+        SessionInput(
+            cohort_id=existing["cohort_id"],
+            title=existing["title"],
+            scheduled_at_local=datetime(2026, 9, 16, 19, 0),
+            timezone=existing["timezone"],
+            duration_minutes=existing["duration_minutes"],
+            grace_minutes=existing["grace_minutes"],
+        ),
+    )
+
+    result = adjudicate_cohort(db, TEST_COHORT)
+
+    assert result.decided_by_rule == 1
+    assert _decision(db, checkin_id) == ("not_attended", "outside_session_window", 0.6)
+    assert current_decision(db, checkin_id)["note"] == (
+        "window 2026-09-16T22:45:00Z..2026-09-17T00:45:00Z"
+    )
+    # The earlier judgment is superseded, not erased: the history says why it moved.
+    history = decision_history(db, checkin_id)
+    assert [row["note"] for row in history] == [
+        "window 2026-09-16T22:45:00Z..2026-09-17T00:45:00Z",
+        WINDOW_NOTE,
+    ]
+
+
+def test_rerunning_over_the_same_evidence_writes_nothing(db, tmp_path):
+    session_id = make_session(db, local=LOCAL)
+    _checkin(db, session_id, datetime(2026, 9, 15, 23, 20, tzinfo=UTC))
+    _checkin(db, session_id, WINDOW_END + timedelta(hours=1), email="late@example.invalid")
+    _ingest(db, tmp_path, ("2026-09-15 19:21:00", "csv@example.invalid", "x"))
+
+    adjudicate_cohort(db, TEST_COHORT)
+    before = count(db, "attendance_decision")
+    result = adjudicate_cohort(db, TEST_COHORT)
+
+    assert count(db, "attendance_decision") == before
+    assert result.decided_by_rule == 0
+    assert result.unchanged == 3
+
+
+# --- passphrase-era rows ----------------------------------------------------
+
+def test_legacy_decided_rows_are_frozen_unless_asked(db):
+    session_id = make_session(db, local=LOCAL)
+    in_window = datetime(2026, 9, 15, 23, 20, tzinfo=UTC)
+    exact = _checkin(db, session_id, in_window, email="exact@example.invalid",
+                     passphrase_match="exact")
+    record_decision(db, exact, status="attended", decided_by="rule",
+                    rule_name="exact_match", confidence=1.0)
+    by_ai = _checkin(db, session_id, WINDOW_END + timedelta(hours=2),
+                     email="ai@example.invalid", passphrase_match="mismatch")
+    record_decision(db, by_ai, status="attended", decided_by="ai",
+                    ai_model="gemini-2.5-flash", ai_prompt_version="v1", confidence=0.9)
+    # Ingested under the passphrase but never adjudicated: judged like any row.
+    undecided = _checkin(db, session_id, in_window, email="undecided@example.invalid",
+                         passphrase_match="mismatch")
+
+    result = adjudicate_cohort(db, TEST_COHORT)
+
+    assert result.legacy_frozen == 2
+    assert _decision(db, exact) == ("attended", "exact_match", 1.0)
+    assert current_decision(db, by_ai)["decided_by"] == "ai"
+    assert _decision(db, undecided) == ("attended", "verified_email_in_window", 0.7)
+
+    assert legacy_counts(db, TEST_COHORT) == {"total": 3, "rule": 2, "ai": 1, "human": 0}
+
+    result = adjudicate_cohort(db, TEST_COHORT, redecide_legacy=True)
+
+    assert result.legacy_frozen == 0
+    assert result.legacy_redecided == 2
+    assert _decision(db, exact) == ("attended", "verified_email_in_window", 0.7)
+    assert _decision(db, by_ai) == ("not_attended", "outside_session_window", 0.6)
+
+
+def test_a_human_decision_on_a_legacy_row_needs_both_flags(db):
+    session_id = make_session(db, local=LOCAL)
+    checkin_id = _checkin(db, session_id, WINDOW_END + timedelta(hours=2),
+                          passphrase_match="exact")
+    human_override(db, checkin_id, status="attended", by_email="staff@cu.invalid",
+                   note="Was in the room; phone died")
+
+    assert adjudicate_cohort(db, TEST_COHORT, redecide_legacy=True).human_preserved == 1
+    assert adjudicate_cohort(db, TEST_COHORT, force=True).legacy_frozen == 1
+    assert current_decision(db, checkin_id)["decided_by"] == "human"
+
+    result = adjudicate_cohort(db, TEST_COHORT, force=True, redecide_legacy=True)
+    assert result.human_overwritten == 1
+    assert "HUMAN" in result.warnings[0]
+    assert _decision(db, checkin_id) == ("not_attended", "outside_session_window", 0.6)
+
+
+# --- no model, and no answer, takes part ------------------------------------
+
+def test_adjudication_never_imports_a_model():
+    """Checked in a fresh interpreter, so nothing another test imported counts."""
+    code = (
+        "import sys, cufa.adjudicate, cufa.adjudicate.engine, cufa.report\n"
+        "banned = ('google.genai', 'anthropic', 'openai', 'cufa.themes', "
+        "'cufa.slack.qa', 'cufa.adjudicate.ai')\n"
+        "loaded = [m for m in sys.modules if m.startswith(banned)]\n"
+        "print(','.join(loaded))\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    assert out == "", f"adjudication pulled in {out}"
+
+    import importlib.util
+
+    assert importlib.util.find_spec("cufa.adjudicate.ai") is None
+    params = inspect.signature(adjudicate_cohort).parameters
+    assert "use_ai" not in params and "adjudicator" not in params
+
+    import cufa.adjudicate.engine as engine
+    import cufa.adjudicate.rules as rules
+
+    for module in (engine, rules):
+        source = inspect.getsource(module).lower()
+        for needle in ("genai", "gemini", "anthropic", "openai"):
+            assert needle not in source, (module.__name__, needle)
+
+
+def test_the_answers_never_change_a_decision(db):
+    """A blank exit ticket, a full one and a one-word one from someone in the
+    room are the same attendance."""
+    session_id = make_session(db, local=LOCAL)
+    at = datetime(2026, 9, 15, 23, 20, tzinfo=UTC)
+    ids = [
+        _checkin(db, session_id, at, email="blank@example.invalid", answers={}),
+        _checkin(db, session_id, at, email="full@example.invalid", answers={
+            "1a2b": {"values": ["A budget is a statement of values."], "title": "Takeaway"},
+            "3c4d": {"values": ["5"], "title": "How clear was today?"},
+        }),
+        _checkin(db, session_id, at, email="terse@example.invalid", answers={
+            "1a2b": {"values": ["idk"], "title": "Takeaway"},
+        }),
+    ]
+
+    adjudicate_cohort(db, TEST_COHORT)
+
+    assert {_decision(db, checkin_id) for checkin_id in ids} == {
+        ("attended", "verified_email_in_window", 0.7)
+    }
+
+
+# --- latency ----------------------------------------------------------------
+
+def test_latency_derived_t0_makes_the_first_submitter_zero(db, tmp_path):
+    session_id = make_session(db, local=LOCAL)
+    _ingest(
+        db,
+        tmp_path,
+        ("2026-09-15 19:20:00", "a@example.invalid", "x"),
+        ("2026-09-15 19:22:00", "b@example.invalid", "x"),
+        ("2026-09-15 19:25:00", "c@example.invalid", "x"),
     )
 
     _t0, source = t0_for_session(db, session_id)
@@ -133,13 +416,13 @@ def test_20_latency_derived_t0_makes_the_first_submitter_zero(db, tmp_path):
     assert latencies["c@example.invalid"] == 300
 
 
-def test_20b_explicit_announced_at_wins_and_recomputes(db, tmp_path):
-    session_id = make_session(db, local=datetime(2026, 9, 15, 19, 0))
+def test_explicit_announced_at_wins_and_recomputes(db, tmp_path):
+    session_id = make_session(db, local=LOCAL)
     _ingest(
         db,
         tmp_path,
-        ("2026-09-15 19:20:00", "a@example.invalid", "justice"),
-        ("2026-09-15 19:22:00", "b@example.invalid", "justice"),
+        ("2026-09-15 19:20:00", "a@example.invalid", "x"),
+        ("2026-09-15 19:22:00", "b@example.invalid", "x"),
     )
     assert fetch_one(
         db, "select latency_seconds from checkin where submitted_email = 'a@example.invalid'"
@@ -159,31 +442,47 @@ def test_20b_explicit_announced_at_wins_and_recomputes(db, tmp_path):
     assert latencies["b@example.invalid"] == 240
 
 
-def test_20c_latency_is_null_when_no_session_matched(db, tmp_path):
-    make_session(db, local=datetime(2026, 9, 15, 19, 0))
-    _ingest(db, tmp_path, ("2026-11-30 09:00:00", "a@example.invalid", "justice"))
+def test_latency_is_null_when_no_session_matched(db, tmp_path):
+    make_session(db, local=LOCAL)
+    _ingest(db, tmp_path, ("2026-11-30 09:00:00", "a@example.invalid", "x"))
 
     row = fetch_one(db, "select session_id, latency_seconds from checkin")
     assert row["session_id"] is None
     assert row["latency_seconds"] is None
 
 
-# --- 21. decision versioning ------------------------------------------------
+def test_a_submission_before_the_announcement_keeps_its_negative_latency(db, tmp_path):
+    """Latency is stored, not interpreted — including when it is negative.
 
-def test_21_override_supersedes_and_leaves_exactly_one_current(db, tmp_path):
-    make_session(db)
-    _ingest(db, tmp_path, ("2026-09-15 19:20:00", "a@example.invalid", "justice"))
-    checkin_id = fetch_one(db, "select checkin_id from checkin")["checkin_id"]
+    A teacher who presses "Announce now" a minute after the first fellow has
+    already submitted produces exactly this. Clamping it to zero would be an
+    interpretation, and would hide the case worth noticing.
+    """
+    session_id = make_session(db, local=LOCAL)
+    _ingest(db, tmp_path, ("2026-09-15 19:20:00", "early@example.invalid", "x"))
 
-    adjudicate_cohort(db, TEST_COHORT, use_ai=False)
+    # Announced a minute AFTER that submission landed.
+    announce_now(db, session_id, datetime(2026, 9, 15, 23, 21, tzinfo=UTC))
+    recompute_for_session(db, session_id)
+
+    assert fetch_one(db, "select latency_seconds from checkin")["latency_seconds"] == -60
+
+
+# --- decision versioning ----------------------------------------------------
+
+def test_override_supersedes_and_leaves_exactly_one_current(db):
+    session_id = make_session(db, local=LOCAL)
+    checkin_id = _checkin(db, session_id, datetime(2026, 9, 15, 23, 20, tzinfo=UTC))
+
+    adjudicate_cohort(db, TEST_COHORT)
     assert current_decision(db, checkin_id)["status"] == "attended"
 
     human_override(
-        db, str(checkin_id), status="not_attended", by_email="staff@cu.invalid",
+        db, checkin_id, status="not_attended", by_email="staff@cu.invalid",
         note="Fellow says they were not there.",
     )
 
-    history = decision_history(db, str(checkin_id))
+    history = decision_history(db, checkin_id)
     assert len(history) == 2
     current = [row for row in history if row["superseded_at"] is None]
     assert len(current) == 1
@@ -192,12 +491,14 @@ def test_21_override_supersedes_and_leaves_exactly_one_current(db, tmp_path):
     assert current[0]["attended"] is False
 
 
-def test_21b_partial_unique_index_actually_enforces_one_current(db, tmp_path):
-    make_session(db)
-    _ingest(db, tmp_path, ("2026-09-15 19:20:00", "a@example.invalid", "justice"))
-    checkin_id = str(fetch_one(db, "select checkin_id from checkin")["checkin_id"])
+def test_partial_unique_index_actually_enforces_one_current(db):
+    session_id = make_session(db, local=LOCAL)
+    checkin_id = _checkin(db, session_id, datetime(2026, 9, 15, 23, 20, tzinfo=UTC))
 
-    record_decision(db, checkin_id, status="attended", decided_by="rule", rule_name="exact_match")
+    record_decision(
+        db, checkin_id, status="attended", decided_by="rule",
+        rule_name="verified_email_in_window",
+    )
 
     # Insert a second live decision directly, bypassing the supersede step.
     with pytest.raises(psycopg.errors.UniqueViolation):
@@ -206,17 +507,16 @@ def test_21b_partial_unique_index_actually_enforces_one_current(db, tmp_path):
             """
             insert into attendance_decision
                 (checkin_id, attended, status, decided_by, rule_name)
-            values (%s, true, 'attended', 'rule', 'exact_match')
+            values (%s, true, 'attended', 'rule', 'verified_email_in_window')
             """,
             (checkin_id,),
         )
 
 
-def test_21c_superseded_rows_may_coexist_freely(db, tmp_path):
+def test_superseded_rows_may_coexist_freely(db):
     """The index is partial: history is unlimited, only 'current' is unique."""
-    make_session(db)
-    _ingest(db, tmp_path, ("2026-09-15 19:20:00", "a@example.invalid", "justice"))
-    checkin_id = str(fetch_one(db, "select checkin_id from checkin")["checkin_id"])
+    session_id = make_session(db, local=LOCAL)
+    checkin_id = _checkin(db, session_id, datetime(2026, 9, 15, 23, 20, tzinfo=UTC))
 
     for index in range(4):
         human_override(
@@ -229,19 +529,18 @@ def test_21c_superseded_rows_may_coexist_freely(db, tmp_path):
     assert count(db, "attendance_decision", "superseded_at is null") == 1
 
 
-# --- 22. a human always wins ------------------------------------------------
+# --- a human always wins ----------------------------------------------------
 
-def test_22_rerunning_adjudicate_does_not_overwrite_a_human(db, tmp_path):
-    make_session(db)
-    _ingest(db, tmp_path, ("2026-09-15 19:20:00", "a@example.invalid", "justice"))
-    checkin_id = str(fetch_one(db, "select checkin_id from checkin")["checkin_id"])
+def test_rerunning_adjudicate_does_not_overwrite_a_human(db):
+    session_id = make_session(db, local=LOCAL)
+    checkin_id = _checkin(db, session_id, datetime(2026, 9, 15, 23, 20, tzinfo=UTC))
 
-    adjudicate_cohort(db, TEST_COHORT, use_ai=False)
+    adjudicate_cohort(db, TEST_COHORT)
     human_override(
         db, checkin_id, status="not_attended", by_email="staff@cu.invalid", note="Confirmed absent",
     )
 
-    result = adjudicate_cohort(db, TEST_COHORT, use_ai=False)
+    result = adjudicate_cohort(db, TEST_COHORT)
 
     assert result.human_preserved == 1
     current = current_decision(db, checkin_id)
@@ -249,17 +548,16 @@ def test_22_rerunning_adjudicate_does_not_overwrite_a_human(db, tmp_path):
     assert current["note"] == "Confirmed absent"
 
 
-def test_22b_force_overwrites_and_warns_naming_what_it_destroys(db, tmp_path):
-    make_session(db)
-    _ingest(db, tmp_path, ("2026-09-15 19:20:00", "a@example.invalid", "justice"))
-    checkin_id = str(fetch_one(db, "select checkin_id from checkin")["checkin_id"])
+def test_force_overwrites_and_warns_naming_what_it_destroys(db):
+    session_id = make_session(db, local=LOCAL)
+    checkin_id = _checkin(db, session_id, datetime(2026, 9, 15, 23, 20, tzinfo=UTC))
 
-    adjudicate_cohort(db, TEST_COHORT, use_ai=False)
+    adjudicate_cohort(db, TEST_COHORT)
     human_override(
         db, checkin_id, status="not_attended", by_email="staff@cu.invalid", note="Confirmed absent",
     )
 
-    result = adjudicate_cohort(db, TEST_COHORT, use_ai=False, force=True)
+    result = adjudicate_cohort(db, TEST_COHORT, force=True)
 
     assert result.human_overwritten == 1
     assert len(result.warnings) == 1
@@ -273,152 +571,39 @@ def test_22b_force_overwrites_and_warns_naming_what_it_destroys(db, tmp_path):
     assert current_decision(db, checkin_id)["decided_by"] == "rule"
 
 
-# --- 23. AI cache -----------------------------------------------------------
+# --- needs_review is never resolved downward by the same evidence ----------
 
-def test_23_repeated_string_pair_makes_exactly_one_api_call(db, tmp_path):
-    make_session(db, local=datetime(2026, 9, 15, 19, 0), passphrase="justice")
-    make_session(db, title="Week 2", local=datetime(2026, 9, 22, 19, 0), passphrase="justice")
-    _ingest(
-        db,
-        tmp_path,
-        ("2026-09-15 19:20:00", "a@example.invalid", "the word was justice"),
-        ("2026-09-22 19:20:00", "b@example.invalid", "The word was Justice."),
-    )
-
-    stub = StubAdjudicator(verdict=True)
-    result = adjudicate_cohort(db, TEST_COHORT, adjudicator=stub)
-
-    assert result.escalated == 2
-    assert len(stub.calls) == 1, "the normalized pair is identical, so one call"
-    assert result.ai_cache_hits == 1
-    assert count(db, "ai_adjudication_cache") == 1
-
-    # A second run makes zero calls at all.
-    stub2 = StubAdjudicator(verdict=True)
-    adjudicate_cohort(db, TEST_COHORT, adjudicator=stub2)
-    assert stub2.calls == []
-
-
-def test_23b_cache_key_includes_prompt_version_and_model(db):
-    stub = StubAdjudicator()
-    judge_with_cache(db, stub, "justice", "the word was justice")
-    row = fetch_one(db, "select * from ai_adjudication_cache")
-    assert row["prompt_version"] == PROMPT_VERSION
-    assert row["model"] == "stub-model"
-    assert row["expected_normalized"] == "justice"
-    assert row["submitted_normalized"] == "the word was justice"
-
-
-# --- 24. AI unavailable -----------------------------------------------------
-
-def test_24_no_key_completes_and_lands_in_needs_review(db, tmp_path):
-    make_session(db, passphrase="justice")
-    _ingest(
-        db,
-        tmp_path,
-        ("2026-09-15 19:20:00", "a@example.invalid", "justice"),
-        ("2026-09-15 19:21:00", "b@example.invalid", "the word was justice"),
-    )
-
-    # No GEMINI_API_KEY in the environment (conftest removes it), so
-    # build_adjudicator returns None and the run must still complete.
-    result = adjudicate_cohort(db, TEST_COHORT, use_ai=True)
-
-    assert result.ai_unavailable == 1
-    statuses = {
-        row["submitted_email"]: (row["status"], row["decided_by"], row["rule_name"])
-        for row in fetch_all(
-            db,
-            "select submitted_email, status, decided_by, rule_name from v_checkin_resolved",
-        )
-    }
-    assert statuses["a@example.invalid"] == ("attended", "rule", "exact_match")
-    assert statuses["b@example.invalid"] == ("needs_review", "rule", "ai_unavailable")
-
-
-def test_24b_mid_run_ai_failure_degrades_rather_than_crashing(db, tmp_path):
-    make_session(db, passphrase="justice")
-    _ingest(
-        db,
-        tmp_path,
-        ("2026-09-15 19:20:00", "a@example.invalid", "the word was justice"),
-        ("2026-09-15 19:21:00", "b@example.invalid", "justice i think"),
-    )
-
-    result = adjudicate_cohort(db, TEST_COHORT, adjudicator=ExplodingAdjudicator())
-
-    assert result.ai_unavailable == 2
-    assert result.needs_review == 2
-    assert count(db, "attendance_decision", "rule_name = 'ai_unavailable'") == 2
-
-
-def test_24c_no_ai_flag_skips_tier_two_entirely(db, tmp_path):
-    make_session(db, passphrase="justice")
-    _ingest(db, tmp_path, ("2026-09-15 19:20:00", "a@example.invalid", "the word was justice"))
-
-    stub = StubAdjudicator()
-    adjudicate_cohort(db, TEST_COHORT, use_ai=False, adjudicator=stub)
-    assert stub.calls == []
-
-
-def test_24d_call_cap_is_respected(db, tmp_path, settings):
-    import dataclasses
-
-    make_session(db, local=datetime(2026, 9, 15, 19, 0), passphrase="justice")
-    _ingest(
-        db,
-        tmp_path,
-        ("2026-09-15 19:20:00", "a@example.invalid", "the word was justice"),
-        ("2026-09-15 19:21:00", "b@example.invalid", "justice maybe"),
-        ("2026-09-15 19:22:00", "c@example.invalid", "it was justice right"),
-    )
-
-    capped = dataclasses.replace(settings, ai_max_calls_per_run=1)
-    stub = StubAdjudicator()
-    result = adjudicate_cohort(db, TEST_COHORT, adjudicator=stub, settings=capped)
-
-    assert len(stub.calls) == 1
-    assert result.ai_unavailable == 2, "the rest go to needs_review, not to a guess"
-
-
-# --- 25. needs_review is never not_attended --------------------------------
-
-def test_25_needs_review_never_becomes_not_attended(db, tmp_path):
-    make_session(db, local=datetime(2026, 9, 15, 19, 0), passphrase="justice")
-    make_session(db, title="Overlap", local=datetime(2026, 9, 15, 19, 30), passphrase="justice")
+def test_needs_review_is_not_resolved_downward_by_a_rerun(db, tmp_path):
+    make_session(db, title="Main", local=LOCAL)
+    make_session(db, title="Overlap", local=datetime(2026, 9, 15, 19, 30))
 
     _ingest(
         db,
         tmp_path,
-        ("2026-09-15 19:45:00", "amb@example.invalid", "justice"),   # ambiguous window
-        ("2026-09-15 18:50:00", "mis@example.invalid", "committee"),  # mismatch -> tier 2
+        ("2026-09-15 19:45:00", "amb@example.invalid", "x"),  # both windows
+        ("2026-09-15 18:50:00", "csv@example.invalid", "x"),  # one window, unverified
     )
 
-    # A tier 2 verdict of "did not hear it" is still not proof of absence.
-    stub = StubAdjudicator(verdict=False, confidence=0.95)
-    adjudicate_cohort(db, TEST_COHORT, adjudicator=stub)
+    adjudicate_cohort(db, TEST_COHORT)
+    adjudicate_cohort(db, TEST_COHORT)
 
     rows = {
         row["submitted_email"]: row
         for row in fetch_all(
-            db, "select submitted_email, status, attended, decided_by from v_checkin_resolved"
+            db, "select submitted_email, status, attended from v_checkin_resolved"
         )
     }
     assert rows["amb@example.invalid"]["status"] == "needs_review"
-    assert rows["mis@example.invalid"]["status"] == "needs_review"
+    assert rows["csv@example.invalid"]["status"] == "needs_review"
 
     # attended is NULL for every needs_review row, never False.
     assert count(db, "attendance_decision", "status = 'needs_review' and attended is not null") == 0
-
-    # And a further pass does not quietly resolve them downward.
-    adjudicate_cohort(db, TEST_COHORT, use_ai=False)
     assert count(db, "v_current_decision", "status = 'not_attended'") == 0
 
 
-def test_25b_database_rejects_a_needs_review_row_claiming_attendance(db, tmp_path):
-    make_session(db)
-    _ingest(db, tmp_path, ("2026-09-15 19:20:00", "a@example.invalid", "justice"))
-    checkin_id = str(fetch_one(db, "select checkin_id from checkin")["checkin_id"])
+def test_database_rejects_a_needs_review_row_claiming_attendance(db):
+    session_id = make_session(db, local=LOCAL)
+    checkin_id = _checkin(db, session_id, datetime(2026, 9, 15, 23, 20, tzinfo=UTC))
 
     with pytest.raises(psycopg.errors.CheckViolation):
         execute(
@@ -434,62 +619,21 @@ def test_25b_database_rejects_a_needs_review_row_claiming_attendance(db, tmp_pat
 
 # --- immutability -----------------------------------------------------------
 
-def test_checkin_observations_are_immutable(db, tmp_path):
-    make_session(db)
-    _ingest(db, tmp_path, ("2026-09-15 19:20:00", "a@example.invalid", "justice"))
-    checkin_id = str(fetch_one(db, "select checkin_id from checkin")["checkin_id"])
+def test_checkin_observations_are_immutable(db):
+    session_id = make_session(db, local=LOCAL)
+    checkin_id = _checkin(
+        db, session_id, datetime(2026, 9, 15, 23, 20, tzinfo=UTC),
+        answers={"1a2b": {"values": ["as submitted"], "title": "Takeaway"}},
+    )
 
-    with pytest.raises(psycopg.errors.RestrictViolation):
-        execute(
-            db, "update checkin set passphrase_raw = 'edited' where checkin_id = %s", (checkin_id,)
-        )
-    with pytest.raises(psycopg.errors.RestrictViolation):
-        execute(db, "delete from checkin where checkin_id = %s", (checkin_id,))
+    for statement in (
+        "update checkin set answers = '{}'::jsonb where checkin_id = %s",
+        "update checkin set submitted_email = 'someone@else.invalid' where checkin_id = %s",
+        "delete from checkin where checkin_id = %s",
+    ):
+        with pytest.raises(psycopg.errors.RestrictViolation):
+            execute(db, statement, (checkin_id,))
 
     # The one derived column is allowed to be recomputed.
     execute(db, "update checkin set latency_seconds = 42 where checkin_id = %s", (checkin_id,))
     assert fetch_one(db, "select latency_seconds from checkin")["latency_seconds"] == 42
-
-
-def test_gemini_response_schema_is_valid_for_the_sdk():
-    """Catch a malformed schema here rather than as a 400 during a live run.
-
-    This does not call Gemini — it only asks the SDK to validate the schema and
-    the generation config, which is exactly the part that would otherwise fail
-    opaquely and only when a key is present.
-    """
-    from google.genai import types
-
-    from cufa.adjudicate.ai import PROMPT_TEMPLATE, RESPONSE_SCHEMA
-
-    schema = types.Schema(**RESPONSE_SCHEMA)
-    assert schema.type == types.Type.OBJECT
-    assert set(schema.required) == {"heard_the_passphrase", "confidence", "reasoning"}
-
-    config = types.GenerateContentConfig(
-        temperature=0, response_mime_type="application/json", response_schema=schema
-    )
-    assert config.temperature == 0, "tier 2 must be reproducible"
-
-    # The prompt carries both strings and nothing else about the person.
-    rendered = PROMPT_TEMPLATE.format(expected="justice", submitted="the word was justice")
-    assert "justice" in rendered
-    for leak in ("@", "fellow_id", "cohort", "CU-"):
-        assert leak not in rendered, f"tier 2 prompt must not carry {leak!r}"
-
-
-def test_20d_a_submission_before_the_announcement_keeps_its_negative_latency(db, tmp_path):
-    """Latency is stored, not interpreted — including when it is negative.
-
-    A teacher who presses "Announce now" a minute after the first fellow has
-    already submitted produces exactly this. Clamping it to zero would be an
-    interpretation, and would hide the case worth noticing.
-    """
-    session_id = make_session(db, local=datetime(2026, 9, 15, 19, 0))
-    _ingest(db, tmp_path, ("2026-09-15 19:20:00", "early@example.invalid", "justice"))
-
-    # Announced a minute AFTER that submission landed.
-    announce_now(db, session_id, datetime(2026, 9, 15, 23, 21, tzinfo=UTC))
-    recompute_for_session(db, session_id)
-
-    assert fetch_one(db, "select latency_seconds from checkin")["latency_seconds"] == -60

@@ -8,7 +8,8 @@ exist yet, and the honest thing is to record it and stop.
 T0 is the announcement:
 
 * ``session.announced_at_utc`` when the teacher pressed "Announce now". This is
-  the real thing being measured — the moment the passphrase entered the room.
+  the real thing being measured — the moment the exit ticket was put in front
+  of the room.
 * Otherwise the earliest submission matched to that session. Under this derived
   T0 the first submitter always has a latency of exactly 0. That is expected,
   not a bug: with no announcement stamp, the first arrival *is* the only

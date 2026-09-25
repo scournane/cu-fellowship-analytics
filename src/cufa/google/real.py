@@ -8,10 +8,10 @@ and exercised identically here.
 Two details worth knowing before editing this file:
 
 * ``forms.responses.list`` keys answers by ``questionId``, not by question text.
-  Both views are returned: ``answers`` keyed by title for Part A's single
-  question, and ``answers_by_id`` keyed by ``questionId``, which is what Part B
-  resolves through ``form_question_map``. Titles are a convenience; ids are the
-  contract.
+  Three views are returned (see ``FormResponse``): every value unjoined
+  (``answer_values_by_id`` — what Part A stores), the values joined per id
+  (``answers_by_id`` — what Part B resolves through ``form_question_map``), and
+  a title-keyed convenience. Titles are a convenience; ids are the contract.
 * ``get_form`` is a separate call from ``read_settings`` even though both hit
   ``forms.get``. They answer different questions — publish state versus question
   ids — and the id read must never be served from a cache that a ``batchUpdate``
@@ -31,7 +31,6 @@ from typing import Any
 
 from ..logging_setup import get_logger
 from .base import (
-    PASSPHRASE_QUESTION_TITLE,
     FormDefinition,
     FormItem,
     FormRef,
@@ -188,6 +187,11 @@ class RealGoogleClient:
                     title=item.get("title") or "",
                     index=index,
                     kind=kind,
+                    description=item.get("description") or "",
+                    required=bool(question.get("required", False)),
+                    # The raw body, so provisioning can check the options and
+                    # scale came back as sent rather than trusting `kind`.
+                    question=question,
                 )
             )
         return FormDefinition(
@@ -277,11 +281,16 @@ class RealGoogleClient:
                 submitted_at=item.get("lastSubmittedTime") or item.get("createTime", ""),
                 answers=_extract_answers(item.get("answers") or {}, titles),
                 answers_by_id=_extract_answers(item.get("answers") or {}, {}),
+                answer_values_by_id=_answer_values(item.get("answers") or {}),
                 raw=item,
             )
             for item in payload.get("responses", [])
         )
-        return ResponsePage(responses=responses, next_page_token=payload.get("nextPageToken"))
+        return ResponsePage(
+            responses=responses,
+            next_page_token=payload.get("nextPageToken"),
+            titles_by_id=dict(titles),
+        )
 
     # -- internals ----------------------------------------------------------
 
@@ -294,11 +303,16 @@ class RealGoogleClient:
         form = _execute(self._forms.forms().get(formId=form_id))
         mapping: dict[str, str] = {}
         for item in form.get("items", []):
-            title = item.get("title") or PASSPHRASE_QUESTION_TITLE
+            title = item.get("title") or ""
             question = (item.get("questionItem") or {}).get("question") or {}
             question_id = question.get("questionId")
             if question_id:
                 mapping[question_id] = title
+            # A grid answers once per row, each row its own question id.
+            for row in (item.get("questionGroupItem") or {}).get("questions") or []:
+                if row.get("questionId"):
+                    row_title = (row.get("rowQuestion") or {}).get("title", "")
+                    mapping[row["questionId"]] = f"{title} [{row_title}]"
         self._question_titles[form_id] = mapping
         return mapping
 
@@ -328,8 +342,34 @@ class RealGoogleClient:
         raise GoogleApiError("setPublishSettings exhausted retries", status=429)
 
 
+def _values(answer: dict[str, Any] | None) -> tuple[str, ...]:
+    """Every value one answer carries, in order, never joined.
+
+    Text, choice and scale answers all arrive as ``textAnswers.answers[].value``
+    (a scale's value is the number as a string). A file upload arrives as
+    ``fileUploadAnswers`` and is kept by file name, so an answer the form
+    somehow collected is never silently empty.
+    """
+    answer = answer or {}
+    values = [str(v.get("value", "")) for v in (answer.get("textAnswers") or {}).get("answers") or []]
+    for upload in (answer.get("fileUploadAnswers") or {}).get("answers") or []:
+        values.append(str(upload.get("fileName") or upload.get("fileId") or ""))
+    return tuple(values)
+
+
+def _answer_values(answers: dict[str, Any]) -> dict[str, tuple[str, ...]]:
+    """``questionId`` -> every value. What Part A stores: nothing is joined, so a
+    three-box checkbox answer stays three answers."""
+    return {question_id: _values(answer) for question_id, answer in answers.items()}
+
+
 def _extract_answers(answers: dict[str, Any], titles: dict[str, str]) -> dict[str, str]:
     """Flatten the answers payload, keyed by title or — with no titles — by id.
+
+    Joins multiple values with a space, which is lossy — "Budgets, taxes" and
+    "Budgets" + "taxes" become the same string. Part B's only multi-value field
+    is a single-option checkbox, so it loses nothing there; Part A uses
+    ``_answer_values`` instead.
 
     A checkbox with one option comes back the same way a text answer does: a
     ``textAnswers.answers`` list whose single value is the option's text. That is
@@ -338,8 +378,7 @@ def _extract_answers(answers: dict[str, Any], titles: dict[str, str]) -> dict[st
     """
     flattened: dict[str, str] = {}
     for question_id, answer in answers.items():
-        values = ((answer or {}).get("textAnswers") or {}).get("answers") or []
-        text = " ".join(str(v.get("value", "")) for v in values).strip()
+        text = " ".join(_values(answer)).strip()
         flattened[titles.get(question_id, question_id)] = text
     return flattened
 

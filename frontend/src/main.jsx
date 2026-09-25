@@ -20,6 +20,7 @@ import {Connect} from './Connect.jsx'
 import {Dashboard} from './Dashboard.jsx'
 import {Fellow} from './Fellow.jsx'
 import {HelpRequests} from './HelpRequests.jsx'
+import {QuestionSetEditor} from './QuestionSetEditor.jsx'
 import {Responses} from './Responses.jsx'
 import {Review} from './Review.jsx'
 import {Roster} from './Roster.jsx'
@@ -51,6 +52,7 @@ const SCREENS = {
   dashboard: Dashboard,
   me: Fellow,
   template: TemplateSetup,
+  questionSet: QuestionSetEditor,
   sessions: Sessions,
   assignments: Assignments,
   assignmentForm: AssignmentForm,

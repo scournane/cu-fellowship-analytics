@@ -6,12 +6,24 @@ are about to change one of these, the "why" is the thing to argue with.
 
 Status of ADR-001 to ADR-020: **accepted**, August 2026, Part A.
 
+**September 2026: the passphrase is gone.** Part A became the exit ticket, and ADR-037 to
+ADR-040 record why. ADR-001, 006, 009, 011, 012 and 013 are **superseded** in whole or in
+part, and ADR-007, 010 and 014 are **amended**; each says so in a note at the top. Their
+text below the note is left exactly as it was decided, because the reasoning is still the
+best account of why the passphrase existed, and of what removing it gave up.
+
 Two things are deliberately **not** decided and must not be invented — see ADR-020,
 which Part B extends rather than resolves.
 
 ---
 
 ## ADR-001 — Attendance comes from a mid-session form, not the Zoom API
+
+> **Superseded in part by ADR-037 (September 2026).** Everything here about Zoom still
+> holds, and attendance still comes from a form with Google-verified email. The
+> passphrase does not: Part A is now the exit ticket, and attendance is a verified
+> address plus a submit time inside the session window. Rejected option (c) below is,
+> knowingly, what was chosen — ADR-037 says what that costs.
 
 **Context.** Roughly 30 fellows attend live lessons over Zoom. Zoom's participants API
 was the obvious source. Since a March 2023 API change, guest participants have `id` and
@@ -130,6 +142,11 @@ the outcome CU wants: the work product stays with CU.
 
 ## ADR-006 — Session is derived from the timestamp; the form has no session dropdown
 
+> **Superseded in part by ADR-038 (September 2026).** Session is still derived from the
+> timestamp and the form still has no session dropdown. "Exactly one question" is gone:
+> the form now asks the exit-ticket questions staff set, none of which is used to decide
+> attendance.
+
 **Context.** Each check-in must be attributed to a lesson. The form could ask which
 session it is.
 
@@ -151,6 +168,12 @@ sessions), not a reason to reassign the row.
 ---
 
 ## ADR-007 — Never drop a submission
+
+> **Amended by ADR-037 and ADR-039 (September 2026).** Unchanged in substance. There
+> are no wrong passphrases any more; the cases are now blank or unexpected answers,
+> timestamps outside the window, unknown addresses, and answers to questions the form's
+> map does not know — every one still a `checkin` row. The raw answers are an observed
+> column, covered by the same trigger.
 
 **Context.** Ingest sees wrong passphrases, blank answers, unknown addresses, timestamps
 in no session's window, and timestamps in two.
@@ -203,6 +226,11 @@ backfill.
 
 ## ADR-009 — Three tiers: deterministic rules, then a model, then a human
 
+> **Superseded by ADR-040 (September 2026).** There are two tiers now: rules, then a
+> human. Tier 2 read typed passphrases, and with no passphrase there is nothing for it to
+> read. The argument below for deciding everything possible deterministically applies
+> to all of attendance now.
+
 **Context.** Most check-ins are trivially decidable. A few are not:
 `"the word was justice"`, `"justice i think?"`, `"jushtis"`, `"sorry I missed it"` — all
 of which a human reads instantly and edit distance scores wrongly.
@@ -232,6 +260,13 @@ when an optional model is unreachable has made the model mandatory in practice.
 
 ## ADR-010 — `needs_review` is never collapsed into `not_attended`
 
+> **Amended by ADR-037 (September 2026).** Still in force. What reaches `needs_review`
+> changed: a CSV row inside one window (the address is not verified), a timestamp inside
+> two overlapping windows, and passphrase-era rows that were already waiting. A
+> submission outside its session's window is `not_attended` at confidence 0.6 with its
+> own review tab rather than `needs_review` — the timestamp is Google's and is evidence,
+> and a person can overturn it in one click.
+
 **Context.** Cases reach the end of adjudication undecided: a wrong passphrase from a
 verified address inside the window, a timestamp inside two overlapping windows, tier 2
 unavailable.
@@ -255,6 +290,10 @@ that just told you it does not know. Note the AI tier follows the same rule: a v
 
 ## ADR-011 — Fuzzy passphrase matching is on by default
 
+> **Superseded by ADR-037 (September 2026).** There is no passphrase to match.
+> `CUFA_MAX_EDIT_DISTANCE` is removed. Passphrase-era decisions made under this rule are
+> kept as they were.
+
 **Context.** The passphrase is heard aloud, possibly over a lossy connection, and typed
 on a phone.
 
@@ -276,6 +315,10 @@ belongs in tier 2, which can actually read the answer.
 
 ## ADR-012 — Levenshtein is implemented here, not imported
 
+> **Superseded by ADR-037 (September 2026).** Nothing measures edit distance any more,
+> and `text.levenshtein` is deleted. The dependency argument below still applies to
+> everything else.
+
 **Context.** Tier 1 needs edit distance. Several packages provide it.
 
 **Decision.** ~20 lines in `src/cufa/text.py::levenshtein`, with a `max_distance`
@@ -290,6 +333,11 @@ algorithm is textbook, fully covered by tests, and will not change.
 ---
 
 ## ADR-013 — Gemini receives exactly two strings
+
+> **Superseded by ADR-040 (September 2026).** Tier 2 is retired, so Gemini receives
+> nothing about attendance. `ai_adjudication_cache` is kept read-only so passphrase-era
+> AI decisions stay explainable. The principle — a model sees the fewest strings that
+> do the job, never a person — carries on in ADR-027 and ADR-032.
 
 **Context.** Tier 2 judges whether an answer indicates the person heard the passphrase.
 It could be given names, roster context, attendance history, prior answers.
@@ -315,6 +363,11 @@ because it is a model.
 ---
 
 ## ADR-014 — Latency is stored and never interpreted
+
+> **Amended by ADR-037 (September 2026).** Unchanged. "Announce now" is pressed when the
+> teacher shares the exit ticket's link rather than when they say a word, and latency
+> is still recorded and never interpreted. Being outside the window is a different
+> thing — a fact about the schedule, not about speed — and ADR-037 decides on it.
 
 **Context.** `latency_seconds` — the gap between announcement and submission — is
 obviously suggestive. It is tempting to flag long ones.
@@ -922,7 +975,7 @@ fellows to ignore the bot. Hedged wording and one-per-question, because word
 overlap is not understanding: "when does the session start" and "when does the
 session end" share every content word. The model is asked only about the
 candidates overlap could not settle, as the passphrase tier 2 is asked only about
-what edit distance cannot read (ADR-027's boundary, applied to Slack: it sees
+what edit distance cannot read (that tier is retired since, ADR-040; ADR-027's boundary, applied to Slack: it sees
 strings, never people). No key means the deterministic tier still works; a
 feature that stops when the key runs out has made the key mandatory.
 
@@ -1142,3 +1195,198 @@ does not require backfilling.
 
 Never revoking, because a badge is a record that something happened, and a
 streak that ended is not a streak that never was.
+
+---
+
+## ADR-037 — The passphrase is removed; attendance is a verified address inside the window
+
+**Context.** Part A asked for a passphrase the teacher said aloud and showed on screen
+(ADR-001). CU's own week-1 exit ticket, a form staff built by hand, asked no passphrase
+at all: first and last name, a 1–5 rating of the session, a takeaway, what to see more
+and less of, open questions, other feedback. It is the form staff actually read, and
+they asked for Part A to become it.
+
+The passphrase had a running cost that the exit ticket does not. A teacher chose a word
+every week, under rules about homophones and slide vocabulary (the old console guidance).
+Matching needed normalisation, fuzzy tolerance (ADR-011) and a model tier for answers
+edit distance could not read (ADR-009, ADR-013). Mismatches filled a review queue. And
+it was never proof on its own: spoken and shown, it reached anyone who could see a
+fellow's screen or chat (ADR-001 said as much).
+
+**Decision.** The passphrase is removed from the form, the session, ingest and
+adjudication. Attendance is two facts:
+
+1. the response came from a **Google-verified** address, and
+2. it was submitted inside the session window `[start − grace, end + grace]`, inclusive,
+   as `cufa.timeutil.session_window` defines it.
+
+| Observation | Decision | Rule | Confidence |
+|---|---|---|---|
+| Forms API, inside the form's session window | attended | `verified_email_in_window` | 0.7 |
+| Forms API, outside the form's session window | not attended | `outside_session_window` | 0.6 |
+| CSV, inside exactly one window | needs review | `unverified_email_in_window` | — |
+| CSV, inside no window | not attended | `outside_all_windows` | 0.6 |
+| CSV, inside two overlapping windows | needs review | `ambiguous_session` | — |
+
+The window is read from the session as it is scheduled **now**, so fixing a wrongly
+entered time and re-running `cufa adjudicate` re-judges. Every decision's note names
+the window it was judged against, so a decision that moved after a reschedule says
+why. Outside-the-window decisions get their own review tab.
+
+Verified email collection is kept even though the hand-made week-1 form used
+*Responder input*. Every session form is read back after it is copied and must report
+`VERIFIED`; `session_form.email_collection_verified_at` records when.
+
+Passphrase-era data is kept. The `checkin` passphrase columns stay, nullable, and are
+NULL on every row written since. A passphrase-era check-in that already has a decision
+keeps it unless `cufa adjudicate --redecide-legacy` asks for it to be re-judged by
+timing; one without a decision is judged by the rules above like any other.
+
+**Rejected.** (a) Keeping the passphrase as one optional question among the exit
+ticket's — two definitions of "attended" running side by side, with all the matching
+and review machinery kept alive for a field some weeks leave out. (b) Accepting a typed
+address, as the hand-made form did — that is the self-reported identity ADR-002 refuses,
+and with the passphrase gone the address is the only identity evidence left, so it
+matters more, not less. (c) Treating a substantive answer as evidence of presence —
+free text is counted, never graded (invariant 13), and grading it for "engagement with
+today's lesson" would penalise ESL and neurodivergent fellows for reasons unrelated to
+attending. (d) `needs_review` for a submission outside its window — the timestamp is
+Google's, and it is evidence; parking every late form in the queue makes the queue
+useless. It is `not_attended` at 0.6, visible on its own tab, and a person overturns it
+in one click. (e) A narrower window, or one per question — the grace exists because the
+week-1 form stayed open for ten minutes after the lesson, and a fellow finishing it
+then was at the lesson.
+
+**Why, and what it costs.** This evidence is weaker than what it replaces, and the
+repo says so rather than hiding it. A verified address and an in-window timestamp prove
+that the fellow's Google account submitted the form while the lesson ran. They do not
+prove the fellow was watching. A link opened from the Zoom chat and left in an idle tab
+satisfies both; so does the link forwarded to someone who was not there and submits
+from their own account during the window. The passphrase closed some of that gap —
+never all of it — at the price above.
+
+CU accepted the trade knowingly. The exit ticket's reflections are what staff use every
+week; attendance is one of three participation signals, not a verdict on its own; and
+the rules record their confidence honestly. 0.7 rather than 1.0 because the timestamp
+says the form was submitted during the lesson, not that the person followed it — which
+is the most a form without a spoken secret can say. If CU later needs stronger evidence
+for some purpose, the place to add it is a second signal beside this one, not a
+stricter reading of free text.
+
+---
+
+## ADR-038 — Part A's questions are data: a cohort default and per-session overrides, append-only
+
+**Context.** Staff want to write and edit the exit ticket themselves, starting from the
+week-1 form, and to change a single session's form now and then — a question about this
+week's reading, one fewer free-text box in a heavy week. Part B's questions live in code
+(`form_content_b.py`) because they are research-backed and compared week to week
+(ADR-021 to ADR-023). Part A's are not compared that way and are expected to change.
+
+**Decision.** Questions are versioned rows in `part_a_question_set`:
+
+- **One current default per cohort**, seeded from `config/part_a_default_questions.json`
+  by `cufa questions seed-default` (the week-1 form, captured as JSON).
+- **An optional override per session**, stored as a **full snapshot** of that session's
+  questions, not a diff against the default.
+- **Append-only.** Saving inserts a new version and stamps the previous one
+  `superseded_at`; a trigger refuses any other update and every delete. Saving content
+  identical to the current version is a no-op (`content_sha256`), which is what makes
+  seeding and re-running the demo idempotent. Two partial unique indexes enforce one
+  current default per cohort and one current override per session.
+- **Editable until the session's Part A form is published, then locked.** Saving an
+  override after that raises `QuestionsLocked`. Editing the default later changes only
+  forms not yet provisioned.
+- **Provisioning resolves override, then default**, and refuses when neither exists. It
+  records the set it used on `session_form.question_set_id`, rebuilds the copy's items
+  from it in one `batchUpdate`, reads the form back, and records each question's id in
+  `part_a_form_question`. The Part A template holds only a title and notice.
+- **Two placeholders**, filled per session at provisioning: `{lesson}` (the session's
+  `week_index`) and `{session_title}`. The stored set keeps them.
+- **Types:** short answer, paragraph, multiple choice, checkboxes, dropdown, linear
+  scale, section break and text block — the ones the Forms API can create with full
+  fidelity. The editor warns, softly, above six answerable questions.
+- **An existing form can be imported** (`cufa questions import-form`). Grid, date, time,
+  file upload, rating, image and video items are reported and left out; branching is
+  dropped with a warning.
+
+**Rejected.** (a) Questions in code, as Part B's are — every wording change would be a
+deploy, for a form staff are expected to edit weekly. (b) Letting staff edit the live
+form in the Forms UI — the recorded map goes stale and nothing records what fellows were
+actually asked. (c) Overrides stored as diffs — a later edit to the default would
+silently change what an already-customised session asks. (d) Editing after publish — one
+session's answers would be split across two question sets with nothing to say which
+fellow saw which. (e) Using the hand-made week-1 form as the template — the app's
+`drive.file` scope (ADR-005) cannot copy a file it did not create; the importer reads the
+questions from it instead. (f) Updating question rows in place.
+
+**Why.** "What did week 3's form ask?" has to be answerable from the database alone,
+months later, whatever the default says by then. A full snapshot, locked at publish and
+recorded on the form row, makes that a lookup rather than a reconstruction — the same
+reasoning as Part B's question-text snapshot (ADR-024), applied to a form whose
+questions are expected to change.
+
+Some of the form cannot be set through the API at all — header image, colour, font,
+"send responders a copy", the progress bar and the confirmation message. They are set by
+hand on the template once, alongside Verified email, and every copy inherits them
+([`setup/console.md`](setup/console.md)).
+
+---
+
+## ADR-039 — Part A answers are stored raw and resolved at read time
+
+**Context.** Part B resolves answers through `form_question_map` at ingest and refuses a
+form whose map is incomplete (ADR-024): a confidence score filed as a takeaway would
+corrupt every number downstream without an error. Part A's questions now vary by session
+and are not used to decide anything.
+
+**Decision.** `checkin.answers` stores each response's answers exactly as the Forms API
+returned them, keyed by `questionId`:
+`{"<questionId>": {"values": ["…", …], "title": "…"}}`. Multi-select answers stay
+separate values and are never joined. `checkin.form_id` records the form. Both are
+observed columns, covered by the immutability trigger. Answers are resolved to question
+keys at **read** time through `part_a_form_question`, in `v_checkin_answer` (one row per
+check-in and question, with `has_content`). A missing or incomplete map is a warning, not
+a refusal; an answer to a question the map does not know is still a row, with a NULL key.
+`v_checkin_resolved.questions_answered` counts non-blank answers. Nothing adjudicates on
+any of it.
+
+**Rejected.** (a) Part B's refuse-to-ingest — for Part A the answers are not the
+attendance evidence, so refusing a form over its map would drop attendance records over a
+display problem, which invariant 1 forbids. (b) Resolving at ingest and storing by key —
+a key is this system's label, not an observation; a map re-recorded after a teacher
+retitles a question could not repair rows already written, because they are immutable.
+(c) Joining multi-select values into one string, as the Part B extractor does — "Capital
+budget, Reserves" cannot be told apart from an option whose text contains a comma.
+(d) Storing only answers to questions the map knows.
+
+**Why.** The observation is what Google returned; everything else is derived. This is
+the rule `checkin` already follows for identity — it stores the email, not a `fellow_id`,
+and resolves at read time (ADR-008) — applied to answers.
+
+---
+
+## ADR-040 — Tier 2 is retired: no model takes part in attendance
+
+**Context.** Tier 2 existed to read typed passphrases that edit distance could not —
+`"the word was justice"`, `"sorry I missed it"` (ADR-009, ADR-013). With no passphrase,
+there is nothing left for it to read.
+
+**Decision.** `adjudicate/ai.py` is deleted. Adjudication is rules, then a human.
+`cufa adjudicate --no-ai` is still accepted, as a no-op with a notice, so existing
+scripts keep working. `ai_adjudication_cache` stays, read-only and commented as retired,
+so passphrase-era AI decisions remain explainable; the console's AI-decisions tab appears
+only when such decisions exist. `CUFA_AI_MAX_CALLS_PER_RUN` and `CUFA_MAX_EDIT_DISTANCE`
+are removed. `GEMINI_API_KEY` stays for muddiest-point themes and the Slack Q&A summary,
+and `make demo-ai` now demonstrates only the themes.
+
+**Rejected.** (a) Pointing the model at the exit-ticket answers instead — "does this
+reflection show the fellow was at today's lesson?" is a model judging an individual
+fellow's free text, which invariant 12 and ADR-027 rule out, and it would grade writing.
+(b) Keeping the tier in place, unreachable — code nothing calls still gets read, and
+misleads whoever reads it.
+
+**Why.** Every attendance decision is now reproducible from the row and the schedule
+alone: no model, no network, no quota. ADR-009's argument for deciding everything
+possible deterministically now covers all of it, and the demo needs no key to show the
+whole of attendance.

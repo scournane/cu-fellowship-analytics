@@ -1,5 +1,19 @@
 # Implementation Prompt: Part A — Mid-Session Passphrase Check-in
 
+> **Superseded, September 2026.** Part A no longer has a passphrase. It is the **exit
+> ticket**: staff-editable questions (a cohort default seeded from
+> `config/part_a_default_questions.json`, with per-session overrides that lock when the
+> form is published), and attendance is a Google-verified address plus a submit time
+> inside the session window. Tier 2 is retired; no model takes part in attendance. The
+> decisions are ADR-037 to ADR-040 in [`../decisions.md`](../decisions.md), and the
+> README and [`../setup/console.md`](../setup/console.md) describe the system as it is.
+>
+> This document is kept unedited below as the brief Part A was first built from. Where it
+> and the code disagree about the passphrase, fuzzy matching, the model tier or a
+> one-question form, the code and the ADRs are right. What it says about Google's traps,
+> the observation/decision split, idempotent ingest and never dropping a submission still
+> holds.
+
 **Assume the repository is empty.** No schema, no database, no code, no config.
 Build everything from scratch, and **set it all up yourself** — the person running
 this should need one command to get a working local stack, not a setup checklist.

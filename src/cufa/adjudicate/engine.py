@@ -1,33 +1,40 @@
-"""Running the three tiers over a cohort.
+"""Running the rules, then a person, over a cohort.
 
 Ordering rules that are not negotiable:
 
-* A **human decision is never superseded** by a rule or a model. Re-running
-  adjudication skips any check-in whose current decision has
-  ``decided_by='human'``. ``--force`` overrides that and says out loud exactly
-  what it is about to overwrite.
-* **Tier 2 never crashes the run.** No key, no network, quota exhausted — the
-  case is written as ``needs_review`` with ``rule_name='ai_unavailable'`` and the
-  pipeline finishes. A pipeline that stops because an optional model was
-  unreachable would make the model mandatory in practice.
-* **``needs_review`` is never turned into ``not_attended``.** Not by tier 1, not
-  by tier 2, not by a later pass.
+* A **human decision is never superseded** by a rule. Re-running adjudication
+  skips any check-in whose current decision has ``decided_by='human'``.
+  ``--force`` overrides that and says out loud exactly what it is about to
+  overwrite.
+* **No model takes part.** The rules read the source, the session match and
+  the submission time; the exit-ticket answers are never read here. The
+  passphrase era's model tier is gone, and nothing in this package imports a
+  model client.
+* **Passphrase-era decisions are frozen.** A check-in with a
+  ``passphrase_match`` was judged under the old definition, and a staff member
+  may have acted on it. When it already has a current decision it is left
+  alone unless ``--redecide-legacy`` asks for it to be re-judged by timing.
+  One without a decision is judged by the rules like any other row.
+* **needs_review only ever comes from evidence the rules cannot read** — an
+  unverified address, overlapping windows — and re-running over that same
+  evidence yields needs_review again. What can change a pending decision is a
+  changed schedule, which is a changed input: the new decision's note names
+  the window it was judged against, so the history shows why it moved.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 import psycopg
 
-from ..config import Settings, get_settings
-from ..db import fetch_all
-from ..errors import AiUnavailable
+from ..db import fetch_all, fetch_one
+from ..decisions import current_decision, record_decision
 from ..latency import recompute_for_cohort
 from ..logging_setup import get_logger
-from ..decisions import current_decision, record_decision
-from .ai import PROMPT_VERSION, Adjudicator, build_adjudicator, judge_with_cache
+from ..timeutil import iso_utc, session_window, to_utc
 from .rules import apply_rules
 
 log = get_logger(__name__)
@@ -39,30 +46,35 @@ class AdjudicationResult:
 
     examined: int = 0
     decided_by_rule: int = 0
-    decided_by_ai: int = 0
-    escalated: int = 0
     needs_review: int = 0
+    outside_window: int = 0
     unchanged: int = 0
     human_preserved: int = 0
     human_overwritten: int = 0
-    ai_calls: int = 0
-    ai_cache_hits: int = 0
-    ai_unavailable: int = 0
+    #: Passphrase-era check-ins left on their existing decision.
+    legacy_frozen: int = 0
+    #: Passphrase-era check-ins re-judged because --redecide-legacy asked.
+    legacy_redecided: int = 0
     warnings: list[str] = field(default_factory=list)
 
     def __str__(self) -> str:  # pragma: no cover - display only
         from ..logging_setup import summarize
 
-        return summarize(
+        counts: dict[str, int] = dict(
             examined=self.examined,
             rule=self.decided_by_rule,
-            ai=self.decided_by_ai,
             needs_review=self.needs_review,
+            outside_window=self.outside_window,
             unchanged=self.unchanged,
             human_kept=self.human_preserved,
-            ai_calls=self.ai_calls,
-            cache_hits=self.ai_cache_hits,
         )
+        if self.human_overwritten:
+            counts["human_overwritten"] = self.human_overwritten
+        if self.legacy_frozen:
+            counts["legacy_frozen"] = self.legacy_frozen
+        if self.legacy_redecided:
+            counts["legacy_redecided"] = self.legacy_redecided
+        return summarize(**counts)
 
 
 def _checkins_for_cohort(conn: psycopg.Connection, cohort_id: str) -> list[dict[str, Any]]:
@@ -71,12 +83,17 @@ def _checkins_for_cohort(conn: psycopg.Connection, cohort_id: str) -> list[dict[
     A check-in with no session has no cohort of its own, so the load run's
     cohort carries it. Without that, exactly the rows that failed to match a
     session — the ones worth looking at — would be invisible to adjudication.
+
+    The schedule is read from ``session`` as it is *now*, not as it was at
+    ingest: fixing a session's time is how a wrongly-entered schedule gets
+    corrected, and the decisions should follow.
     """
     return fetch_all(
         conn,
         """
-        select c.checkin_id, c.passphrase_match, c.session_match, c.passphrase_raw,
-               c.submitted_at_utc, s.passphrase as expected_passphrase, s.title as session_title
+        select c.checkin_id, c.source, c.session_match, c.submitted_at_utc,
+               c.passphrase_match, s.title as session_title,
+               s.scheduled_at_utc, s.duration_minutes, s.grace_minutes
           from checkin c
           left join "session" s on s.session_id = c.session_id
           left join load_run lr on lr.load_id = c.load_id
@@ -87,12 +104,60 @@ def _checkins_for_cohort(conn: psycopg.Connection, cohort_id: str) -> list[dict[
     )
 
 
+def window_for(row: dict[str, Any]) -> tuple[datetime, datetime] | None:
+    """The matched session's window, or None when there is no session."""
+    if row.get("scheduled_at_utc") is None:
+        return None
+    return session_window(
+        row["scheduled_at_utc"], row["duration_minutes"], row["grace_minutes"]
+    )
+
+
+def window_note(window: tuple[datetime, datetime]) -> str:
+    """``window 2026-09-15T22:45:00Z..2026-09-16T00:45:00Z``.
+
+    Written on every decision that was judged against a window, so a decision
+    that moved after a reschedule says which window moved it.
+    """
+    start, end = window
+    return f"window {iso_utc(start)}..{iso_utc(end)}"
+
+
+def legacy_counts(conn: psycopg.Connection, cohort_id: str) -> dict[str, int]:
+    """Passphrase-era check-ins with a current decision, by who decided.
+
+    What ``--redecide-legacy`` is about to touch, so the CLI can say so before
+    it does anything — the same courtesy ``--force`` extends to human
+    decisions. Human decisions are counted separately because the flag alone
+    does not reach them: a person's call on a passphrase-era row moves only
+    with ``--force`` as well.
+    """
+    row = fetch_one(
+        conn,
+        """
+        select count(*)                                       as total,
+               count(*) filter (where d.decided_by = 'rule')  as rule,
+               count(*) filter (where d.decided_by = 'ai')    as ai,
+               count(*) filter (where d.decided_by = 'human') as human
+          from checkin c
+          join v_current_decision d on d.checkin_id = c.checkin_id
+          left join "session" s on s.session_id = c.session_id
+          left join load_run lr on lr.load_id = c.load_id
+         where (s.cohort_id = %s or lr.cohort_id = %s)
+           and c.passphrase_match is not null
+        """,
+        (cohort_id, cohort_id),
+    ) or {}
+    return {key: int(row.get(key) or 0) for key in ("total", "rule", "ai", "human")}
+
+
 def _is_same_decision(current: dict[str, Any] | None, **candidate: Any) -> bool:
     """True when re-deciding would produce a byte-identical judgment.
 
     Without this, every re-run would append a new row that says exactly what the
     previous row said, and the decision history — the thing that makes an
-    override auditable — would fill with noise.
+    override auditable — would fill with noise. The note is compared too: it
+    names the window, so an unchanged window is a no-op and a moved one is not.
     """
     if current is None:
         return False
@@ -112,37 +177,32 @@ def adjudicate_cohort(
     conn: psycopg.Connection,
     cohort_id: str,
     *,
-    use_ai: bool = True,
     force: bool = False,
-    adjudicator: Adjudicator | None = None,
-    settings: Settings | None = None,
+    redecide_legacy: bool = False,
 ) -> AdjudicationResult:
     """Decide (or re-decide) every check-in in a cohort."""
-    settings = settings or get_settings()
     result = AdjudicationResult()
 
     recompute_for_cohort(conn, cohort_id)
-
-    tier2: Adjudicator | None = None
-    if use_ai:
-        tier2 = adjudicator if adjudicator is not None else build_adjudicator(settings)
-        if tier2 is None:
-            log.info(
-                "tier 2 disabled for this run; mismatch cases will be written as "
-                "needs_review with rule_name='ai_unavailable'"
-            )
-
-    ai_calls_remaining = settings.ai_max_calls_per_run
 
     for row in _checkins_for_cohort(conn, cohort_id):
         result.examined += 1
         checkin_id = str(row["checkin_id"])
         current = current_decision(conn, checkin_id)
 
-        if current is not None and current["decided_by"] == "human":
-            if not force:
-                result.human_preserved += 1
-                continue
+        legacy = row["passphrase_match"] is not None
+        human = current is not None and current["decided_by"] == "human"
+
+        # Each flag opens one door. --force reaches human decisions and
+        # --redecide-legacy reaches passphrase-era ones; a person's decision on
+        # a passphrase-era row needs both.
+        if human and not force:
+            result.human_preserved += 1
+            continue
+        if legacy and current is not None and not redecide_legacy:
+            result.legacy_frozen += 1
+            continue
+        if human:
             warning = (
                 f"--force is overwriting a HUMAN decision: checkin={checkin_id} "
                 f"status={current['status']!r} "
@@ -153,102 +213,33 @@ def adjudicate_cohort(
             log.warning("%s", warning)
             result.human_overwritten += 1
 
-        outcome = apply_rules(row["passphrase_match"], row["session_match"])
+        window = window_for(row) if row["session_match"] == "matched" else None
+        in_window: bool | None = None
+        if window is not None:
+            stamp = to_utc(row["submitted_at_utc"])
+            in_window = window[0] <= stamp <= window[1]
 
-        if not outcome.escalates:
-            candidate = {
-                "status": outcome.status,
-                "decided_by": "rule",
-                "rule_name": outcome.rule_name,
-                "confidence": outcome.confidence,
-            }
-            if _is_same_decision(current, **candidate):
-                result.unchanged += 1
-                if outcome.status == "needs_review":
-                    result.needs_review += 1
-                continue
-            record_decision(conn, checkin_id, **candidate)
-            result.decided_by_rule += 1
-            if outcome.status == "needs_review":
-                result.needs_review += 1
-            continue
-
-        # --- tier 2 ---------------------------------------------------------
-        result.escalated += 1
-        expected = row["expected_passphrase"] or ""
-        submitted = row["passphrase_raw"] or ""
-
-        if tier2 is None or ai_calls_remaining <= 0:
-            reason = (
-                "tier 2 unavailable"
-                if tier2 is None
-                else f"tier 2 call cap of {settings.ai_max_calls_per_run} reached for this run"
-            )
-            candidate = {
-                "status": "needs_review",
-                "decided_by": "rule",
-                "rule_name": "ai_unavailable",
-                "confidence": None,
-                "note": reason,
-            }
-            if _is_same_decision(
-                current, status="needs_review", decided_by="rule", rule_name="ai_unavailable"
-            ):
-                result.unchanged += 1
-            else:
-                record_decision(conn, checkin_id, **candidate)
-            result.needs_review += 1
-            result.ai_unavailable += 1
-            continue
-
-        try:
-            verdict = judge_with_cache(conn, tier2, expected, submitted)
-        except AiUnavailable as exc:
-            # Degrade for the rest of the run rather than retrying per row: if
-            # the key is bad or quota is gone, every remaining call fails too.
-            log.warning("tier 2 became unavailable mid-run: %s", exc)
-            tier2 = None
-            record_decision(
-                conn,
-                checkin_id,
-                status="needs_review",
-                decided_by="rule",
-                rule_name="ai_unavailable",
-                note=str(exc)[:500],
-            )
-            result.needs_review += 1
-            result.ai_unavailable += 1
-            continue
-
-        if verdict.cached:
-            result.ai_cache_hits += 1
-        else:
-            result.ai_calls += 1
-            ai_calls_remaining -= 1
-
-        if verdict.heard_the_passphrase:
-            status = "attended"
-        else:
-            # Deliberately NOT not_attended. The model judged one thing — whether
-            # the answer shows they heard the word — and a wrong answer from a
-            # verified address inside the session window is not proof of absence.
-            # A person decides this one.
-            status = "needs_review"
-            result.needs_review += 1
-
+        outcome = apply_rules(row["source"], row["session_match"], in_window)
         candidate = {
-            "status": status,
-            "decided_by": "ai",
-            "confidence": round(float(verdict.confidence), 3),
-            "ai_model": tier2.model_name,
-            "ai_prompt_version": PROMPT_VERSION,
-            "ai_reasoning": verdict.reasoning,
+            "status": outcome.status,
+            "decided_by": "rule",
+            "rule_name": outcome.rule_name,
+            "confidence": outcome.confidence,
+            "note": window_note(window) if window is not None else None,
         }
+
+        if outcome.status == "needs_review":
+            result.needs_review += 1
+        elif outcome.status == "not_attended":
+            result.outside_window += 1
+
         if _is_same_decision(current, **candidate):
             result.unchanged += 1
             continue
         record_decision(conn, checkin_id, **candidate)
-        result.decided_by_ai += 1
+        result.decided_by_rule += 1
+        if legacy and current is not None:
+            result.legacy_redecided += 1
 
     log.info("adjudicate cohort=%s %s", cohort_id, result)
     return result

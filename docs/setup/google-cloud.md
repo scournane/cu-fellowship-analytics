@@ -93,7 +93,7 @@ Requested in `src/cufa/google/base.py` (`SCOPES`) and `src/cufa/google/oauth.py`
 
 | Scope | Why it is needed |
 |---|---|
-| `https://www.googleapis.com/auth/forms.body` | Create the template form, update titles/descriptions/the passphrase question, and **publish** each session form. Since 1 July 2026 an API-created form is unpublished and accepts no responses until `setPublishSettings` is called, so this scope is what makes a form able to collect anything at all. |
+| `https://www.googleapis.com/auth/forms.body` | Create the template form, write each session form's title, description and questions (and read them back with `forms.get`), and **publish** each session form. Since 1 July 2026 an API-created form is unpublished and accepts no responses until `setPublishSettings` is called, so this scope is what makes a form able to collect anything at all. |
 | `https://www.googleapis.com/auth/drive.file` | Two jobs. (a) Copy the template (`files.copy`) — every session form is a Drive copy, because copying preserves the Verified email-collection setting that the API cannot reliably set. (b) **Read responses**: `forms.responses.list` accepts `drive`, `drive.file`, or `forms.responses.readonly`, and `drive.file` covers it for forms this app created. |
 | `openid` | Standard OpenID Connect scope, requested so the app can identify the connected account. |
 | `https://www.googleapis.com/auth/userinfo.email` | Read **only** the connected account's own address, so the console can display "connected as …" and the CLI can store it in `google_credential.account_email`. It reads no other person's data. |

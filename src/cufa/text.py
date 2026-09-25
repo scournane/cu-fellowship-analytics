@@ -1,7 +1,9 @@
-"""String normalization and edit distance for passphrase comparison.
+"""String normalization, email normalization and the idempotency hash.
 
-Normalization is shared by tier 1 and by the AI cache key, so a cache hit means
-the same comparison, not a coincidentally similar one.
+``normalize_answer`` is shared wherever two typed strings have to compare as
+the same text regardless of case, punctuation or a phone keyboard's smart
+characters — the Slack Q&A matcher uses it. ``normalize_email`` is the only
+address normalization in the codebase, and deliberately a minimal one.
 """
 
 from __future__ import annotations

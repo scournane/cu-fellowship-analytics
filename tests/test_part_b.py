@@ -51,7 +51,7 @@ from cufa.rotation import (
 from cufa.shoutouts import split_names
 from cufa.template import create_template, verify_template
 
-from conftest import make_fellow, make_session, seed_part_b
+from conftest import make_fellow, make_session, seed_part_a, seed_part_b
 
 # Both possibilities, every time. Parameterising rather than picking one is the
 # point: the mapping logic must be correct under either.
@@ -292,7 +292,6 @@ def test_6_week_index_drives_rotation_not_the_calendar(db, scheme):
             timezone=row["timezone"],
             duration_minutes=row["duration_minutes"],
             grace_minutes=row["grace_minutes"],
-            passphrase=row["passphrase"],
             week_index=row["week_index"],
             teacher_question=row["teacher_question"],
         ),
@@ -705,14 +704,16 @@ def test_24_part_a_and_part_b_ingest_independently(db, scheme):
         fake.simulate_human_sets_verified(record.form_id)
         vt(db, fake, part)
 
-    session_id = make_session(
-        db, title="Week 2", local=SESSION_LOCAL, week_index=2, passphrase="justice"
-    )
+    session_id = make_session(db, title="Week 2", local=SESSION_LOCAL, week_index=2)
     form_a = provision_session(db, fake, session_id, part="a")
     form_b = provision_session(db, fake, session_id, part="b")
     assert form_a.form_id != form_b.form_id
 
-    fake.seed_responses(form_a.form_id, [("a-only@example.invalid", "2026-09-15T23:20:00Z", "justice")])
+    seed_part_a(db, fake, form_a.form_id, [{
+        "email": "a-only@example.invalid",
+        "submitted_at": "2026-09-15T23:20:00Z",
+        "answers": {"q_takeaway": "Budgets are moral documents."},
+    }])
     seed_part_b(db, fake, form_b.form_id, [{
         "email": "b-only@example.invalid",
         "submitted_at": END_OF_SESSION,

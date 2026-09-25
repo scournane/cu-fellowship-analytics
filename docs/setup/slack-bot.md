@@ -429,7 +429,7 @@ The rules, because a wrong pointer is worse than none:
 * The link goes to the ✅'d reply when there is one, else to the earlier
   thread. The session named is the one whose window the earlier question fell
   in (from an hour before a lesson until an hour before the next).
-* Matching is in two tiers, like passphrase adjudication. Tier 1 is word
+* Matching is in two tiers: everything word overlap can settle, it settles. Tier 1 is word
   overlap after stop words — *"does anyone have the slides from tuesday"* and
   *"can someone share tuesday's slides"* match; *"what does quorum mean"* and
   *"what does filibuster mean"* do not. Tier 2 only runs with a

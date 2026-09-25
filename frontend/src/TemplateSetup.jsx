@@ -7,11 +7,15 @@ import {Heading} from '@astryxdesign/core/Heading'
 import {Link} from '@astryxdesign/core/Link'
 import {MetadataList, MetadataListItem} from '@astryxdesign/core/MetadataList'
 import {Stack} from '@astryxdesign/core/Stack'
+import {Table, TableCell, TableHeaderCell, TableRow} from '@astryxdesign/core/Table'
 import {Text} from '@astryxdesign/core/Text'
 import {Token} from '@astryxdesign/core/Token'
 
 import {Notices, PageHeader, PostForm} from './AppFrame.jsx'
+import {CohortFilter} from './CohortFilter.jsx'
 import {Prose} from './Prose.jsx'
+import {StartFrom} from './QuestionSetEditor.jsx'
+import {typeInfo} from './QuestionListEditor.jsx'
 import {fmtStamp} from './format.js'
 
 const BLOCKED_BY_PART = {
@@ -86,7 +90,7 @@ function PartCard({entry, manualStep, connectedAccount}) {
           <Stack gap={3}>
             <Text type="supporting">
               {part === 'a'
-                ? 'Creates one form through the API with the single passphrase question and the plain-language header notice.'
+                ? 'Creates one form through the API with a title and the plain-language header notice, and no questions. Each session’s copy has its exit ticket questions written onto it when it is provisioned — the cohort default below, or the session’s own.'
                 : 'Creates one form through the API with the four fields that are always on the end-of-session form: confidence, takeaway, this week’s rotating question, and the shoutout. The help checkbox is added per session at provisioning time, because whether it appears at all depends on whether anyone is configured to receive it.'}
               {' Done once, not per session.'}
             </Text>
@@ -162,6 +166,102 @@ function PartCard({entry, manualStep, connectedAccount}) {
   )
 }
 
+/** The cohort's default Part A questions, summarised, with the ways to change them.
+ *
+ *  On this screen because it is set-up work done once per cohort, next to the
+ *  template the questions are written onto — but the full editor is its own
+ *  page, since a list of eight questions with options does not fit in a card. */
+function DefaultQuestions({cohorts, selected, current, usage, questionTypes}) {
+  if (!cohorts.length) return null
+  const questions = (current && current.content && current.content.questions) || []
+  const editUrl = `/template/questions?cohort=${encodeURIComponent(selected)}`
+
+  return (
+    <Card padding={5}>
+      <Stack gap={4}>
+        <Stack direction="horizontal" gap={3} align="center" wrap="wrap">
+          <Heading level={2}>Default exit ticket questions</Heading>
+          <Token
+            label={current ? `default v${current.version}` : 'not set'}
+            color={current ? 'blue' : 'orange'}
+            size="sm"
+          />
+        </Stack>
+        <Text type="supporting">
+          Part A — exit ticket. What every session in a cohort asks, unless a session has its
+          own. A session’s questions can be changed from its page until its Part A form is
+          published; after that they are locked, because the answers are read against them.
+        </Text>
+
+        <Stack direction="horizontal">
+          <CohortFilter
+            cohorts={cohorts}
+            selected={selected}
+            includeAll={false}
+            hrefFor={(cohort) => `/template?cohort=${encodeURIComponent(cohort)}`}
+          />
+        </Stack>
+
+        {current ? (
+          <Stack gap={3}>
+            <Stack gap={0.5}>
+              <Text type="label">{current.content.title}</Text>
+              <Text type="supporting">
+                {`${current.answerable_count} question${current.answerable_count === 1 ? '' : 's'} to answer · saved ${fmtStamp(current.created_at)}${current.created_by ? ` by ${current.created_by}` : ''}`}
+                {usage ? ` · followed by ${usage.following} of ${usage.sessions} sessions` : ''}
+              </Text>
+            </Stack>
+            <Table density="compact" dividers="rows">
+              <TableRow isHeaderRow>
+                <TableHeaderCell>#</TableHeaderCell>
+                <TableHeaderCell>Question</TableHeaderCell>
+                <TableHeaderCell>Type</TableHeaderCell>
+              </TableRow>
+              {questions.map((q, i) => (
+                <TableRow key={q.key || i}>
+                  <TableCell><Text hasTabularNumbers>{i + 1}</Text></TableCell>
+                  <TableCell>
+                    <Stack direction="horizontal" gap={1} align="center" wrap="wrap">
+                      <Text>{q.title}</Text>
+                      {q.required ? <Token label="required" color="default" size="sm" /> : null}
+                    </Stack>
+                  </TableCell>
+                  <TableCell>
+                    <Text type="supporting">{typeInfo(questionTypes, q.type).label || q.type}</Text>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </Table>
+            <Stack direction="horizontal">
+              <Button label="Edit the questions" variant="primary" href={editUrl} />
+            </Stack>
+          </Stack>
+        ) : (
+          <Stack gap={3}>
+            <Banner
+              status="warning"
+              title={`${selected} has no default questions`}
+              description="Provisioning Part A refuses for any session in this cohort without questions of its own. Start from the approved exit ticket, import a form you already use, or write them."
+            />
+            <Stack direction="horizontal">
+              <Button label="Write them from scratch" href={editUrl} />
+            </Stack>
+          </Stack>
+        )}
+
+        <Collapsible trigger="Start from an existing set" defaultIsOpen={!current}>
+          <StartFrom
+            cohortId={selected}
+            current={current}
+            seedAction="/template/questions/seed"
+            importAction="/template/questions/import"
+          />
+        </Collapsible>
+      </Stack>
+    </Card>
+  )
+}
+
 export function TemplateSetup({
   parts = [],
   manual_step,
@@ -169,6 +269,11 @@ export function TemplateSetup({
   error,
   survey_rationale,
   connected_account,
+  cohorts = [],
+  selected_cohort,
+  part_a_default,
+  part_a_usage,
+  question_types,
 }) {
   return (
     <Stack gap={4}>
@@ -193,6 +298,14 @@ export function TemplateSetup({
           connectedAccount={connected_account}
         />
       ))}
+
+      <DefaultQuestions
+        cohorts={cohorts}
+        selected={selected_cohort}
+        current={part_a_default}
+        usage={part_a_usage}
+        questionTypes={question_types}
+      />
 
       {survey_rationale ? (
         <Card padding={5}>

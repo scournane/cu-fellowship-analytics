@@ -13,6 +13,9 @@ interface rather than hidden inside one implementation:
     ``questionId``, and whether a Drive copy preserves those ids across copies is
     **not verified either way** (trap 5). Ids are therefore read back off the
     form after provisioning rather than assumed, hardcoded, or matched by title.
+    It returns each question's full raw body too, because Part A's questions are
+    staff-written data and provisioning asserts the form came back the shape it
+    was told to be.
 
 The fake in ``fake.py`` implements the same seven and can be told to reproduce
 each failure — including both possible question-id behaviours — so trap handling
@@ -50,11 +53,6 @@ SCOPES: tuple[str, ...] = (
 EMAIL_COLLECTION_VERIFIED = "VERIFIED"
 EMAIL_COLLECTION_RESPONDER_INPUT = "RESPONDER_INPUT"
 EMAIL_COLLECTION_DO_NOT_COLLECT = "DO_NOT_COLLECT"
-
-# The single question on every check-in form. Matched case-insensitively when
-# reading responses back, so an edit to the wording in the UI does not orphan
-# the answer.
-PASSPHRASE_QUESTION_TITLE = "Today's passphrase"
 
 
 class GoogleApiError(RuntimeError):
@@ -116,9 +114,16 @@ class FormItem:
 
     ``question_id`` is the key ``forms.responses.list`` files answers under, and
     ``index`` is the position this application controlled when it created the
-    item. Part B resolves answers by index-assigned slot, never by title: the
-    rotating slot's title changes every week and a teacher may edit any of the
-    others in the Forms UI without telling anyone.
+    item — counting section breaks and text blocks, which are items without a
+    question id and so never appear as a ``FormItem`` themselves. Answers are
+    resolved by index-assigned position, never by title: Part B's rotating slot
+    is retitled every week, and a teacher may reword any question in the Forms
+    UI without telling anyone.
+
+    ``question`` is the raw ``questionItem.question`` body (``textQuestion``,
+    ``choiceQuestion`` with its options, ``scaleQuestion`` …) exactly as the API
+    returned it, so a caller can check the options survived rather than trusting
+    the ``kind`` summary alone.
     """
 
     item_id: str
@@ -126,6 +131,9 @@ class FormItem:
     title: str
     index: int
     kind: str = "text"
+    description: str = ""
+    required: bool = False
+    question: dict[str, Any] = field(default_factory=dict, compare=False, hash=False)
 
 
 @dataclass(frozen=True)
@@ -149,12 +157,18 @@ class FormResponse:
     is preferred over a linked spreadsheet, which writes locale-formatted times
     with no offset marker.
 
-    Two views of the same answers. ``answers`` is keyed by question *title* and
-    is what Part A's single-question form uses. ``answers_by_id`` is keyed by
-    ``questionId``, which is what the API actually returns and what Part B
-    resolves through ``form_question_map``. Titles are lossy — two items can
-    share one, and an edit in the Forms UI changes one — so the id-keyed view is
-    the authoritative one wherever a form has more than one question.
+    Three views of the same answers:
+
+    * ``answer_values_by_id`` — ``questionId`` -> every value, **unjoined**. A
+      checkbox question ticked three times is three values. This is what Part A
+      stores on the check-in row, because joining "Budgets, taxes" and "Budgets"
+      "taxes" into one string cannot be undone.
+    * ``answers_by_id`` — ``questionId`` -> the values joined with a space. What
+      Part B resolves through ``form_question_map``; its only multi-value field
+      is a single-option checkbox, where joining loses nothing.
+    * ``answers`` — keyed by question *title*, joined. A convenience for logs
+      and tests. Titles are lossy — two items can share one, and an edit in the
+      Forms UI changes one — so nothing resolves answers through it.
     """
 
     response_id: str
@@ -163,14 +177,28 @@ class FormResponse:
     answers: dict[str, str] = field(default_factory=dict)
     answers_by_id: dict[str, str] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
+    answer_values_by_id: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+    def values_by_id(self) -> dict[str, tuple[str, ...]]:
+        """``answer_values_by_id``, or the joined view wrapped, for a client
+        that only fills the latter. Never loses an answer either way."""
+        if self.answer_values_by_id:
+            return dict(self.answer_values_by_id)
+        return {qid: (value,) for qid, value in (self.answers_by_id or {}).items()}
 
 
 @dataclass(frozen=True)
 class ResponsePage:
-    """One page of responses plus the token for the next, if any."""
+    """One page of responses plus the token for the next, if any.
+
+    ``titles_by_id`` is what each question was called when this page was read,
+    so a stored answer carries the wording it was given under even if the map
+    that resolves it is missing.
+    """
 
     responses: tuple[FormResponse, ...]
     next_page_token: str | None = None
+    titles_by_id: dict[str, str] = field(default_factory=dict)
 
 
 @runtime_checkable
@@ -191,8 +219,9 @@ class FormsClient(Protocol):
     def get_form(self, form_id: str) -> FormDefinition:
         """Read a form's items back, with the question ids the API assigned.
 
-        Called after provisioning a Part B form so the ``questionId`` -> slot
-        mapping can be recorded. Never skipped and never cached across a
+        Called after provisioning either part's form so the ``questionId`` ->
+        slot (Part B) or ``questionId`` -> question (Part A) map can be
+        recorded. Never skipped and never cached across a
         ``batchUpdate``: a copy may or may not preserve ids, and assuming either
         way produces answers filed under the wrong field with no error.
         """
@@ -211,7 +240,10 @@ class FormsClient(Protocol):
         ...
 
     def batch_update(self, form_id: str, requests: list[dict[str, Any]]) -> dict[str, Any]:
-        """Apply batchUpdate requests — title, description, question text only."""
+        """Apply batchUpdate requests: form info and items, never settings.
+
+        Atomic, like the real API: if any request is rejected, none apply.
+        """
         ...
 
     def set_publish_settings(

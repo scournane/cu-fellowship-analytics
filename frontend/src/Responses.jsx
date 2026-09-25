@@ -68,6 +68,107 @@ function Distribution({distribution = [], responses, median, q1, q3, iqr}) {
   )
 }
 
+/** "1 = “Not at all”, 5 = “Completely”" for a scale that has end labels. */
+function scaleLegend(question) {
+  const counts = question.counts || []
+  const parts = []
+  if (question.low_label && counts.length) parts.push(`${counts[0].value} = “${question.low_label}”`)
+  if (question.high_label && counts.length) {
+    parts.push(`${counts[counts.length - 1].value} = “${question.high_label}”`)
+  }
+  return parts.join(', ')
+}
+
+/** One exit ticket question: how many answered, then counts or the words.
+ *
+ *  Counts for a choice or a scale, with every option shown including the ones
+ *  nobody picked. For text, the answers themselves with no name beside them:
+ *  they are read to plan the next lesson, and a list of who wrote what reads as
+ *  a marking sheet. */
+function PartAQuestion({question, responses}) {
+  const peak = (question.counts || []).reduce((max, row) => Math.max(max, row.count), 0) || 1
+  return (
+    <Stack gap={2}>
+      <Stack gap={0.5}>
+        <Text type="label">{question.title}</Text>
+        <Text type="supporting">
+          {`${question.answered} of ${responses} answered`}
+          {question.key ? '' : ' · not on the question map, so shown by its own title'}
+        </Text>
+      </Stack>
+      {question.counted ? (
+        <Stack gap={1}>
+          {question.counts.map((row) => (
+            <Stack key={row.value} direction="horizontal" gap={2} align="center">
+              <Text hasTabularNumbers>{row.value}</Text>
+              <ProgressBar
+                label={`${row.count} answered ${row.value}`}
+                isLabelHidden
+                value={row.count}
+                max={peak}
+                variant="neutral"
+              />
+              <Text type="supporting" hasTabularNumbers>{row.count}</Text>
+            </Stack>
+          ))}
+          {question.low_label || question.high_label ? (
+            <Text type="supporting">{scaleLegend(question)}</Text>
+          ) : null}
+        </Stack>
+      ) : question.answers.length ? (
+        <Collapsible trigger={`Read the ${question.answers.length} answer${question.answers.length === 1 ? '' : 's'}`} defaultIsOpen={false}>
+          <Stack gap={1}>
+            {question.answers.map((answer, i) => (
+              <Text key={i} type="supporting">{`“${answer}”`}</Text>
+            ))}
+          </Stack>
+        </Collapsible>
+      ) : null}
+    </Stack>
+  )
+}
+
+function PartA({partA = {}}) {
+  const questions = partA.questions || []
+  return (
+    <Card padding={5}>
+      <Stack gap={4}>
+        <Stack gap={1}>
+          <Heading level={2}>Part A — exit ticket answers</Heading>
+          <Text type="supporting">
+            {`${partA.responses || 0} exit ticket${partA.responses === 1 ? '' : 's'} with answers. Counted and read, never graded: submitting is what records someone as present, and what they wrote is for planning the next lesson.`}
+          </Text>
+          {partA.without_answers ? (
+            <Text type="supporting">
+              {`${partA.without_answers} more check-in${partA.without_answers === 1 ? '' : 's'} came from a CSV export, which carries the address and the time but not the answers.`}
+            </Text>
+          ) : null}
+        </Stack>
+        {!partA.form_id ? (
+          <EmptyState
+            title="No exit ticket form yet"
+            description="Provision Part A from the session page; its answers appear here after a pull."
+            headingLevel={3}
+          />
+        ) : !partA.responses ? (
+          <EmptyState
+            title="No answers yet"
+            description="They arrive with the first pull after the form goes on screen."
+            headingLevel={3}
+          />
+        ) : (
+          questions.map((question, i) => (
+            <Stack key={question.question_id} gap={4}>
+              {i ? <Divider /> : null}
+              <PartAQuestion question={question} responses={partA.responses} />
+            </Stack>
+          ))
+        )}
+      </Stack>
+    </Card>
+  )
+}
+
 function Themes({themes = [], sessionId}) {
   return (
     <Card padding={5}>
@@ -126,6 +227,7 @@ export function Responses({
   responses = [],
   themes = [],
   question_map = [],
+  part_a = {},
   survey_rationale,
   notice,
 }) {
@@ -135,16 +237,18 @@ export function Responses({
     <Stack gap={4}>
       <Link href={`/sessions/${session.session_id}`}>{'← Back to the session'}</Link>
 
-      <PageHeader title={`End-of-session responses — ${session.title || ''}`}>
-        {`${responses.length} response(s)` +
+      <PageHeader title={`Responses — ${session.title || ''}`}>
+        {`${part_a.responses || 0} exit ticket(s) · ${responses.length} end-of-session response(s)` +
           (session.week_index ? ` · week ${session.week_index}` : '')}
       </PageHeader>
 
       <Notices notice={notice} />
 
+      <PartA partA={part_a} />
+
       <Card padding={5}>
         <Stack gap={3}>
-          <Heading level={2}>Confidence</Heading>
+          <Heading level={2}>Part B — confidence</Heading>
           <Distribution {...distribution} />
           <Banner status="info" title="How to read this">
             <Prose text={interpretation} />

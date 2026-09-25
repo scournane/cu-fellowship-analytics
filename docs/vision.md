@@ -98,10 +98,10 @@ until it is done a program cannot run itself.
 
 ## 3. Check-ins inside Slack (instead of Google Forms)
 
-- Part A passphrase check-in as a Slack modal, opened from a button the bot posts mid-session — identity is the workspace-scoped Slack id, no Google account needed
-- Part B exit ticket as a modal: 7-point scale as radio buttons, short text, the rotating slot, the shoutout, the help checkbox
+- Part A exit ticket as a Slack modal, opened from a button the bot posts during the lesson — identity is the workspace-scoped Slack id, no Google account needed; the questions would come from the same `part_a_question_set` the forms use
+- Part B end-of-session check-in as a modal: 7-point scale as radio buttons, short text, the rotating slot, the shoutout, the help checkbox
 - ◑ The rotating-question schedule enforced by the bot (the schedule is owned and enforced — `config/rotation.json`, `rotation.py`, applied at `provisioning.py:361` — but on the Google Forms path; there is no Slack modal for it to govern)
-- ◑ `/passphrase <word>` for the teacher, which also stamps `announced_at` (announce-and-stamp exists, in the console at `console/app.py:1662`, test `tests/test_console.py:648`; there is no such slash command — `slack/commands.py:530` lists every one that exists)
+- ◑ A slash command for the teacher that posts the exit ticket's link and stamps `announced_at` (announce-and-stamp exists in the console's session screen and as `cufa session announce`; there is no slash command — `slack/commands.py` lists every one that exists). This replaces the old `/passphrase <word>` idea: there is no passphrase any more (ADR-037)
 - ◑ Bot posts the check-in button at a scheduled offset, so nothing depends on a teacher remembering (the button and its handler are built — `slack/welcome.py:37`, `slack/app.py:89`, test `tests/test_slack_bot.py:471` — but it ships once in the welcome DM; nothing posts it per session at an offset)
 - ◑ DM the check-in to anyone who was in the channel but did not submit (non-submitters are DM'd — `slack/reminders.py:631`, test `tests/test_reminders.py:274` — but the set is the roster, not who was observed in the channel)
 - A confirmation DM after submitting
@@ -236,7 +236,7 @@ received recognition build popularity contests. So:
 
 ## 15. AI, kept in its lane
 
-- ✅ Passphrase adjudication for answers edit distance cannot read
+- ~~Passphrase adjudication for answers edit distance cannot read~~ — built, then retired with the passphrase (ADR-040). Attendance uses no model
 - ✅ Muddiest-point clustering, text only, no names in the payload
 - ✅ Summarise a session's Q&A thread for the teacher — from anonymous strings; a plain digest without a key
 - Draft an outreach message for a staff member to edit — never send one

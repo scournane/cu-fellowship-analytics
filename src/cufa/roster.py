@@ -28,6 +28,10 @@ class LoadSummary:
     read: int
     written: int
     skipped: int
+    #: Said once per file, not once per row: a column the loader ignores is a
+    #: fact about the file, and thirty copies of it would bury the one line
+    #: that matters.
+    warnings: tuple[str, ...] = ()
 
     def __str__(self) -> str:  # pragma: no cover - display only
         return summarize(read=self.read, written=self.written, skipped=self.skipped)
@@ -224,6 +228,16 @@ def load_roster(conn: psycopg.Connection, path: str | Path, cohort_id: str) -> L
     return LoadSummary(read, written, skipped)
 
 
+#: Part A had a spoken passphrase until the exit ticket replaced it. Schedules
+#: exported from the old template still carry the column, and silently dropping
+#: a value someone typed looks like a bug, so both the check and the load say
+#: out loud that it is ignored.
+PASSPHRASE_COLUMN_IGNORED = (
+    "The 'passphrase' column is ignored. Part A no longer uses a passphrase: "
+    "attendance is a verified address submitting inside the session window."
+)
+
+
 def inspect_sessions_csv(path: str | Path) -> RosterCheck:
     """The same read-before-write as `inspect_roster_csv`, for a session file.
 
@@ -257,6 +271,8 @@ def inspect_sessions_csv(path: str | Path) -> RosterCheck:
                 if not present & set(accepted):
                     other = " (or " + ", ".join(repr(a) for a in accepted[1:]) + ")" if len(accepted) > 1 else ""
                     problems.append(f"No column named {label!r}{other}. Every session needs one.")
+            if "passphrase" in present:
+                warnings.append(PASSPHRASE_COLUMN_IGNORED)
 
             for row in reader:
                 rows += 1
@@ -323,11 +339,19 @@ def inspect_sessions_csv(path: str | Path) -> RosterCheck:
 
 
 def load_sessions(conn: psycopg.Connection, path: str | Path) -> LoadSummary:
-    """Create sessions from a CSV. Existing (cohort, title, time) rows are skipped."""
+    """Create sessions from a CSV. Existing (cohort, title, time) rows are skipped.
+
+    A ``passphrase`` column is accepted and ignored, and the returned summary's
+    ``warnings`` says so once for the file.
+    """
     read = written = skipped = 0
+    warnings: list[str] = []
 
     with Path(path).open(newline="", encoding="utf-8-sig") as handle:
-        for row in csv.DictReader(handle):
+        reader = csv.DictReader(handle)
+        if "passphrase" in {(name or "").strip().lower() for name in reader.fieldnames or []}:
+            warnings.append(PASSPHRASE_COLUMN_IGNORED)
+        for row in reader:
             read += 1
             headers = _headers(row)
             cohort_id = _pick(row, headers, "cohort_id", "cohort")
@@ -336,7 +360,6 @@ def load_sessions(conn: psycopg.Connection, path: str | Path) -> LoadSummary:
             zone = _pick(row, headers, "timezone", "tz")
             duration = _pick(row, headers, "duration_minutes", "duration")
             grace = _pick(row, headers, "grace_minutes", "grace") or "15"
-            passphrase = _pick(row, headers, "passphrase")
             week_raw = _pick(row, headers, "week_index", "week")
             teacher_question = _pick(row, headers, "teacher_question")
             zoom_url = _pick(row, headers, "zoom_url", "zoom", "meeting_url")
@@ -393,7 +416,6 @@ def load_sessions(conn: psycopg.Connection, path: str | Path) -> LoadSummary:
                     timezone=zone,
                     duration_minutes=int(duration),
                     grace_minutes=int(grace),
-                    passphrase=passphrase or None,
                     week_index=week,
                     teacher_question=teacher_question or None,
                     zoom_url=zoom_url or None,
@@ -404,7 +426,7 @@ def load_sessions(conn: psycopg.Connection, path: str | Path) -> LoadSummary:
             written += 1
 
     log.info("sessions loaded %s", summarize(read=read, written=written, skipped=skipped))
-    return LoadSummary(read, written, skipped)
+    return LoadSummary(read, written, skipped, tuple(warnings))
 
 
 def list_fellows(

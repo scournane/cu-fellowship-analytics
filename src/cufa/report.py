@@ -16,18 +16,25 @@ comes out — and a second test that inspects the SQL each of them actually
 executes. Convention is not the enforcement; those two tests are.
 
 Free text is **counted, never graded**. The Part B block reports how many
-substantive answers arrived, not how good they were. Rating writing quality
-would penalise ESL and neurodivergent fellows for reasons unrelated to
-engagement.
+substantive answers arrived, not how good they were, and the Part A review
+queues say "answered N of M" and never show the answers themselves. Rating
+writing quality would penalise ESL and neurodivergent fellows for reasons
+unrelated to engagement.
+
+Part A timing is reported as an **observation**, beside the decisions rather
+than as one: inside or outside the window is what the rules read, and the
+counts here let someone check that reading against the schedule.
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta
 from typing import Any
 
 import psycopg
 
+from .adjudicate.rules import OUTSIDE_WINDOW_RULES
 from .db import fetch_all, fetch_one
 
 
@@ -66,22 +73,21 @@ def cohort_report(conn: psycopg.Connection, cohort_id: str) -> CohortReport:
             count(*) filter (where session_match = 'none')        as session_none,
             count(*) filter (where session_match = 'ambiguous')   as session_ambiguous,
             count(*) filter (where fellow_id is null)             as unknown_email,
-            count(*) filter (where passphrase_match = 'exact')    as pass_exact,
-            count(*) filter (where passphrase_match = 'fuzzy')    as pass_fuzzy,
-            count(*) filter (where passphrase_match = 'mismatch') as pass_mismatch,
-            count(*) filter (where passphrase_match = 'not_set')  as pass_not_set,
-            count(*) filter (where passphrase_match = 'no_session') as pass_no_session
+            count(*) filter (where in_session_window is true)     as timing_inside,
+            count(*) filter (where in_session_window is false)    as timing_outside,
+            count(*) filter (where in_session_window is null)     as timing_no_window,
+            count(*) filter (where rule_name = any(%s))           as outside_window_decisions,
+            count(*) filter (where passphrase_match is not null)  as legacy_passphrase
           from v_checkin_resolved
          where cohort_id = %s
         """,
-        (cohort_id,),
+        (list(OUTSIDE_WINDOW_RULES), cohort_id),
     ) or {}
 
     sessions = fetch_all(
         conn,
         """
         select s.session_id, s.title, s.scheduled_at_utc, s.timezone,
-               s.passphrase is not null as has_passphrase,
                s.announced_at_utc is not null as announced,
                sf.form_id, sf.publish_verified_at is not null as form_ready,
                count(c.checkin_id)                                    as checkins,
@@ -96,7 +102,7 @@ def cohort_report(conn: psycopg.Connection, cohort_id: str) -> CohortReport:
           left join v_current_decision d on d.checkin_id = c.checkin_id
          where s.cohort_id = %s
          group by s.session_id, s.title, s.scheduled_at_utc, s.timezone,
-                  s.passphrase, s.announced_at_utc, sf.form_id, sf.publish_verified_at
+                  s.announced_at_utc, sf.form_id, sf.publish_verified_at
          order by s.scheduled_at_utc
         """,
         (cohort_id,),
@@ -130,10 +136,6 @@ def cohort_report(conn: psycopg.Connection, cohort_id: str) -> CohortReport:
             """,
             (cohort_id,),
         ),
-        "ai_cache": fetch_one(
-            conn, "select count(*) as entries from ai_adjudication_cache"
-        )
-        or {},
     }
 
     provisioning = fetch_all(
@@ -274,12 +276,15 @@ def render_report_text(report: CohortReport) -> str:
     add(f"    ambiguous             {t.get('session_ambiguous', 0):>6}")
     add(f"    email not on roster   {t.get('unknown_email', 0):>6}")
     add("")
-    add("Passphrase comparison (observation, not judgment)")
-    add(f"  exact                   {t.get('pass_exact', 0):>6}")
-    add(f"  fuzzy                   {t.get('pass_fuzzy', 0):>6}")
-    add(f"  mismatch                {t.get('pass_mismatch', 0):>6}")
-    add(f"  not set                 {t.get('pass_not_set', 0):>6}")
-    add(f"  no session              {t.get('pass_no_session', 0):>6}")
+    add("Timing (observation, not judgment)")
+    add(f"  inside the window       {t.get('timing_inside', 0):>6}")
+    add(f"  outside the window      {t.get('timing_outside', 0):>6}")
+    add(f"  no single window        {t.get('timing_no_window', 0):>6}")
+    add("    matched no session, or two overlapping ones.")
+    if t.get("legacy_passphrase"):
+        add(f"  passphrase era          {t.get('legacy_passphrase', 0):>6}")
+        add("    judged under the retired passphrase rules; kept as decided")
+        add("    unless `cufa adjudicate --redecide-legacy`.")
     add("")
     add("Current decisions")
     add(f"  attended                {t.get('attended', 0):>6}")
@@ -290,7 +295,9 @@ def render_report_text(report: CohortReport) -> str:
     add("")
     add("Decided by")
     add(f"  rule                    {t.get('by_rule', 0):>6}")
-    add(f"  ai                      {t.get('by_ai', 0):>6}")
+    if t.get("by_ai"):
+        # Only passphrase-era rows can carry one: no model decides attendance.
+        add(f"  ai (passphrase era)     {t.get('by_ai', 0):>6}")
     add(f"  human                   {t.get('by_human', 0):>6}")
     add("")
 
@@ -320,8 +327,8 @@ def render_report_text(report: CohortReport) -> str:
     unresolved = report.review.get("unresolved_identities") or []
     add("Review queue")
     add(f"  needs_review check-ins   {t.get('needs_review', 0):>5}")
+    add(f"  outside the window       {t.get('outside_window_decisions', 0):>5}")
     add(f"  unresolved addresses     {len(unresolved):>5}")
-    add(f"  ai cache entries         {(report.review.get('ai_cache') or {}).get('entries', 0):>5}")
     add("")
     add("Latency is recorded, not interpreted: no thresholds and no flags are")
     add("applied to it. Where a session has no announced_at_utc, T0 is the")
@@ -331,30 +338,128 @@ def render_report_text(report: CohortReport) -> str:
     return "\n".join(lines)
 
 
+#: The review queues' shared select. ``questions_total`` counts the check-in's
+#: rows in ``v_checkin_answer``: every question the form it came in on asked,
+#: plus any answer to a question that form's map does not know. So "answered N
+#: of M" is read against the provisioned form, not today's question set.
+_REVIEW_SELECT = """
+    select v.*,
+           (select count(*) from v_checkin_answer a where a.checkin_id = v.checkin_id)
+               as questions_total
+      from v_checkin_resolved v
+"""
+
+
+def _span(delta: timedelta) -> str:
+    """Whole minutes, rounded up — 20 seconds late reads "1 min", never "0 min",
+    which would look like inside. The console rounds the same way."""
+    minutes = int(-(-max(0.0, delta.total_seconds()) // 60))
+    if minutes < 120:
+        return f"{minutes} min"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 48:
+        return f"{hours} h {minutes} min" if minutes else f"{hours} h"
+    return f"{hours // 24} days"
+
+
+def timing_phrase(row: dict[str, Any]) -> str:
+    """``12 min after the window`` — the timing, said the way a person checks it.
+
+    Relative to the matched session's window as scheduled now, which is the
+    same window the rules judged against. Reads ``session_match``,
+    ``submitted_at_utc``, ``window_start_utc`` and ``window_end_utc``, so any
+    row from ``v_checkin_resolved`` will do.
+    """
+    match = row.get("session_match")
+    if match == "ambiguous":
+        return "inside two overlapping session windows"
+    start: datetime | None = row.get("window_start_utc")
+    end: datetime | None = row.get("window_end_utc")
+    stamp: datetime | None = row.get("submitted_at_utc")
+    if match != "matched" or start is None or end is None or stamp is None:
+        return "outside every session window"
+    if stamp < start:
+        return f"{_span(start - stamp)} before the window"
+    if stamp > end:
+        return f"{_span(stamp - end)} after the window"
+    return "inside the window"
+
+
+def answered_phrase(row: dict[str, Any]) -> str:
+    """``answered 2 of 3``. A count, never the answers.
+
+    M is every question the form asked plus any answer to one the map does not
+    know, so N never exceeds it. Rows with nothing per question say why rather
+    than reading as "answered 0 of 0": a passphrase-era row had no exit ticket,
+    and a sheet export keeps its answers as columns, not by question.
+    """
+    total = int(row.get("questions_total") or 0)
+    if total:
+        return f"answered {int(row.get('questions_answered') or 0)} of {total}"
+    if row.get("passphrase_match") is not None:
+        return "passphrase era: no exit ticket"
+    if row.get("source") == "csv":
+        return "sheet export: answers kept as columns, not counted per question"
+    return "no exit-ticket answers recorded"
+
+
+def _review_rows(
+    conn: psycopg.Connection, where: str, order: str, params: tuple[Any, ...]
+) -> list[dict[str, Any]]:
+    """Queue rows with the timing and answer counts, and without the answers.
+
+    The answer text is dropped here, before any screen or terminal can print
+    it: the queues decide attendance, which the answers take no part in, and a
+    reviewer reading someone's exit ticket while deciding whether they were
+    present is exactly the grading this system refuses to do.
+    """
+    rows = fetch_all(conn, f"{_REVIEW_SELECT} where {where} order by {order} limit %s", params)
+    for row in rows:
+        row.pop("answers", None)
+        row["timing"] = timing_phrase(row)
+        row["answered"] = answered_phrase(row)
+    return rows
+
+
 def needs_review_queue(
     conn: psycopg.Connection, cohort_id: str | None = None, limit: int = 200
 ) -> list[dict[str, Any]]:
     """Oldest first — the longest-waiting judgment is the most overdue one."""
-    return fetch_all(
+    return _review_rows(
         conn,
-        """
-        select * from v_checkin_resolved
-         where status = 'needs_review'
-           and (%s::text is null or cohort_id = %s::text)
-         order by submitted_at_utc asc
-         limit %s
-        """,
+        "v.status = 'needs_review' and (%s::text is null or v.cohort_id = %s::text)",
+        "v.submitted_at_utc asc",
         (cohort_id, cohort_id, limit),
+    )
+
+
+def outside_window_queue(
+    conn: psycopg.Connection, cohort_id: str | None = None, limit: int = 200
+) -> list[dict[str, Any]]:
+    """Check-ins a rule marked not attended because of when they arrived.
+
+    Decided, not pending — but decided at 0.6, because the commonest cause is a
+    session time entered wrongly or a form opened late, and this list is how a
+    person notices that. Oldest first, like the needs_review queue.
+    """
+    return _review_rows(
+        conn,
+        "v.decided_by = 'rule' and v.rule_name = any(%s)"
+        " and (%s::text is null or v.cohort_id = %s::text)",
+        "v.submitted_at_utc asc",
+        (list(OUTSIDE_WINDOW_RULES), cohort_id, cohort_id, limit),
     )
 
 
 def ai_decisions(
     conn: psycopg.Connection, cohort_id: str | None = None, limit: int = 200
 ) -> list[dict[str, Any]]:
-    """AI decisions with their reasoning, so a human can sample the model.
+    """Passphrase-era AI decisions with their reasoning, for audit.
 
-    The tier 2 layer has to be auditable by someone reading its judgments, not
-    trusted because it is a model.
+    No model decides attendance any more. These rows predate that, stay frozen
+    unless ``cufa adjudicate --redecide-legacy`` re-judges them, and stay
+    auditable by someone reading them rather than trusted because a model made
+    them.
     """
     return fetch_all(
         conn,
@@ -452,6 +557,8 @@ EXPORT_PATHS: tuple[str, ...] = (
     "cufa.report.render_report_text",
     "cufa.report.part_b_summary",
     "cufa.report.needs_review_queue",
+    "cufa.report.outside_window_queue",
+    # Passphrase-era AI decisions, kept for audit of legacy data.
     "cufa.report.ai_decisions",
     "cufa.report.unresolved_identities",
     "cufa.confidence.trend",

@@ -1,11 +1,19 @@
-"""questionId → semantic slot, recorded per form and never guessed.
+"""questionId → semantic slot, recorded per form and never guessed. Part B only.
 
-**The Part B trap.** Part A had one question, so "the answer" was unambiguous.
-Part B has five, and ``forms.responses.list`` returns answers keyed by
-``questionId`` — not by title, not by position. Whether Drive's ``files.copy``
-preserves question ids across copies **could not be verified**, so this module
-assumes neither: after every Part B form is provisioned, the form is read back
-with ``forms.get`` and the mapping recorded.
+**The Part B trap.** Part B has five fields, and ``forms.responses.list``
+returns answers keyed by ``questionId`` — not by title, not by position. Whether
+Drive's ``files.copy`` preserves question ids across copies **could not be
+verified**, so this module assumes neither: after every Part B form is
+provisioned, the form is read back with ``forms.get`` and the mapping recorded.
+
+Part A — the exit ticket — has its own map, ``part_a_form_question``, written by
+``question_sets.record_form_map``, and it works differently on purpose. Part A's
+questions are staff-written and vary per session, so there are no fixed slots
+to refuse on: its answers are stored raw, keyed by ``questionId``, on the
+immutable check-in row and resolved through the map at *read* time. A missing
+Part A map is a warning that re-provisioning repairs, never a refused pull.
+Part B's slots feed numbers (a confidence trend, themes), which is why a wrong
+guess there has to stop ingest and a gap in Part A's display does not.
 
 Two rules follow, and both are the difference between correct data and
 plausible-looking wrong data:
