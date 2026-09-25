@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "status": "APPROVED — captured from the week-1 exit ticket form 1nbd3lHZlXi7nWNlJX0IuMgWad6kelweL8kBbSIGJlhQ",
+  "_comment": [
+    "The cohort default for Part A, the exit ticket. `cufa questions seed-default` loads it.",
+    "Placeholders filled in per session when a form is provisioned:",
+    "  {lesson}        the session's week_index (\"1\" for week one)",
+    "  {session_title} the session's title",
+    "Staff edit the default in the console (Templates → Default exit ticket questions)",
+    "and can customise any single session before its form is published."
+  ],
+  "title": "Exit Ticket: Lesson {lesson} \"{session_title}\"",
+  "description": "Welcome to the Exit Ticket, a weekly, post-session ritual, that serves several purposes for both you and the Civics Unplugged program team! This form will only be open for 10 minutes post-session and should take ~ 5 minutes to complete.\n\nSubmission of this form not only marks your attendance, but is also an opportunity to:\n1. Reflect on, interrogate, and reinforce your learnings\n2. Contribute to real time Fellowship improvement\nThe CU Team values your feedback deeply and believes in collective creation. While some facets of the Fellowship are set in stone, your responses will help inform in-program changes, such as session structure and our approach to topic investigation. To this end, please be as honest and thoughtful as possible so that we can best serve you!\n\nIf you have any questions or concerns, please reach out to Adiah on Slack or via email (adiah@civicsunplugged.org)",
+  "questions": [
+    {"key": "q_first_name", "type": "short_answer", "title": "First Name", "description": "", "required": true},
+    {"key": "q_last_name", "type": "short_answer", "title": "Last Name", "description": "", "required": true},
+    {"key": "q_session_rating", "type": "linear_scale", "title": "How would you rate today's session?", "description": "", "required": true,
+     "scale": {"low": 1, "high": 5, "low_label": "", "high_label": ""}},
+    {"key": "q_biggest_takeaway", "type": "paragraph", "title": "What was your biggest takeaway from Lesson {lesson}?", "description": "", "required": true},
+    {"key": "q_more_of", "type": "paragraph", "title": "What would you like to see more of in next week's lesson?", "description": "", "required": true},
+    {"key": "q_less_of", "type": "paragraph", "title": "What would you like to see less of in next week's lesson?", "description": "", "required": true},
+    {"key": "q_open_questions", "type": "paragraph", "title": "What question(s) do you still have after today's discussion?", "description": "This can include questions about a specific case study, broader implications, the Fellowship in general, etc.", "required": true},
+    {"key": "q_other_feedback", "type": "paragraph", "title": "Any other feedback you would like to share:", "description": "", "required": false}
+  ]
+}
