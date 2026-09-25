@@ -1,0 +1,88 @@
+# The evergreen mechanism (docs/vision.md §11, §13).
+#
+# The HTML report is self-contained and regenerating it is one command, so the
+# only reason it goes stale is that somebody has to remember. This removes the
+# remembering. It runs Monday morning, ahead of the staff digest the bot posts,
+# so the two say the same thing about the same week.
+#
+# Why here and not on the deployment: the report is a single long read of the
+# whole cohort and a Vercel function is billed and timed by the request. A
+# runner has no such budget, and a failure here is loud on its own — a red run
+# in the Actions tab — where a failure inside a serverless tick is a line in a
+# log. The tick stays for the minute hand; this is for the slow job.
+name: report
+
+on:
+  schedule:
+    # 07:00 UTC Monday. Cron here is UTC and GitHub does not observe DST, so
+    # this drifts an hour against Eastern twice a year. That is acceptable for
+    # a weekly artifact and would not be for a reminder.
+    - cron: '0 7 * * 1'
+  workflow_dispatch:
+    inputs:
+      cohort:
+        description: Cohort id to report on
+        required: false
+        type: string
+
+jobs:
+  regenerate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install
+        run: pip install -e "."
+
+      - name: Work out which cohort
+        id: which
+        env:
+          TYPED: ${{ inputs.cohort }}
+          CONFIGURED: ${{ vars.CUFA_REPORT_COHORT }}
+        run: |
+          cohort="${TYPED:-$CONFIGURED}"
+          if [ -z "$cohort" ]; then
+            echo "::error::No cohort to report on. Set the repository variable" \
+                 "CUFA_REPORT_COHORT, or run this workflow manually and type one."
+            exit 1
+          fi
+          echo "cohort=$cohort" >> "$GITHUB_OUTPUT"
+
+      - name: Regenerate
+        env:
+          # Read-only would be enough for this and is worth using: the report
+          # only selects. The secret is the hosted database, never the local
+          # stack's DSN.
+          CUFA_DATABASE_URL: ${{ secrets.CUFA_DATABASE_URL }}
+          CUFA_FAKE_GOOGLE: '1'   # the report reads the database, never Google
+        run: |
+          if [ -z "$CUFA_DATABASE_URL" ]; then
+            echo "::error::CUFA_DATABASE_URL is not set. Add it as a repository" \
+                 "secret pointing at the hosted database."
+            exit 1
+          fi
+          mkdir -p out
+          cufa report --cohort "${{ steps.which.outputs.cohort }}" --html out/report.html
+
+      # The report carries no email addresses by construction and there are
+      # tests asserting it. This re-checks it on the real artifact before it is
+      # stored anywhere, because the one that matters is the file, not the test.
+      - name: No addresses in the artifact
+        run: |
+          if grep -aoE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' out/report.html | head -5 | grep -q .; then
+            echo "::error::The report contains something shaped like an email address."
+            exit 1
+          fi
+          echo "clean"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: report-${{ steps.which.outputs.cohort }}-${{ github.run_id }}
+          path: out/report.html
+          retention-days: 90

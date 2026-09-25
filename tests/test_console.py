@@ -24,7 +24,7 @@ import json
 import re
 import os
 import uuid
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 # Settings are read once and cached, and importing the app reads them, so the
 # environment has to be right before any cufa import happens.
@@ -158,6 +158,9 @@ def make_session(
     scheduled_at: str = "2026-09-15T13:05",
     passphrase: str = "justice",
     confirm_reuse: str = "",
+    zoom_url: str = "",
+    agenda: str = "",
+    slack_channel_id: str = "",
 ) -> str:
     response = client.post(
         "/sessions/new",
@@ -170,6 +173,9 @@ def make_session(
             "passphrase": passphrase,
             "cohort_id": cohort_id,
             "confirm_reuse": confirm_reuse,
+            "zoom_url": zoom_url,
+            "agenda": agenda,
+            "slack_channel_id": slack_channel_id,
         },
     )
     assert response.status_code == 303, response.text[:2000]
@@ -238,6 +244,90 @@ def test_removing_someone_from_the_allowlist_ends_their_session(
     finally:
         monkeypatch.undo()
         reset_settings_cache()
+
+
+# --------------------------------------------------------------------------
+# the shared-password door
+# --------------------------------------------------------------------------
+
+SITE_PASSWORD = "correct-horse-battery-staple"
+
+
+@pytest.fixture
+def password_unset(monkeypatch: pytest.MonkeyPatch):
+    """The developer's own .env may configure a password; this test is about the
+    default, so the variable is emptied rather than assumed absent (F-13).
+
+    Set to "" rather than deleted: load_dotenv runs with override=False, so a
+    deleted name is simply read back out of .env on the next load, while an
+    empty one already present is left alone."""
+    monkeypatch.setenv("CUFA_CONSOLE_PASSWORD", "")
+    reset_settings_cache()
+    yield
+    monkeypatch.undo()
+    reset_settings_cache()
+
+
+@pytest.fixture
+def password_configured(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("CUFA_CONSOLE_PASSWORD", SITE_PASSWORD)
+    reset_settings_cache()
+    yield
+    monkeypatch.undo()
+    reset_settings_cache()
+
+
+def test_password_door_is_shut_unless_one_is_configured(client: TestClient, password_unset) -> None:
+    """No CUFA_CONSOLE_PASSWORD, no door — not even an empty one that matches ''."""
+    assert boot_state(client.get("/signin"))["passwordSignin"] is False
+    assert client.post("/signin/password", data={"password": "", "next": "/"}).status_code == 403
+    assert client.get("/sessions").status_code == 303
+
+
+def test_the_right_password_opens_the_console(client: TestClient, password_configured) -> None:
+    assert boot_state(client.get("/signin"))["passwordSignin"] is True
+    response = client.post("/signin/password", data={"password": SITE_PASSWORD, "next": "/"})
+    assert response.status_code == 303
+    assert client.get("/sessions").status_code == 200
+
+
+def test_a_wrong_password_opens_nothing(client: TestClient, password_configured) -> None:
+    response = client.post(
+        "/signin/password", data={"password": SITE_PASSWORD + "x", "next": "/"}
+    )
+    assert response.status_code == 403
+    assert client.get("/sessions").status_code == 303
+
+
+def test_clearing_the_password_ends_the_sessions_it_issued(
+    client: TestClient, password_configured, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rotating the secret has to log people out now, not when their cookie ages out."""
+    assert client.post(
+        "/signin/password", data={"password": SITE_PASSWORD, "next": "/"}
+    ).status_code == 303
+    assert client.get("/sessions").status_code == 200
+
+    monkeypatch.setenv("CUFA_CONSOLE_PASSWORD", "")
+    reset_settings_cache()
+    try:
+        assert client.get("/sessions").status_code == 303
+    finally:
+        monkeypatch.undo()
+        reset_settings_cache()
+
+
+def test_the_shared_password_does_not_open_help_requests(
+    client: TestClient, password_configured
+) -> None:
+    """The whole point of keeping the email allowlist: a shared secret cannot
+    say who read a safeguarding record, so it does not get to read one."""
+    assert client.post(
+        "/signin/password", data={"password": SITE_PASSWORD, "next": "/"}
+    ).status_code == 303
+    response = client.get("/help-requests")
+    assert response.status_code == 403, response.status_code
+    assert client.get("/sessions").status_code == 200  # and nothing else was revoked
 
 
 def test_signout_clears_the_session(signed_in: TestClient) -> None:
@@ -653,6 +743,49 @@ def test_creating_a_session_stores_the_local_time_and_the_zone(
     assert row["scheduled_at_utc"].strftime("%Y-%m-%dT%H:%MZ") == "2026-09-15T17:05Z"
 
 
+def test_session_delivery_fields_round_trip_through_console(
+    signed_in: TestClient, cohort: str
+) -> None:
+    session_id = make_session(
+        signed_in,
+        cohort,
+        zoom_url="https://zoom.example.invalid/j/123",
+        agenda="Welcome\nSmall groups",
+        slack_channel_id="fellowship-live",
+    )
+    with connection() as conn:
+        from cufa.sessions import get_session
+
+        row = get_session(conn, session_id)
+    assert row["zoom_url"] == "https://zoom.example.invalid/j/123"
+    assert row["agenda"] == "Welcome\nSmall groups"
+    assert row["slack_channel_id"] == "fellowship-live"
+
+    state = boot_state(signed_in.get(f"/sessions/{session_id}/edit"))
+    assert state["values"]["zoom_url"] == row["zoom_url"]
+    assert state["values"]["agenda"] == row["agenda"]
+    assert state["values"]["slack_channel_id"] == row["slack_channel_id"]
+
+
+def test_console_rejects_an_invalid_zoom_link(
+    signed_in: TestClient, cohort: str
+) -> None:
+    response = signed_in.post(
+        "/sessions/new",
+        data={
+            "title": "Week 3",
+            "scheduled_at": "2026-09-15T13:05",
+            "timezone": "America/New_York",
+            "duration_minutes": "60",
+            "grace_minutes": "15",
+            "cohort_id": cohort,
+            "zoom_url": "zoom dot example dot org",
+        },
+    )
+    assert response.status_code == 400
+    assert "complete http:// or https:// URL" in response.text
+
+
 def test_a_reused_passphrase_warns_and_refuses_to_save_until_confirmed(
     signed_in: TestClient, cohort: str
 ) -> None:
@@ -1064,3 +1197,501 @@ def _decode(modules: list[list[bool]]) -> str:
         length = ((payload[0] & 0x0F) << 12) | (payload[1] << 4) | (payload[2] >> 4)
         data = bytes(((payload[i + 2] & 0x0F) << 4) | (payload[i + 3] >> 4) for i in range(length))
     return data.decode("utf-8")
+
+
+# --------------------------------------------------------------------------
+# assignments and roster — the two things that used to be CLI-only
+# --------------------------------------------------------------------------
+
+
+def test_an_assignment_can_be_created_from_the_console(
+    signed_in: TestClient, cohort: str
+) -> None:
+    response = signed_in.post(
+        "/assignments/new",
+        data={
+            "title": "Community interview notes",
+            "due_at": "2026-09-18T17:00",
+            "timezone": "America/Chicago",
+            "cohort_id": cohort,
+            "url": "https://classroom.example.org/interview",
+            "description": "Bring two quotes you did not expect.",
+            "status": "active",
+        },
+    )
+    assert response.status_code == 303
+
+    with connection() as conn:
+        rows = fetch_all(
+            conn, "select * from assignment where cohort_id = %s", (cohort,)
+        )
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["title"] == "Community interview notes"
+    assert row["timezone"] == "America/Chicago"
+    # The wall-clock value that was typed is kept as typed; the UTC instant is
+    # derived from it and the zone, not from the browser.
+    assert row["due_at_local"].strftime("%Y-%m-%dT%H:%M") == "2026-09-18T17:00"
+    assert row["due_at_utc"].hour == 22  # 17:00 America/Chicago in September
+
+
+def test_an_assignment_with_an_unknown_zone_saves_nothing(
+    signed_in: TestClient, cohort: str
+) -> None:
+    response = signed_in.post(
+        "/assignments/new",
+        data={
+            "title": "Never saved",
+            "due_at": "2026-09-18T17:00",
+            "timezone": "Mars/Olympus_Mons",
+            "cohort_id": cohort,
+            "status": "active",
+        },
+    )
+    assert response.status_code == 400
+    state = boot_state(response)
+    assert state["errors"], "the screen has to say why"
+    # And the typing is handed back rather than thrown away.
+    assert state["values"]["title"] == "Never saved"
+
+    with connection() as conn:
+        rows = fetch_all(
+            conn, "select 1 from assignment where cohort_id = %s", (cohort,)
+        )
+    assert rows == []
+
+
+def test_editing_an_assignment_changes_it(signed_in: TestClient, cohort: str) -> None:
+    signed_in.post(
+        "/assignments/new",
+        data={
+            "title": "First title",
+            "due_at": "2026-09-18T17:00",
+            "timezone": "America/Chicago",
+            "cohort_id": cohort,
+            "status": "active",
+        },
+    )
+    with connection() as conn:
+        row = fetch_all(
+            conn, "select assignment_id from assignment where cohort_id = %s", (cohort,)
+        )[0]
+    assignment_id = str(row["assignment_id"])
+
+    # The edit screen offers back what is stored, in the shape the input wants.
+    state = boot_state(signed_in.get(f"/assignments/{assignment_id}/edit"))
+    assert state["values"]["due_at"] == "2026-09-18T17:00"
+    assert state["values"]["title"] == "First title"
+
+    response = signed_in.post(
+        f"/assignments/{assignment_id}/edit",
+        data={
+            "title": "Second title",
+            "due_at": "2026-09-19T09:30",
+            "timezone": "America/New_York",
+            "cohort_id": cohort,
+            "status": "cancelled",
+        },
+    )
+    assert response.status_code == 303
+
+    with connection() as conn:
+        updated = fetch_all(
+            conn, "select * from assignment where assignment_id = %s", (assignment_id,)
+        )[0]
+    assert updated["title"] == "Second title"
+    assert updated["status"] == "cancelled"
+    assert updated["timezone"] == "America/New_York"
+
+
+def test_a_fellows_timezone_can_be_set_from_the_roster(
+    signed_in: TestClient, cohort: str
+) -> None:
+    with connection() as conn:
+        execute(
+            conn,
+            "insert into fellow (fellow_id, cohort_id, full_name, primary_email) "
+            "values (%s, %s, %s, %s)",
+            (f"CU-{uuid.uuid4().hex[:6]}", cohort, "Ada Testcase", "ada@example.invalid"),
+        )
+        fellow_id = fetch_all(
+            conn, "select fellow_id from fellow where cohort_id = %s", (cohort,)
+        )[0]["fellow_id"]
+
+    # The screen is told who has no zone, because that is the thing worth acting on.
+    state = boot_state(signed_in.get(f"/roster?cohort={cohort}"))
+    assert [f["fellow_id"] for f in state["fellows"]] == [fellow_id]
+    assert state["fellows"][0]["timezone"] is None
+
+    response = signed_in.post(
+        f"/roster/{fellow_id}/timezone",
+        data={"timezone": "America/Chicago", "cohort": cohort},
+    )
+    assert response.status_code == 303
+
+    with connection() as conn:
+        row = fetch_all(
+            conn, "select timezone from fellow where fellow_id = %s", (fellow_id,)
+        )[0]
+    assert row["timezone"] == "America/Chicago"
+
+
+def test_an_unknown_zone_is_refused_and_the_old_one_kept(
+    signed_in: TestClient, cohort: str
+) -> None:
+    """The console must not be a way around the validation the CSV loader applies."""
+    fellow_id = f"CU-{uuid.uuid4().hex[:6]}"
+    with connection() as conn:
+        execute(
+            conn,
+            "insert into fellow (fellow_id, cohort_id, full_name, primary_email, timezone) "
+            "values (%s, %s, %s, %s, %s)",
+            (fellow_id, cohort, "Ada Testcase", "ada@example.invalid", "America/Denver"),
+        )
+
+    response = signed_in.post(
+        f"/roster/{fellow_id}/timezone",
+        data={"timezone": "Mars/Olympus_Mons", "cohort": cohort},
+    )
+    assert response.status_code == 303
+    assert "error=" in response.headers["location"]
+
+    with connection() as conn:
+        row = fetch_all(
+            conn, "select timezone from fellow where fellow_id = %s", (fellow_id,)
+        )[0]
+    assert row["timezone"] == "America/Denver", "a rejected zone must not clear the old one"
+
+
+def test_a_blank_timezone_clears_it(signed_in: TestClient, cohort: str) -> None:
+    """Legal on purpose: reminders then fall back to the session's zone."""
+    fellow_id = f"CU-{uuid.uuid4().hex[:6]}"
+    with connection() as conn:
+        execute(
+            conn,
+            "insert into fellow (fellow_id, cohort_id, full_name, primary_email, timezone) "
+            "values (%s, %s, %s, %s, %s)",
+            (fellow_id, cohort, "Ada Testcase", "ada@example.invalid", "America/Denver"),
+        )
+
+    assert signed_in.post(
+        f"/roster/{fellow_id}/timezone", data={"timezone": "  ", "cohort": cohort}
+    ).status_code == 303
+
+    with connection() as conn:
+        row = fetch_all(
+            conn, "select timezone from fellow where fellow_id = %s", (fellow_id,)
+        )[0]
+    assert row["timezone"] is None
+
+
+# --------------------------------------------------------------------------
+# loading a roster from the console
+# --------------------------------------------------------------------------
+#
+# The roster is the first thing anybody does and it used to need a terminal.
+# These tests are about the failure a file picker introduces and a command line
+# does not: somebody choosing the wrong file out of a folder. A wrong file must
+# be refused whole, because a partly-applied roster is worse than none — it
+# looks like a loaded cohort and is missing people.
+
+
+ROSTER_CSV = (
+    "fellow_id,full_name,email,timezone\n"
+    "CU-9001,Ada Nwosu,ada@example.invalid,America/New_York\n"
+    "CU-9002,Bo Salas,bo@example.invalid,\n"
+)
+
+
+def _upload(client: TestClient, cohort: str, body: str | bytes, name: str = "roster.csv"):
+    payload = body.encode() if isinstance(body, str) else body
+    return client.post(
+        "/roster/upload",
+        data={"cohort": cohort},
+        files={"file": (name, payload, "text/csv")},
+    )
+
+
+def test_a_roster_loads_from_the_console(signed_in: TestClient, db) -> None:
+    response = _upload(signed_in, "console-roster", ROSTER_CSV)
+    assert response.status_code == 303
+    assert "notice=" in response.headers["location"]
+
+    page = signed_in.get("/roster?cohort=console-roster")
+    ids = {f["fellow_id"] for f in boot_state(page)["fellows"]}
+    assert {"CU-9001", "CU-9002"} <= ids
+
+
+def test_loading_the_same_roster_twice_updates_rather_than_duplicates(
+    signed_in: TestClient, db
+) -> None:
+    _upload(signed_in, "console-twice", ROSTER_CSV)
+    corrected = ROSTER_CSV.replace("Ada Nwosu", "Ada Nwosu-Bell")
+    assert _upload(signed_in, "console-twice", corrected).status_code == 303
+
+    fellows = boot_state(signed_in.get("/roster?cohort=console-twice"))["fellows"]
+    ada = [f for f in fellows if f["fellow_id"] == "CU-9001"]
+    assert len(ada) == 1, "upsert, not insert"
+    assert ada[0]["full_name"] == "Ada Nwosu-Bell"
+
+
+def test_the_wrong_spreadsheet_is_refused_and_writes_nothing(
+    signed_in: TestClient, db
+) -> None:
+    """The case a file picker makes possible and a command line does not."""
+    response = _upload(signed_in, "console-wrong", "invoice_no,amount\n1,20.00\n")
+    assert response.status_code == 303
+    location = response.headers["location"]
+    assert "error=" in location
+    # The message names the columns it wanted, in the words a spreadsheet uses.
+    assert "fellow_id" in unquote(location) and "email" in unquote(location)
+
+    page = signed_in.get("/roster?cohort=console-wrong")
+    assert boot_state(page)["fellows"] == [], "nothing may be written by a refused file"
+
+
+def test_a_bad_timezone_is_refused_before_any_row_is_written(
+    signed_in: TestClient, db
+) -> None:
+    """`load_roster` raises on a bad zone mid-file, which would leave the rows
+    before it written and the rows after it not. The check runs first."""
+    body = (
+        "fellow_id,full_name,email,timezone\n"
+        "CU-9101,Fine Person,fine@example.invalid,America/New_York\n"
+        "CU-9102,Bad Zone,bad@example.invalid,Mars/Olympus\n"
+    )
+    response = _upload(signed_in, "console-badzone", body)
+    assert "error=" in response.headers["location"]
+    assert "Mars/Olympus" in unquote(response.headers["location"])
+
+    page = signed_in.get("/roster?cohort=console-badzone")
+    assert boot_state(page)["fellows"] == [], "not even the good row before it"
+
+
+def test_an_empty_file_says_so(signed_in: TestClient, db) -> None:
+    response = _upload(signed_in, "console-empty", "")
+    assert "error=" in response.headers["location"]
+    assert "empty" in unquote(response.headers["location"]).lower()
+
+
+def test_uploading_a_roster_needs_a_session(client: TestClient, db) -> None:
+    assert _upload(client, "console-anon", ROSTER_CSV).status_code in (303, 401, 403)
+    assert "/signin" in _upload(client, "console-anon", ROSTER_CSV).headers.get(
+        "location", "/signin"
+    )
+
+
+# --------------------------------------------------------------------------
+# loading a schedule from the console
+# --------------------------------------------------------------------------
+#
+# Same danger as the roster, plus one: `_parse_local` raises partway down a
+# file, and a half-created schedule is a term with a hole in it that nobody
+# notices until a form does not go out.
+
+
+SESSIONS_CSV = (
+    "cohort_id,title,scheduled_at_local,timezone,duration_minutes,passphrase\n"
+    "console-sched,Week 1 — Openings,2026-10-06 19:00,America/New_York,60,harbour\n"
+    "console-sched,Week 2 — Evidence,2026-10-13 19:00,America/New_York,60,lantern\n"
+)
+
+
+def _upload_sessions(client: TestClient, body: str, name: str = "schedule.csv"):
+    return client.post(
+        "/sessions/upload", files={"file": (name, body.encode(), "text/csv")}
+    )
+
+
+def test_a_schedule_loads_from_the_console(signed_in: TestClient, db) -> None:
+    response = _upload_sessions(signed_in, SESSIONS_CSV)
+    assert response.status_code == 303
+    assert "notice=" in response.headers["location"]
+
+    titles = {
+        s["title"] for s in boot_state(signed_in.get("/sessions?cohort=console-sched"))["sessions"]
+    }
+    assert {"Week 1 — Openings", "Week 2 — Evidence"} <= titles
+
+
+def test_reloading_a_schedule_adds_what_is_new_and_leaves_the_rest(
+    signed_in: TestClient, db
+) -> None:
+    _upload_sessions(signed_in, SESSIONS_CSV)
+    extended = SESSIONS_CSV + (
+        "console-sched,Week 3 — Coalitions,2026-10-20 19:00,America/New_York,60,compass\n"
+    )
+    response = _upload_sessions(signed_in, extended)
+    assert response.status_code == 303
+
+    sessions = boot_state(signed_in.get("/sessions?cohort=console-sched"))["sessions"]
+    assert len([s for s in sessions if s["title"] == "Week 1 — Openings"]) == 1
+    assert any(s["title"] == "Week 3 — Coalitions" for s in sessions)
+
+
+def test_an_unreadable_start_time_creates_nothing(signed_in: TestClient, db) -> None:
+    """The row order matters: the good session comes first, so a loader that
+    wrote as it went would leave it behind."""
+    body = (
+        "cohort_id,title,scheduled_at_local,timezone,duration_minutes\n"
+        "console-badtime,Good One,2026-10-06 19:00,America/New_York,60\n"
+        "console-badtime,Bad One,next tuesday,America/New_York,60\n"
+    )
+    response = _upload_sessions(signed_in, body)
+    assert "error=" in response.headers["location"]
+    assert "next tuesday" in unquote(response.headers["location"])
+
+    assert boot_state(signed_in.get("/sessions?cohort=console-badtime"))["sessions"] == []
+
+
+def test_a_schedule_missing_its_columns_says_which(signed_in: TestClient, db) -> None:
+    response = _upload_sessions(signed_in, "title,notes\nWeek 3,hello\n")
+    location = unquote(response.headers["location"])
+    assert "error=" in response.headers["location"]
+    for wanted in ("cohort_id", "scheduled_at_local", "timezone", "duration_minutes"):
+        assert wanted in location
+
+
+def test_the_session_template_is_a_file_this_loader_accepts(
+    signed_in: TestClient, db
+) -> None:
+    """A template that does not round-trip is worse than none: it teaches the
+    wrong columns with the console's own authority."""
+    template = signed_in.get("/sessions/template.csv")
+    assert template.status_code == 200
+    assert "attachment" in template.headers["content-disposition"]
+
+    response = _upload_sessions(signed_in, template.text)
+    assert response.status_code == 303
+    assert "error=" not in response.headers["location"], response.headers["location"]
+
+
+# --------------------------------------------------------------------------
+# Zoom transcripts from the console
+# --------------------------------------------------------------------------
+#
+# `cufa zoom ingest --session <uuid> --vtt <path>` asked somebody to find a
+# session's UUID, which this console knows and a person does not.
+
+
+VTT = """WEBVTT
+
+1
+00:00:01.000 --> 00:00:09.000
+<v Ada Nwosu>I think the budget line is the place to start.</v>
+
+2
+00:00:10.000 --> 00:00:14.000
+<v Bo Salas>Agreed, and the committee minutes back it up.</v>
+"""
+
+
+def _upload_vtt(client: TestClient, session_id: str, body: str, name: str = "t.vtt"):
+    return client.post(
+        f"/sessions/{session_id}/transcript",
+        files={"file": (name, body.encode(), "text/vtt")},
+    )
+
+
+def test_a_transcript_uploads_and_reports_what_it_read(
+    signed_in: TestClient, db, cohort
+) -> None:
+    session_id = make_session(signed_in, cohort, title="Transcript session")
+    response = _upload_vtt(signed_in, session_id, VTT)
+    assert response.status_code == 303
+    assert "notice=" in response.headers["location"]
+    assert "2 turns" in unquote(response.headers["location"])
+
+
+def test_uploading_the_same_transcript_twice_writes_nothing_new(
+    signed_in: TestClient, db, cohort
+) -> None:
+    session_id = make_session(signed_in, cohort, title="Twice session")
+    _upload_vtt(signed_in, session_id, VTT)
+    again = unquote(_upload_vtt(signed_in, session_id, VTT).headers["location"])
+    assert "nothing changed" in again
+
+
+def test_a_file_with_no_speakers_is_refused_in_words_a_person_can_act_on(
+    signed_in: TestClient, db, cohort
+) -> None:
+    session_id = make_session(signed_in, cohort, title="No speakers session")
+    response = _upload_vtt(signed_in, session_id, "WEBVTT\n\n1\n00:00:01.000 --> 00:00:02.000\nmumbling\n")
+    location = unquote(response.headers["location"])
+    assert "error=" in response.headers["location"]
+    assert ".vtt" in location
+
+
+def test_an_empty_transcript_says_so(signed_in: TestClient, db, cohort) -> None:
+    session_id = make_session(signed_in, cohort, title="Empty transcript session")
+    response = _upload_vtt(signed_in, session_id, "")
+    assert "error=" in response.headers["location"]
+    assert "empty" in unquote(response.headers["location"]).lower()
+
+
+def test_the_transcript_stores_no_spoken_words(signed_in: TestClient, db, cohort) -> None:
+    """The claim the screen makes to the person deciding whether to upload."""
+    session_id = make_session(signed_in, cohort, title="No words session")
+    _upload_vtt(signed_in, session_id, VTT)
+
+    from cufa.db import connection as db_connection
+
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("select * from zoom_transcript_turn limit 1")
+            columns = [c.name for c in cur.description]
+            row = cur.fetchone()
+    assert row is not None
+    stored = " ".join(str(v) for v in row)
+    assert "budget line" not in stored
+    assert not any("text" in c or "body" in c or "words" == c for c in columns if c != "word_count")
+
+
+def _roster_for(client: TestClient, cohort: str) -> None:
+    """Two fellows whose names match the speakers in VTT, so the matching side
+    of `speaking_share` is exercised rather than assumed."""
+    body = (
+        "fellow_id,full_name,email\n"
+        "CU-8001,Ada Nwosu,ada.t@example.invalid\n"
+        "CU-8002,Bo Salas,bo.t@example.invalid\n"
+    )
+    assert _upload(client, cohort, body).status_code == 303
+
+
+def test_the_session_page_renders_after_a_transcript_is_uploaded(
+    signed_in: TestClient, db, cohort
+) -> None:
+    """The upload route and the screen read the same objects from opposite
+    ends, and nothing above loads the page afterwards — which is how a wrong
+    attribute name on SpeakingShare got as far as a browser."""
+    _roster_for(signed_in, cohort)
+    session_id = make_session(signed_in, cohort, title="Renders session")
+    _upload_vtt(signed_in, session_id, VTT)
+
+    page = signed_in.get(f"/sessions/{session_id}")
+    assert page.status_code == 200
+    speaking = boot_state(page)["speaking"]
+    assert len(speaking) == 2
+    for row in speaking:
+        assert row["name"], "every speaker needs something to show"
+        assert row["turns"] >= 1
+        assert 0.0 <= row["share"] <= 1.0
+
+
+def test_an_unmatched_speaker_is_shown_as_one_rather_than_dropped(
+    signed_in: TestClient, db, cohort
+) -> None:
+    """A guest, a co-teacher and a fellow who renamed themselves in Zoom all
+    look alike. None of them is counted for, and none of them vanishes."""
+    _roster_for(signed_in, cohort)
+    session_id = make_session(signed_in, cohort, title="Guest session")
+    with_guest = VTT + (
+        "\n3\n00:00:15.000 --> 00:00:19.000\n"
+        "<v Guest Facilitator>Say more about the minutes.</v>\n"
+    )
+    _upload_vtt(signed_in, session_id, with_guest)
+
+    speaking = boot_state(signed_in.get(f"/sessions/{session_id}"))["speaking"]
+    guests = [r for r in speaking if not r["matched"]]
+    assert [g["speaker_name"] for g in guests] == ["Guest Facilitator"]
+    assert all(g["fellow_id"] is None for g in guests)

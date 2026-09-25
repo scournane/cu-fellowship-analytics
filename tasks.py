@@ -35,8 +35,17 @@ FRONTEND = ROOT / "frontend"
 BUNDLE = ROOT / "src" / "cufa" / "console" / "static" / "app" / "console.js"
 
 COHORT = os.environ.get("COHORT", "demo")
+#: The demo's staff address. Defined in cufa.slack.fake, which tasks.py cannot
+#: import before `setup` has run, so it is repeated here and asserted equal by
+#: the acceptance checks.
+DEMO_STAFF_EMAIL = "staff.demo@example.invalid"
 SHEET_TZ = os.environ.get("SHEET_TZ", "America/New_York")
 PORT = os.environ.get("PORT", "8000")
+SLACK_BOT_PORT = os.environ.get("SLACK_BOT_PORT", "3000")
+FAKE_SLACK_PORT = os.environ.get("FAKE_SLACK_PORT", "3001")
+# Shared by the bot (which verifies) and the fake Slack (which signs). Any
+# value works locally; it is here so the two processes agree without a .env.
+DEMO_SLACK_SECRET = "demo-signing-secret-not-a-real-one"
 
 IS_WINDOWS = os.name == "nt"
 
@@ -151,14 +160,14 @@ def run_tool(name: str, *args: str, **kwargs) -> subprocess.CompletedProcess:
     return run(argv, **kwargs)
 
 
-def cufa(*args: str, check: bool = True, quiet: bool = False) -> subprocess.CompletedProcess:
+def cufa(*args: str, check: bool = True, quiet: bool = False, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     """Invoke the CLI through the venv's interpreter.
 
     `python -m cufa` rather than the `cufa` script: on Windows the console
     script can lag behind an editable reinstall, and `-m` always resolves to the
     package actually importable in that environment.
     """
-    return run([venv_python(), "-m", "cufa", *args], check=check, quiet=quiet)
+    return run([venv_python(), "-m", "cufa", *args], check=check, quiet=quiet, env=env)
 
 
 def script(name: str, *args: str, quiet: bool = False) -> subprocess.CompletedProcess:
@@ -353,6 +362,23 @@ def task_frontend() -> int:
     if not (FRONTEND / "node_modules").is_dir():
         print("installing front-end dependencies (first run only)")
         run_tool("npm", "ci", cwd=FRONTEND)
+    # The theme is compiled from src/theme/classroomTheme.js into files that are
+    # committed, so the app imports a stylesheet rather than building one at
+    # start-up. That only holds if the two stay in step: editing the source and
+    # forgetting to rebuild leaves the console rendering the previous look with
+    # no error anywhere. --check says so here instead.
+    stale = run_tool(
+        "npm", "run", "theme", "--", "--check", cwd=FRONTEND, check=False, quiet=True
+    )
+    if stale.returncode != 0:
+        raise TaskError(
+            "The built theme is out of step with its source.\n"
+            "\n"
+            "  cd frontend && npm run theme\n"
+            "\n"
+            "then commit frontend/src/theme/classroom.css and classroom.js "
+            "alongside the source you changed."
+        )
     print("building the console bundle")
     run_tool("npm", "run", "build", cwd=FRONTEND)
     print(f"bundle written to {BUNDLE.parent}")
@@ -365,7 +391,35 @@ def ensure_frontend() -> None:
         task_frontend()
 
 
+def postgres_reachable() -> str:
+    """The DSN if CUFA_DATABASE_URL already answers, else "".
+
+    Somebody may be supplying Postgres themselves — a CI runner, a machine
+    without Docker, a hosted database. If it answers, starting the Supabase
+    stack on top of it is wrong twice over: it fails when Docker is absent,
+    and when Docker is present it starts a SECOND database on a different
+    port that nothing is pointed at.
+    """
+    url = os.environ.get("CUFA_DATABASE_URL", "")
+    if not url or not have_venv():
+        return ""
+    # Probe the server's own `postgres` database, not the configured one: the
+    # configured database may not exist yet — `db-reset` is what creates it.
+    admin = url.rsplit("/", 1)[0] + "/postgres"
+    probe = run(
+        [venv_python(), "-c",
+         "import sys, psycopg; psycopg.connect(sys.argv[1], connect_timeout=3).close()", admin],
+        check=False, capture=True, quiet=True,
+    )
+    return url if probe.returncode == 0 else ""
+
+
 def task_db_up() -> int:
+    external = postgres_reachable()
+    if external:
+        shown = external.rsplit("@", 1)[-1] if "@" in external else external
+        print(f"postgres already reachable at {shown} — not starting the Supabase stack")
+        return 0
     require("docker")
     require("supabase")
     status = run_tool("supabase", "status", check=False, capture=True)
@@ -404,6 +458,9 @@ def task_db_reset() -> int:
 
 
 def task_db_down() -> int:
+    if postgres_reachable() and tool_argv("supabase") is None:
+        print("external postgres in use; nothing to stop")
+        return 0
     require("supabase")
     run_tool("supabase", "stop", check=False)
     return 0
@@ -570,6 +627,7 @@ def task_demo() -> int:
     banner("14. report")
     cufa("report", "--cohort", COHORT)
     cufa("report", "--cohort", COHORT, "--confidence")
+    cufa("report", "--cohort", COHORT, "--html", REPORT_PATH)
 
     banner("15. acceptance checks")
     script("verify_demo.py", "--cohort", COHORT, "--fixtures", str(FIXTURES))
@@ -664,6 +722,373 @@ def task_demo_console() -> int:
     return 0
 
 
+def _slack_demo_env() -> dict[str, str]:
+    """The bot and the fake Slack, pointed at each other, on a demo cohort."""
+    return {
+        "SLACK_BOT_TOKEN": "xoxb-demo-not-a-real-token",
+        "SLACK_SIGNING_SECRET": DEMO_SLACK_SECRET,
+        "SLACK_API_BASE_URL": f"http://127.0.0.1:{FAKE_SLACK_PORT}/api/",
+        "CUFA_SLACK_COHORT": COHORT,
+        "CUFA_SLACK_PORT": SLACK_BOT_PORT,
+        # #q-and-a is a Q&A channel: its text is stored, repeats get a pointer
+        # to the earlier answer, and "@bot summary" works there.
+        "CUFA_SLACK_QA_CHANNELS": "q-and-a",
+        # The reminder / badge / slash-command half. The staff channel is given
+        # by NAME, which is how a person would write it; the bot resolves it.
+        "CUFA_SLACK_STAFF_CHANNEL": "cohort-private",
+        "CUFA_SLACK_ADMINS": DEMO_STAFF_EMAIL,
+        # Not the default, so `/dashboard` links are signed with something real.
+        "CUFA_CONSOLE_SECRET": "demo-only-console-secret-not-a-real-one",
+        "CUFA_PUBLIC_BASE_URL": "http://127.0.0.1:8000",
+        "CUFA_LOG_LEVEL": os.environ.get("CUFA_LOG_LEVEL", "INFO"),
+    }
+
+
+def _spawn(argv: list[str | Path], *, env: dict[str, str]) -> subprocess.Popen:
+    merged = os.environ.copy()
+    merged.update(DEMO_ENV)
+    merged.update(env)
+    merged.setdefault("PYTHONIOENCODING", "utf-8")
+    merged.setdefault("PYTHONUTF8", "1")
+    return subprocess.Popen([str(a) for a in argv], env=merged, cwd=str(ROOT))
+
+
+def _wait_for_http(url: str, *, seconds: float = 20.0) -> None:
+    import time
+    import urllib.error
+    import urllib.request
+
+    deadline = time.time() + seconds
+    last = ""
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=2) as resp:
+                if resp.status < 500:
+                    return
+        except urllib.error.HTTPError as exc:
+            if exc.code < 500:
+                return
+            last = str(exc)
+        except Exception as exc:  # noqa: BLE001 - connection refused while starting
+            last = str(exc)
+        time.sleep(0.25)
+    raise TaskError(f"{url} did not come up within {seconds:.0f}s ({last})")
+
+
+def _slack_stack():
+    """Start the fake Slack and the bot; return the two processes.
+
+    Order matters: the bot calls auth.test at startup, so the fake has to be
+    listening first.
+    """
+    env = _slack_demo_env()
+    # A bot that is already listening here is NOT the demo's. The fake signs
+    # every delivery with the demo secret, so a real bot on this port rejects
+    # them all as forgeries — silently, from where this script sits — and the
+    # demo then "proves" nothing while the real bot logs a wall of 401s. Refuse
+    # rather than share the port.
+    for port, what in ((SLACK_BOT_PORT, "the bot"), (FAKE_SLACK_PORT, "the fake Slack")):
+        if _port_in_use(int(port)):
+            raise TaskError(
+                f"port {port} is already in use, so {what} cannot start there.\n"
+                f"  If that is a real `cufa slack serve` or `slack socket`, stop it, or run the\n"
+                f"  demo elsewhere:  SLACK_BOT_PORT=3100 FAKE_SLACK_PORT=3101 python tasks.py demo-slack-batch"
+            )
+    bot_events = f"http://127.0.0.1:{SLACK_BOT_PORT}/slack/events"
+    fake = _spawn(
+        [venv_python(), ROOT / "scripts" / "fake_slack_server.py",
+         "--roster", str(FIXTURES / "roster.csv"),
+         "--port", FAKE_SLACK_PORT, "--bot-url", bot_events,
+         "--signing-secret", DEMO_SLACK_SECRET, "--seed", "7"],
+        env=env,
+    )
+    _wait_for_http(f"http://127.0.0.1:{FAKE_SLACK_PORT}/ui/state")
+    bot = _spawn(
+        [venv_python(), "-m", "cufa", "slack", "serve", "--port", SLACK_BOT_PORT],
+        env=env,
+    )
+    _wait_for_http(f"http://127.0.0.1:{SLACK_BOT_PORT}/health")
+    return fake, bot
+
+
+def _port_in_use(port: int) -> bool:
+    """Whether something already answers on 127.0.0.1:port."""
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.5)
+        return sock.connect_ex(("127.0.0.1", port)) == 0
+
+
+def _stop(*procs: subprocess.Popen) -> None:
+    for proc in procs:
+        if proc.poll() is None:
+            proc.terminate()
+    for proc in procs:
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
+def _ui(action: str, payload: dict | None = None) -> dict:
+    import json
+    import urllib.request
+
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{FAKE_SLACK_PORT}/ui/{action}",
+        data=json.dumps(payload or {}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _slack_prereqs() -> None:
+    """Roster in place, database migrated. Reuses the demo's own steps.
+
+    Also one session dated today, so the Q&A asked during the demo belongs
+    to a session — that is what "@bot summary" and `cufa slack qa summary
+    --latest` summarise. The fixture sessions are all in the future.
+    """
+    task_db_reset()
+    task_fixtures()
+    cufa("load-roster", "--csv", str(FIXTURES / "roster.csv"), "--cohort", COHORT)
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    today = datetime.now(ZoneInfo(SHEET_TZ)).date()
+    cufa(
+        "session", "create", "--cohort", COHORT, "--title", "Demo session (today)",
+        "--scheduled-at", f"{today.isoformat()}T00:05", "--timezone", SHEET_TZ, "--duration", "90",
+        quiet=True,
+    )
+
+
+def task_demo_slack() -> int:
+    """The bot and a fake Slack, side by side, for clicking through in a browser."""
+    markers = real_install_markers()
+    if markers and not os.environ.get("CUFA_DEMO_FORCE"):
+        raise TaskError(
+            "Refusing: this database looks like a real install (see `make demo` "
+            "for the same guard). Point CUFA_DATABASE_URL at a scratch database, "
+            "or set CUFA_DEMO_FORCE=1."
+        )
+    _slack_prereqs()
+    banner("starting the fake Slack and the bot")
+    fake, bot = _slack_stack()
+    try:
+        print(
+            f"\n  Fake Slack (click here):  http://127.0.0.1:{FAKE_SLACK_PORT}/\n"
+            f"  Bot status page:          http://127.0.0.1:{SLACK_BOT_PORT}/\n"
+            f"  Bot stats JSON:           http://127.0.0.1:{SLACK_BOT_PORT}/stats\n"
+            f"  Studio (tables):          http://localhost:64323\n"
+            "\n"
+            "  Post messages and reactions as any fellow. Press \"Replay last\n"
+            "  delivery\" to watch the duplicate get dropped, and \"Send with bad\n"
+            "  signature\" to watch it get refused. Ctrl+C stops both processes.\n"
+        )
+        if os.environ.get("CUFA_DEMO_OPEN", "1") != "0":
+            import webbrowser
+
+            webbrowser.open(f"http://127.0.0.1:{FAKE_SLACK_PORT}/")
+        while True:
+            if bot.poll() is not None:
+                raise TaskError(f"the bot exited with code {bot.returncode}")
+            if fake.poll() is not None:
+                raise TaskError(f"the fake Slack exited with code {fake.returncode}")
+            bot.wait(timeout=1) if False else None
+            import time
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nstopping…")
+    finally:
+        _stop(bot, fake)
+    return 0
+
+
+def task_demo_slack_batch() -> int:
+    """Same stack, driven without a browser, then checked. What CI runs."""
+    _slack_prereqs()
+    banner("1. start the fake Slack and the bot")
+    fake, bot = _slack_stack()
+    try:
+        banner("2. a busy day in the workspace (40 events)")
+        print("  delivered:", _ui("busy-day", {"n": 40})["delivered"])
+
+        banner("3. every event type once")
+        state = _ui_state()
+        people = [u["id"] for u in state["users"] if not u["bot"] and not u["deleted"]]
+        general = next(c["id"] for c in state["channels"] if c["name"] == "general")
+        _ui("message", {"user": people[0], "channel": general, "text": "root message"})
+        _ui("message", {"user": people[1], "channel": general, "thread_ts": _ui_state()["last_message_ts"][general]})
+        _ui("reaction", {"user": people[2], "channel": general, "reaction": "fire"})
+        _ui("join", {"user": people[3], "channel": general})
+        _ui("edit", {"channel": general, "text": "root message, edited"})
+        _ui("bot-message", {"channel": general})
+        # Somebody with an address that is on no roster — recorded, and queued
+        # for a human rather than dropped. Explicit, so the check below does not
+        # depend on the random day having picked them.
+        guest = next(u["id"] for u in state["users"] if (u["email"] or "").startswith("guest."))
+        _ui("message", {"user": guest, "channel": general, "text": "thanks for having me tonight!"})
+
+        banner("3b. Q&A: a question answered, a question open, and one asked AGAIN")
+        _ui("qa-ask", {"user": people[0], "text": "does anyone have the slides from tuesday?"})
+        _ui("qa-answer", {"user": people[1], "text": "yes — they're pinned in #announcements"})
+        _ui("qa-accept", {"user": people[0]})
+        _ui("qa-ask", {"user": people[2], "text": "what does 'quorum' mean in this context?"})
+        _ui("qa-again", {"user": people[3], "text": "can someone share tuesday's slides?"})
+        posted = _ui_state()["posted"]
+        pointers = [p for p in posted if "came up before" in p["text"]]
+        print(f"  bot replied in the repeat's thread: {'yes' if pointers else 'NO'}")
+        if pointers:
+            print("    " + pointers[-1]["text"].splitlines()[0])
+        banner("3c. the teacher asks for the session's Q&A summary")
+        _ui("bot-mention", {"user": people[0], "channel": general, "text": "summary"})
+        posted = _ui_state()["posted"]
+        summaries = [p for p in posted if p["text"].startswith("*Q&A summary")]
+        print(f"  bot posted a summary in the thread: {'yes' if summaries else 'NO'}")
+        for row in (summaries[-1]["text"].splitlines()[:2] if summaries else []):
+            print("    " + row)
+
+        banner("3b. the newer signals: mentions, huddles, canvases, a poll")
+        import json  # local, like every other helper in this file
+
+        _ui("mention", {"user": people[0], "channel": general, "target": people[1]})
+        _ui("huddle", {"user": people[0], "joined": 1})
+        _ui("huddle", {"user": people[1], "joined": 1})
+        _ui("huddle", {"user": people[0], "joined": 0})
+        _ui("canvas", {"user": people[2], "channel": general, "what": "create"})
+        _ui("canvas", {"user": people[2], "channel": general, "what": "edit"})
+        _ui("canvas", {"user": people[3], "channel": general, "what": "comment"})
+        _ui("plain-file", {"user": people[3]})
+        poll_env = _slack_demo_env()
+        posted = run(
+            [venv_python(), "-m", "cufa", "slack", "poll", "--channel", "general",
+             "--question", "Which night works for the project check-in?",
+             "--option", "Tuesday", "--option", "Thursday", "--json"],
+            env=poll_env, quiet=True,
+        )
+        poll = json.loads(posted.stdout or "{}")
+        print(f"  poll {poll.get('poll_id')} posted at ts {poll.get('message_ts')}")
+        for voter, choice in ((people[0], "Tuesday"), (people[1], "Thursday"), (people[2], "Tuesday"), (people[0], "Thursday")):
+            _ui("vote", {"user": voter, "choice": choice, "poll_id": poll.get("poll_id")})
+        print("  4 votes cast, one of them a change of mind")
+
+        banner("4. Slack retries a delivery — the bot must ack AND write nothing")
+        replay = _ui("replay")
+        print(f"  bot answered {replay['status']} to the retry")
+
+        banner("5. a forged delivery — the bot must refuse it")
+        forged = _ui("tamper")
+        print(f"  bot answered {forged['status']} to the bad signature")
+        if forged["status"] == 200:
+            raise TaskError("UNEXPECTED: the bot accepted a delivery with a bad signature")
+
+        env = _slack_demo_env()
+        banner("6. the bot was down for a while — backfill what it missed")
+        cufa("slack", "backfill", "--channel", "general", "--channel", "announcements", "--channel", "q-and-a", env=env)
+
+        banner("7. what the database holds")
+        cufa("slack", "stats", env=env)
+        cufa("slack", "report", "--cohort", COHORT, env=env)
+        cufa("slack", "insights", "--cohort", COHORT, env=env)
+        cufa("slack", "qa", "list", "--latest", env=env)
+        cufa("slack", "qa", "summary", "--latest", env=env)
+        cufa("report", "--cohort", COHORT, "--html", REPORT_PATH, env=env)
+
+        banner("8. the other half of the bot: reminders, welcomes, the digest")
+        # Everything below goes through the SAME client the production bot uses
+        # (slack_sdk, pointed at the fake server), so this exercises the adapter
+        # and the HTTP wire, not just the in-memory logic the unit tests cover.
+        from datetime import datetime, timedelta, timezone
+
+        # Fixed instants in UTC, so the arithmetic does not depend on when CI
+        # runs or on a daylight-saving boundary. The tick is told what time it
+        # is, and both windows open at exactly that moment.
+        tick_at = (datetime.now(timezone.utc) + timedelta(days=1)).replace(
+            hour=13, minute=0, second=0, microsecond=0
+        )
+        session_at = tick_at + timedelta(hours=1)    # the 1-hour reminder
+        due_at = tick_at + timedelta(days=1)         # the 24-hour reminder
+        stamp = "%Y-%m-%dT%H:%M"
+
+        cufa("slack", "sync", env=env)
+        admin = next(u["id"] for u in _ui_state()["users"] if u["email"] == DEMO_STAFF_EMAIL)
+        cufa(
+            "session", "create", "--cohort", COHORT, "--title", "Lesson 2 — deliberation",
+            "--scheduled-at", session_at.strftime(stamp), "--timezone", "UTC", "--duration", "90",
+            quiet=True, env=env,
+        )
+        cufa(
+            "assignment", "create", "--cohort", COHORT, "--title", "Solvathon deck",
+            "--due-at", due_at.strftime(stamp), "--timezone", "UTC", "--kind", "solvathon",
+            "--link", "https://forms.example.invalid/solvathon", "--max-score", "100",
+            "--by", DEMO_STAFF_EMAIL, quiet=True, env=env,
+        )
+        print("  a staff member puts the Zoom link on the session, from Slack:")
+        cufa("slack", "cmd", "--as", admin, "/zoom", "deliberation", "https://zoom.us/j/demo", env=env)
+        print(f"  one tick, as if it were {tick_at:%Y-%m-%d %H:%M} UTC:")
+        cufa("slack", "tick", "--now", tick_at.strftime("%Y-%m-%dT%H:%M:%SZ"), env=env)
+        print("  the weekly digest, posted on demand:")
+        cufa("slack", "digest", "--post", env=env)
+        print("  a staff member asks about one fellow, and about the cohort:")
+        cufa("slack", "cmd", "--as", admin, "/report", env=env)
+        cufa("slack", "cmd", "--as", admin, "/fellow", "Ardith", env=env)
+        state = _ui_state()
+        print(f"  direct messages the bot sent: {len(state['dms'])}")
+        for dm in state["dms"][:3]:
+            print(f"    → {dm['name']}: {dm['text'].splitlines()[0]}")
+
+        banner("9. acceptance checks")
+        # The verifier reads the fake's delivery log, so it has to be told
+        # where the fake is when the ports were moved off the defaults.
+        script("verify_slack_demo.py", "--cohort", COHORT,
+               "--fake-url", f"http://127.0.0.1:{FAKE_SLACK_PORT}",
+               "--staff-email", DEMO_STAFF_EMAIL)
+    finally:
+        _stop(bot, fake)
+    return 0
+
+
+def _ui_state() -> dict:
+    import json
+    import urllib.request
+
+    with urllib.request.urlopen(f"http://127.0.0.1:{FAKE_SLACK_PORT}/ui/state", timeout=10) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def task_slack_bot() -> int:
+    """Run the bot against REAL Slack, from .env — preflight first.
+
+    `doctor` refuses to start the bot when it would record nothing: a missing
+    scope, a channel it was never invited to, a token from the wrong app. Each
+    of those fails silently once the bot is running, which is why the check
+    happens before it starts rather than after nothing arrives.
+    """
+    clean = {k: v for k, v in os.environ.items()}
+    # The demo's fake-server override must never leak into a real run.
+    clean.pop("SLACK_API_BASE_URL", None)
+    result = run([venv_python(), "-m", "cufa", "slack", "doctor"], env=clean, check=False)
+    if result.returncode != 0:
+        raise TaskError("preflight failed — fix the items above, then re-run")
+    mode = "socket" if os.environ.get("SLACK_APP_TOKEN") else "serve"
+    args = ["slack", mode] + (["--port", SLACK_BOT_PORT] if mode == "serve" else [])
+    run([venv_python(), "-m", "cufa", *args], env=clean)
+    return 0
+
+
+REPORT_PATH = os.environ.get("REPORT_PATH", "out/report.html")
+
+
+def task_report() -> int:
+    """Regenerate the self-contained HTML report. This is the evergreen step."""
+    cufa("report", "--cohort", COHORT, "--html", REPORT_PATH)
+    return 0
+
+
 def task_test() -> int:
     # The console tests render real screens, which needs the real bundle.
     ensure_frontend()
@@ -674,7 +1099,8 @@ def task_test() -> int:
 
 
 def task_clean() -> int:
-    run_tool("supabase", "stop", "--no-backup", check=False, capture=True)
+    if tool_argv("supabase") is not None:
+        run_tool("supabase", "stop", "--no-backup", check=False, capture=True)
     if FIXTURES.exists():
         shutil.rmtree(FIXTURES, ignore_errors=True)
     for pattern in ("**/__pycache__", ".pytest_cache"):
@@ -721,6 +1147,10 @@ TASKS = {
     "db-down": task_db_down,
     "studio": task_studio,
     "fixtures": task_fixtures,
+    "report": task_report,
+    "demo-slack": task_demo_slack,
+    "demo-slack-batch": task_demo_slack_batch,
+    "slack-bot": task_slack_bot,
 }
 
 HELP = """Civic Innovators check-in — Parts A and B
@@ -731,6 +1161,10 @@ HELP = """Civic Innovators check-in — Parts A and B
   python tasks.py demo-again    re-run over the same database, to show idempotency
   python tasks.py demo-ai       same as demo, with tier 2 live (needs GEMINI_API_KEY)
   python tasks.py demo-console  demo data plus the web console
+  python tasks.py report        regenerate out/report.html — the self-contained HTML report
+  python tasks.py demo-slack    the Slack bot + a fake Slack workspace you drive from a browser
+  python tasks.py demo-slack-batch  the same, driven automatically and checked (no browser)
+  python tasks.py slack-bot     preflight (cufa slack doctor), then run the bot against real Slack
   python tasks.py frontend      build the console bundle (npm ci + vite build)
   python tasks.py test          pytest, no network
   python tasks.py clean         stop Supabase, remove generated fixtures

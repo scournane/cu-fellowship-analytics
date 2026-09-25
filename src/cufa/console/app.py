@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import tempfile
 import uuid
 from contextlib import contextmanager
 from functools import lru_cache
@@ -45,7 +46,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, Form, Query, Request
+from fastapi import Depends, FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -72,9 +73,24 @@ from ..ingest.forms_b import pull_session_b
 from ..logging_setup import configure_logging, get_logger
 from ..passphrase import ACCESSIBILITY_REMINDER, GUIDANCE, check_reuse, suggest
 from ..provenance import is_simulated_form_id
+from ..assignments import (
+    AssignmentInput,
+    create_assignment,
+    get_assignment,
+    list_assignments,
+    update_assignment,
+)
 from ..provisioning import is_ready, provision_session, resolve_rotating_slot
 from ..question_map import map_rows
 from ..report import ai_decisions, needs_review_queue, unresolved_identities
+from ..roster import (
+    inspect_roster_csv,
+    inspect_sessions_csv,
+    list_fellows,
+    load_roster,
+    load_sessions,
+    set_fellow_timezone,
+)
 from ..rotation import RotationConfigError, TeacherQuestionMissing, get_rotation
 from ..shoutouts import candidates_for, link as link_shoutout, review_queue as shoutout_queue
 from ..themes import current_themes, generate_themes
@@ -98,8 +114,11 @@ from ..template import (
     verify_template,
 )
 from ..timeutil import TimezoneError, get_zone
+from ..urls import optional_http_url
+from ..zoom import ingest_transcript, silent_fellows, speaking_share
 from .auth import (
     COOKIE_NAME,
+    PASSWORD_IDENTITY,
     NotPermitted,
     PKCE_COOKIE_NAME,
     SESSION_MAX_AGE,
@@ -109,6 +128,8 @@ from .auth import (
     dev_signin_available,
     is_allowed,
     issue_session,
+    password_matches,
+    password_signin_available,
     read_code_verifier,
     read_session,
     read_state,
@@ -126,6 +147,23 @@ STATIC_DIR = _HERE / "static"
 # The account recorded when the fake client stands in for Google. It is an
 # `.invalid` domain by RFC 2606 so it can never be a real address.
 FAKE_ACCOUNT_EMAIL = "fake-google-client@example.invalid"
+
+#: The ceiling on any CSV the console accepts. Generous for a cohort of a few
+#: hundred or a term of sessions, and small enough that a mis-picked video never
+#: reaches the CSV parser.
+MAX_UPLOAD_BYTES = 2 * 1024 * 1024
+
+# Offered as shortcuts on the roster screen. Any IANA name may still be
+# typed; these are only the ones a US cohort reaches for most.
+COMMON_ZONES = (
+    "America/New_York",
+    "America/Chicago",
+    "America/Denver",
+    "America/Los_Angeles",
+    "America/Anchorage",
+    "Pacific/Honolulu",
+    "UTC",
+)
 
 configure_logging(get_settings().log_level)
 
@@ -220,10 +258,54 @@ def _spa_assets() -> tuple[list[str], list[str]]:
     return css, js
 
 
+# How a page introduces itself, per frame: what it is called in the tab, and
+# what a reader with JavaScript switched off is told. Staff are in a console
+# and have a command line that does everything it does; a fellow has one page
+# and Slack, and is not in the console at all.
+FRAME_CHROME = {
+    "staff": {
+        "site": "CU check-in console",
+        "noscript": (
+            "This screen needs JavaScript. The same actions are available from "
+            "the command line — see docs/setup/console.md."
+        ),
+    },
+    "fellow": {
+        "site": "Civic Innovators fellowship",
+        "noscript": (
+            "This page needs JavaScript. Everything on it is also in Slack: /me "
+            "for your own record, /reminders and /badges for these settings."
+        ),
+    },
+}
+
+
+# Sign-in is drawn with no frame around it: there is no user yet, so there is
+# no nav to build and nobody to sign out.
+UNFRAMED_SCREENS = {"signin"}
+
+
 def render_spa(
-    request: Request, screen: str, *, status_code: int = 200, title: str, **state: Any
+    request: Request,
+    screen: str,
+    *,
+    status_code: int = 200,
+    title: str,
+    frame: str | None = None,
+    **state: Any,
 ) -> HTMLResponse:
-    """Render a React screen shell, handing it its data as JSON."""
+    """Render a React screen shell, handing it its data as JSON.
+
+    ``frame`` names the frame the bundle draws around the screen, and with it
+    who the page is for. It defaults to the staff console. ``"fellow"`` is a
+    page opened from a signed link by somebody who is not signed in to the
+    console at all, so it is handed the screen's own data and nothing else: who
+    may sign in, which sign-in doors exist and whether Google is faked are
+    staff configuration, and shipping them to a fellow's browser would disclose
+    a staff address list to every person holding a link.
+    """
+    if frame is None:
+        frame = "none" if screen in UNFRAMED_SCREENS else "staff"
     css, js = _spa_assets()
     if not js:
         raise ConfigError(
@@ -236,31 +318,46 @@ def render_spa(
         "screen": screen,
         "title": title,
         "path": request.url.path,
-        "fakeGoogle": settings.fake_google,
-        "devSignin": dev_signin_available(settings),
-        "noAllowlist": not settings.console_allowlist,
-        "allowlist": sorted(settings.console_allowlist),
-        "user": (
-            {
-                "email": user.email,
-                "isDevBypass": user.is_dev_bypass,
-                # Drives whether the nav shows the Help requests link at all. The
-                # server still enforces the gate on every request — this only
-                # stops the console offering a door that would answer 403.
-                "mayReadHelp": may_read_help(user, settings),
-            }
-            if user
-            else None
-        ),
-        **state,
+        "frame": frame,
     }
+    if frame != "fellow":
+        payload.update(
+            {
+                "fakeGoogle": settings.fake_google,
+                "devSignin": dev_signin_available(settings),
+                "passwordSignin": password_signin_available(settings),
+                "noAllowlist": not settings.console_allowlist,
+                "allowlist": sorted(settings.console_allowlist),
+                "user": (
+                    {
+                        "email": user.email,
+                        "isDevBypass": user.is_dev_bypass,
+                        "isSharedPassword": user.is_shared_password,
+                        # Drives whether the nav shows the Help requests link at
+                        # all. The server still enforces the gate on every
+                        # request — this only stops the console offering a door
+                        # that would answer 403.
+                        "mayReadHelp": may_read_help(user, settings),
+                    }
+                    if user
+                    else None
+                ),
+            }
+        )
+    payload.update(state)
     # jsonable_encoder is what turns datetimes, UUIDs and the record objects into
     # something json.dumps will take. Markup is a str subclass, so the QR SVG
     # comes through as a string and the screen renders it as markup.
     return templates.TemplateResponse(
         request,
         "app_shell.html",
-        {"title": title, "state": jsonable_encoder(payload), "css": css, "js": js},
+        {
+            "title": title,
+            "state": jsonable_encoder(payload),
+            "css": css,
+            "js": js,
+            **FRAME_CHROME.get(frame, FRAME_CHROME["staff"]),
+        },
         status_code=status_code,
     )
 
@@ -378,6 +475,42 @@ def signin_dev(
     response = RedirectResponse(next or "/", status_code=303)
     _set_session_cookie(response, settings, user)
     log.info("console sign-in via dev bypass user=%s", user.masked_email)
+    return response
+
+
+@app.post("/signin/password")
+def signin_password(
+    request: Request, password: str = Form(""), next: str = Form("/")
+) -> Response:
+    """The shared-password door, for installs with no Google client configured.
+
+    Every wrong guess answers the same way and takes the same time to do it, so
+    the form says nothing about whether a password is even configured beyond
+    what the page already showed — an empty field included, which is why
+    ``password`` is optional here rather than a 422 that would answer
+    differently. Nothing rate-limits this beyond the host, which is the honest
+    reason to prefer Google where Google is available.
+    """
+    settings = get_settings()
+    if not password_signin_available(settings) or not password_matches(settings, password):
+        log.warning("console sign-in refused: shared password did not match")
+        return render_spa(
+            request,
+            "signin",
+            status_code=403,
+            title="Sign in",
+            nextPath=next,
+            googleReady=bool(settings.google_client_id and settings.google_client_secret),
+            error=(
+                "That password is not right. It is the one set as "
+                "CUFA_CONSOLE_PASSWORD on this install — ask whoever runs it."
+            ),
+        )
+
+    user = ConsoleUser(email=PASSWORD_IDENTITY, via="password")
+    response = RedirectResponse(next or "/", status_code=303)
+    _set_session_cookie(response, settings, user)
+    log.info("console sign-in via shared password")
     return response
 
 
@@ -984,12 +1117,84 @@ def rotation_screen(
 # --------------------------------------------------------------------------
 
 
+# A term's schedule is typed once, into a spreadsheet, usually before anybody
+# has opened this console. `cufa load-sessions --csv` was the only way to get it
+# in. Creating twelve sessions one form at a time is not a reasonable
+# alternative, so this is the same loader behind the same kind of file picker
+# the roster screen has.
+#
+# The template below matters more than it looks. The roster is exported from
+# somewhere and already has the right shape; a schedule is typed by hand, and
+# without a starting file the first attempt is a guess at column names.
+
+
+#: The columns `load_sessions` reads, in the order a person would fill them,
+#: with one row showing the formats that are easy to get wrong — the time and
+#: the zone. Offered for download so the first attempt is not a guess.
+SESSION_TEMPLATE_CSV = (
+    "cohort_id,title,scheduled_at_local,timezone,duration_minutes,"
+    "grace_minutes,passphrase,week_index,teacher_question,zoom_url,agenda\n"
+    "2026-spring,Week 1 — What is civic innovation?,2026-09-15 19:00,"
+    "America/New_York,60,15,,1,,,\n"
+)
+
+
+@app.get("/sessions/template.csv")
+def sessions_template(user: ConsoleUser = Depends(require_user)) -> Response:
+    return Response(
+        SESSION_TEMPLATE_CSV,
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="sessions-template.csv"'},
+    )
+
+
+@app.post("/sessions/upload")
+async def sessions_upload(
+    request: Request,
+    user: ConsoleUser = Depends(require_user),
+    file: UploadFile = File(...),
+) -> Response:
+    def refuse(message: str) -> Response:
+        return RedirectResponse("/sessions?error=" + quote(message), status_code=303)
+
+    payload = await file.read(MAX_UPLOAD_BYTES + 1)
+    if not payload:
+        return refuse("That file is empty.")
+    if len(payload) > MAX_UPLOAD_BYTES:
+        return refuse(
+            f"That file is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)}MB. "
+            "A schedule is usually a few kilobytes — check it is the right file."
+        )
+
+    with tempfile.TemporaryDirectory() as scratch:
+        staged = Path(scratch) / "sessions.csv"
+        staged.write_bytes(payload)
+
+        check = inspect_sessions_csv(staged)
+        if not check.ok:
+            return refuse(" ".join(check.problems) or "That file has no rows this can create.")
+
+        with connection() as conn:
+            summary = load_sessions(conn, staged)
+
+    said = f"Created {summary.written} of {summary.read} sessions."
+    if summary.skipped:
+        # Skipped here usually means "already there", because load_sessions
+        # matches on cohort, title and time. Saying so stops a re-upload
+        # looking like a failure.
+        said += f" {summary.skipped} skipped — already scheduled, or missing something."
+    if check.warnings:
+        said += " " + " ".join(check.warnings)
+    return RedirectResponse("/sessions?notice=" + quote(said), status_code=303)
+
+
 @app.get("/sessions", response_class=HTMLResponse)
 def sessions_screen(
     request: Request,
     user: ConsoleUser = Depends(require_user),
     cohort: str | None = Query(default=None),
     notice: str | None = None,
+    error: str | None = None,
 ) -> Response:
     with connection() as conn:
         cohorts = _cohorts(conn)
@@ -1002,6 +1207,7 @@ def sessions_screen(
         cohorts=cohorts,
         selected_cohort=cohort or "",
         notice=notice,
+        error=error,
     )
 
 
@@ -1016,6 +1222,9 @@ def _blank_form(cohorts: list[dict[str, Any]]) -> dict[str, Any]:
         "cohort_id": cohorts[0]["cohort_id"] if cohorts else "",
         "week_index": "",
         "teacher_question": "",
+        "zoom_url": "",
+        "agenda": "",
+        "slack_channel_id": "",
     }
 
 
@@ -1085,6 +1294,9 @@ def _read_session_form(
     cohort_id: str,
     week_index: str = "",
     teacher_question: str = "",
+    zoom_url: str = "",
+    agenda: str = "",
+    slack_channel_id: str = "",
 ) -> tuple[SessionInput | None, list[str], dict[str, Any]]:
     """Validate the posted form, returning the input, the errors, and the echo."""
     values = {
@@ -1097,6 +1309,9 @@ def _read_session_form(
         "cohort_id": cohort_id,
         "week_index": week_index,
         "teacher_question": teacher_question,
+        "zoom_url": zoom_url,
+        "agenda": agenda,
+        "slack_channel_id": slack_channel_id,
     }
     errors: list[str] = []
 
@@ -1147,6 +1362,12 @@ def _read_session_form(
     if not cohort_id.strip():
         errors.append("Cohort is required — everything is keyed to one.")
 
+    clean_zoom_url: str | None = None
+    try:
+        clean_zoom_url = optional_http_url(zoom_url, label="Zoom URL")
+    except ValueError as exc:
+        errors.append(str(exc))
+
     if errors or local is None or duration is None or grace is None:
         return None, errors, values
 
@@ -1164,6 +1385,9 @@ def _read_session_form(
             # schedules get edited, and a question typed once should not be lost
             # because the week it belonged to moved.
             teacher_question=teacher_question.strip() or None,
+            zoom_url=clean_zoom_url,
+            agenda=agenda.strip() or None,
+            slack_channel_id=slack_channel_id.strip() or None,
         ),
         [],
         values,
@@ -1183,6 +1407,9 @@ def session_create(
     cohort_id: str = Form(""),
     week_index: str = Form(""),
     teacher_question: str = Form(""),
+    zoom_url: str = Form(""),
+    agenda: str = Form(""),
+    slack_channel_id: str = Form(""),
     confirm_reuse: str = Form(""),
 ) -> Response:
     data, errors, values = _read_session_form(
@@ -1195,6 +1422,9 @@ def session_create(
         cohort_id=cohort_id,
         week_index=week_index,
         teacher_question=teacher_question,
+        zoom_url=zoom_url,
+        agenda=agenda,
+        slack_channel_id=slack_channel_id,
     )
 
     with connection() as conn:
@@ -1256,6 +1486,9 @@ def session_edit_form(
             "cohort_id": row["cohort_id"],
             "week_index": "" if row["week_index"] is None else str(row["week_index"]),
             "teacher_question": row["teacher_question"] or "",
+            "zoom_url": row["zoom_url"] or "",
+            "agenda": row["agenda"] or "",
+            "slack_channel_id": row["slack_channel_id"] or "",
         },
         cohorts=cohorts,
         guidance=GUIDANCE,
@@ -1283,6 +1516,9 @@ def session_edit(
     cohort_id: str = Form(""),
     week_index: str = Form(""),
     teacher_question: str = Form(""),
+    zoom_url: str = Form(""),
+    agenda: str = Form(""),
+    slack_channel_id: str = Form(""),
     confirm_reuse: str = Form(""),
 ) -> Response:
     parsed = _parse_uuid(session_id)
@@ -1299,6 +1535,9 @@ def session_edit(
         cohort_id=cohort_id,
         week_index=week_index,
         teacher_question=teacher_question,
+        zoom_url=zoom_url,
+        agenda=agenda,
+        slack_channel_id=slack_channel_id,
     )
 
     with connection() as conn:
@@ -1414,6 +1653,26 @@ def _detail_context(conn: Any, session_id: str) -> dict[str, Any] | None:
         "qr": qr_markup,
         "qr_error": qr_error,
         "accessibility_reminder": ACCESSIBILITY_REMINDER,
+        # Only present once a transcript has been ingested; the screen decides
+        # what to say when it is empty, because "nobody spoke" and "no
+        # transcript yet" are different facts and must not look the same.
+        "speaking": [
+            {
+                "fellow_id": share.fellow_id,
+                # The roster name when it matched, and otherwise the name Zoom
+                # had, which is the only name there is for a guest.
+                "name": share.full_name or share.speaker_name,
+                "speaker_name": share.speaker_name,
+                "turns": share.turns,
+                "words": share.words,
+                "seconds": share.seconds,
+                "share": share.share_of_seconds,
+                "matched": share.fellow_id is not None,
+                "matched_by": share.matched_by,
+            }
+            for share in speaking_share(conn, session_id)
+        ],
+        "silent": silent_fellows(conn, session_id),
         **_part_b_context(conn, row),
         "provisioning_log": fetch_all(
             conn,
@@ -1446,6 +1705,64 @@ def session_detail(
     return render_spa(
         request, "sessionDetail", title=context["session"]["title"], notice=notice, **context
     )
+
+
+# A Zoom transcript is a .vtt the host downloads from the cloud recording. It
+# was `cufa zoom ingest --session <uuid> --vtt <path>`, which asks somebody to
+# find a session's UUID — a thing this console knows and a person does not.
+#
+# Worth being exact about what this stores, because "we uploaded the
+# transcript" sounds like the opposite: `ingest_transcript` writes a speaker
+# name, two timestamps and a word count per cue. The words themselves are
+# parsed, counted and dropped. That is the same rule the Slack collector
+# follows, and the screen says so where somebody is deciding whether to upload.
+
+
+@app.post("/sessions/{session_id}/transcript")
+async def session_transcript(
+    request: Request,
+    session_id: str,
+    user: ConsoleUser = Depends(require_user),
+    file: UploadFile = File(...),
+) -> Response:
+    parsed = _parse_uuid(session_id)
+    if parsed is None:
+        return _not_found(request)
+
+    def done(key: str, message: str) -> Response:
+        return RedirectResponse(
+            f"/sessions/{parsed}?{key}=" + quote(message), status_code=303
+        )
+
+    payload = await file.read(MAX_UPLOAD_BYTES + 1)
+    if not payload:
+        return done("error", "That file is empty.")
+    if len(payload) > MAX_UPLOAD_BYTES:
+        return done(
+            "error",
+            f"That file is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)}MB. "
+            "A transcript is usually well under that — check it is the .vtt and "
+            "not the recording itself.",
+        )
+
+    with tempfile.TemporaryDirectory() as scratch:
+        staged = Path(scratch) / "transcript.vtt"
+        staged.write_bytes(payload)
+        try:
+            with connection() as conn:
+                result = ingest_transcript(conn, parsed, staged)
+        except CufaError as exc:
+            # `ingest_transcript` already refuses a file with no named speakers
+            # in words a person can act on. Passing it through beats replacing
+            # it with something vaguer.
+            return done("error", str(exc))
+
+    said = f"Read {result['turns']} turns."
+    if result["written"]:
+        said += f" {result['written']} are new."
+    else:
+        said += " All of them were already recorded, so nothing changed."
+    return done("notice", said)
 
 
 @app.post("/sessions/{session_id}/provision")
@@ -1996,6 +2313,368 @@ def _not_found(request: Request) -> Response:
     )
 
 
+# --------------------------------------------------------------------------
+# screen 8 — assignments
+# --------------------------------------------------------------------------
+#
+# The same three fields the CLI takes, on a screen, because the people who set
+# assignments are the staff running the sessions and not the people with a
+# terminal. `cufa assignment` stays exactly as it was; this calls the same
+# functions.
+
+
+def _blank_assignment(cohorts: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "title": "",
+        "due_at": "",
+        "timezone": "",
+        "description": "",
+        "url": "",
+        "status": "active",
+        "cohort_id": cohorts[0]["cohort_id"] if cohorts else "",
+    }
+
+
+def _read_assignment_form(
+    *,
+    title: str,
+    due_at: str,
+    timezone: str,
+    cohort_id: str,
+    description: str,
+    url: str,
+    status: str,
+) -> tuple[AssignmentInput | None, list[str], dict[str, Any]]:
+    """Parse and validate, returning what to re-show when it does not."""
+    values = {
+        "title": title,
+        "due_at": due_at,
+        "timezone": timezone,
+        "cohort_id": cohort_id,
+        "description": description,
+        "url": url,
+        "status": status or "active",
+    }
+    errors: list[str] = []
+
+    local: datetime | None = None
+    try:
+        local = datetime.fromisoformat(due_at.strip())
+    except ValueError:
+        errors.append(
+            "Due date and time is required, as a local wall-clock time "
+            "(for example 2026-09-18T17:00)."
+        )
+
+    if not timezone.strip():
+        errors.append("Timezone is required — an IANA name such as America/Chicago.")
+    else:
+        try:
+            get_zone(timezone.strip())
+        except TimezoneError as exc:
+            errors.append(str(exc))
+
+    if errors or local is None:
+        return None, errors, values
+
+    data = AssignmentInput(
+        cohort_id=cohort_id,
+        title=title,
+        due_at_local=local,
+        timezone=timezone.strip(),
+        description=description.strip() or None,
+        url=url.strip() or None,
+        status=values["status"],
+    )
+    try:
+        data.validate()
+    except (ValueError, TimezoneError) as exc:
+        return None, [str(exc)], values
+    return data, [], values
+
+
+@app.get("/assignments", response_class=HTMLResponse)
+def assignments_screen(
+    request: Request,
+    user: ConsoleUser = Depends(require_user),
+    cohort: str | None = Query(default=None),
+    notice: str | None = None,
+) -> Response:
+    with connection() as conn:
+        cohorts = _cohorts(conn)
+        rows = list_assignments(conn, cohort or None, include_cancelled=True)
+    return render_spa(
+        request,
+        "assignments",
+        title="Assignments",
+        assignments=rows,
+        cohorts=cohorts,
+        selected_cohort=cohort or "",
+        notice=notice,
+    )
+
+
+@app.get("/assignments/new", response_class=HTMLResponse)
+def assignment_new_form(
+    request: Request, user: ConsoleUser = Depends(require_user)
+) -> Response:
+    with connection() as conn:
+        cohorts = _cohorts(conn)
+    return render_spa(
+        request,
+        "assignmentForm",
+        title="New assignment",
+        heading="New assignment",
+        action="/assignments/new",
+        values=_blank_assignment(cohorts),
+        cohorts=cohorts,
+        errors=[],
+    )
+
+
+@app.post("/assignments/new")
+def assignment_create(
+    request: Request,
+    user: ConsoleUser = Depends(require_user),
+    title: str = Form(""),
+    due_at: str = Form(""),
+    timezone: str = Form(""),
+    cohort_id: str = Form(""),
+    description: str = Form(""),
+    url: str = Form(""),
+    status: str = Form("active"),
+) -> Response:
+    data, errors, values = _read_assignment_form(
+        title=title, due_at=due_at, timezone=timezone, cohort_id=cohort_id,
+        description=description, url=url, status=status,
+    )
+    with connection() as conn:
+        cohorts = _cohorts(conn)
+        if data is None:
+            return render_spa(
+                request,
+                "assignmentForm",
+                status_code=400,
+                title="New assignment",
+                heading="New assignment",
+                action="/assignments/new",
+                values=values,
+                cohorts=cohorts,
+                errors=errors,
+            )
+        create_assignment(conn, data)
+    return RedirectResponse(
+        "/assignments?notice=" + quote("Assignment created."), status_code=303
+    )
+
+
+@app.get("/assignments/{assignment_id}/edit", response_class=HTMLResponse)
+def assignment_edit_form(
+    request: Request,
+    assignment_id: str,
+    user: ConsoleUser = Depends(require_user),
+) -> Response:
+    parsed = _parse_uuid(assignment_id)
+    if parsed is None:
+        return _not_found(request)
+    with connection() as conn:
+        cohorts = _cohorts(conn)
+        row = get_assignment(conn, parsed)
+    if row is None:
+        return _not_found(request)
+    return render_spa(
+        request,
+        "assignmentForm",
+        title="Edit assignment",
+        heading="Edit assignment",
+        action=f"/assignments/{parsed}/edit",
+        assignment_id=parsed,
+        values={
+            "title": row["title"],
+            # The stored local time is naive on purpose — it is the wall-clock
+            # value that was typed. Rendered back in the shape the input wants.
+            "due_at": row["due_at_local"].strftime("%Y-%m-%dT%H:%M")
+            if row.get("due_at_local")
+            else "",
+            "timezone": row["timezone"],
+            "cohort_id": row["cohort_id"],
+            "description": row.get("description") or "",
+            "url": row.get("url") or "",
+            "status": row.get("status") or "active",
+        },
+        cohorts=cohorts,
+        errors=[],
+    )
+
+
+@app.post("/assignments/{assignment_id}/edit")
+def assignment_edit(
+    request: Request,
+    assignment_id: str,
+    user: ConsoleUser = Depends(require_user),
+    title: str = Form(""),
+    due_at: str = Form(""),
+    timezone: str = Form(""),
+    cohort_id: str = Form(""),
+    description: str = Form(""),
+    url: str = Form(""),
+    status: str = Form("active"),
+) -> Response:
+    parsed = _parse_uuid(assignment_id)
+    if parsed is None:
+        return _not_found(request)
+    data, errors, values = _read_assignment_form(
+        title=title, due_at=due_at, timezone=timezone, cohort_id=cohort_id,
+        description=description, url=url, status=status,
+    )
+    with connection() as conn:
+        cohorts = _cohorts(conn)
+        if data is None:
+            return render_spa(
+                request,
+                "assignmentForm",
+                status_code=400,
+                title="Edit assignment",
+                heading="Edit assignment",
+                action=f"/assignments/{parsed}/edit",
+                assignment_id=parsed,
+                values=values,
+                cohorts=cohorts,
+                errors=errors,
+            )
+        if not update_assignment(conn, parsed, data):
+            return _not_found(request)
+    return RedirectResponse(
+        "/assignments?notice=" + quote("Assignment saved."), status_code=303
+    )
+
+
+# --------------------------------------------------------------------------
+# screen 9 — roster
+# --------------------------------------------------------------------------
+#
+# Timezone is the only field editable here. Everything else about a fellow comes
+# from the roster CSV, which stays the source of truth for who exists; a zone is
+# the one thing that gets corrected one person at a time, usually because a
+# reminder arrived at the wrong hour for them.
+
+
+@app.get("/roster", response_class=HTMLResponse)
+def roster_screen(
+    request: Request,
+    user: ConsoleUser = Depends(require_user),
+    cohort: str | None = Query(default=None),
+    notice: str | None = None,
+    error: str | None = None,
+) -> Response:
+    with connection() as conn:
+        cohorts = _cohorts(conn)
+        fellows = list_fellows(conn, cohort or None)
+    return render_spa(
+        request,
+        "roster",
+        title="Roster",
+        fellows=fellows,
+        cohorts=cohorts,
+        selected_cohort=cohort or "",
+        common_zones=COMMON_ZONES,
+        notice=notice,
+        error=error,
+    )
+
+
+# A roster arrives as a spreadsheet, which is the one artefact every program
+# already has. Until now the only way in was `cufa load-roster --csv <path>
+# --cohort <id>`, which means a terminal, a checkout and a working DSN — three
+# things the person holding the spreadsheet does not have. This is the same
+# loader behind a file picker.
+#
+# Guarded rather than trusted, because the failure mode on a web form is
+# different from the one at a prompt: somebody picks the wrong file out of a
+# folder. So the bytes are checked before the database is opened, and a file
+# that would load nothing says why instead of reporting "0 written".
+
+@app.post("/roster/upload")
+async def roster_upload(
+    request: Request,
+    user: ConsoleUser = Depends(require_user),
+    cohort: str = Form(...),
+    file: UploadFile = File(...),
+) -> Response:
+    destination = "/roster?cohort=" + quote(cohort)
+
+    def refuse(message: str) -> Response:
+        return RedirectResponse(destination + "&error=" + quote(message), status_code=303)
+
+    cohort_id = (cohort or "").strip()
+    if not cohort_id:
+        return refuse("Choose which cohort this roster belongs to.")
+
+    payload = await file.read(MAX_UPLOAD_BYTES + 1)
+    if not payload:
+        return refuse("That file is empty.")
+    if len(payload) > MAX_UPLOAD_BYTES:
+        return refuse(
+            f"That file is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)}MB. "
+            "A roster CSV is usually a few kilobytes — check it is the right file."
+        )
+
+    # Written to a temporary file rather than parsed from memory so that the
+    # console and the CLI run the same `load_roster` over the same kind of
+    # handle. One loader, one set of rules about what a roster may contain.
+    with tempfile.TemporaryDirectory() as scratch:
+        staged = Path(scratch) / "roster.csv"
+        staged.write_bytes(payload)
+
+        check = inspect_roster_csv(staged)
+        if not check.ok:
+            return refuse(" ".join(check.problems) or "That file has no rows this can load.")
+
+        with connection() as conn:
+            summary = load_roster(conn, staged, cohort_id)
+
+    said = f"Loaded {summary.written} of {summary.read} rows into {cohort_id}."
+    if summary.skipped:
+        said += f" {summary.skipped} skipped for a missing id or address."
+    if check.warnings:
+        said += " " + " ".join(check.warnings)
+    return RedirectResponse(destination + "&notice=" + quote(said), status_code=303)
+
+
+@app.post("/roster/{fellow_id}/timezone")
+def roster_set_timezone(
+    request: Request,
+    fellow_id: str,
+    user: ConsoleUser = Depends(require_user),
+    timezone: str = Form(""),
+    cohort: str = Form(""),
+) -> Response:
+    destination = "/roster"
+    if cohort:
+        destination += "?cohort=" + quote(cohort)
+
+    try:
+        with connection() as conn:
+            found = set_fellow_timezone(conn, fellow_id, timezone)
+    except TimezoneError as exc:
+        joiner = "&" if "?" in destination else "?"
+        return RedirectResponse(
+            destination + joiner + "error=" + quote(str(exc)), status_code=303
+        )
+    if not found:
+        return _not_found(request)
+
+    joiner = "&" if "?" in destination else "?"
+    message = (
+        f"Timezone set to {timezone.strip()}."
+        if timezone.strip()
+        else "Timezone cleared."
+    )
+    return RedirectResponse(
+        destination + joiner + "notice=" + quote(message), status_code=303
+    )
+
+
 @app.get("/healthz")
 def healthz() -> Response:
     """Liveness only. Says nothing about the database on purpose — the screens do."""
@@ -2003,3 +2682,12 @@ def healthz() -> Response:
 
 
 __all__ = ["app"]
+
+
+# --------------------------------------------------------------------------
+# the staff dashboard and the fellow's own page
+# --------------------------------------------------------------------------
+
+from .dashboard import register as _register_dashboard  # noqa: E402
+
+_register_dashboard(app, render_spa, require_user)

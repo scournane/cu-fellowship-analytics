@@ -10,6 +10,7 @@ import {NumberInput} from '@astryxdesign/core/NumberInput'
 import {Selector} from '@astryxdesign/core/Selector'
 import {Stack} from '@astryxdesign/core/Stack'
 import {Text} from '@astryxdesign/core/Text'
+import {TextArea} from '@astryxdesign/core/TextArea'
 import {TextInput} from '@astryxdesign/core/TextInput'
 import {Token} from '@astryxdesign/core/Token'
 import {useState} from 'react'
@@ -47,6 +48,9 @@ export function SessionForm({
   const [cohort, setCohort] = useState(values.cohort_id || '')
   const [week, setWeek] = useState(values.week_index || '')
   const [teacherQuestion, setTeacherQuestion] = useState(values.teacher_question || '')
+  const [zoomUrl, setZoomUrl] = useState(values.zoom_url || '')
+  const [agenda, setAgenda] = useState(values.agenda || '')
+  const [slackChannel, setSlackChannel] = useState(values.slack_channel_id || '')
 
   // The rotation hint is computed server-side for the week that was SAVED. When
   // the number in the box changes the hint goes stale, so the teacher-question
@@ -171,6 +175,41 @@ export function SessionForm({
             options={cohortOptions(cohorts, {includeAll: false})}
           />
 
+          <Divider />
+
+          <Stack gap={3}>
+            <Heading level={2}>Session delivery</Heading>
+            <TextInput
+              label="Zoom join link"
+              htmlName="zoom_url"
+              isOptional
+              value={zoomUrl}
+              onChange={setZoomUrl}
+              placeholder="https://zoom.us/j/..."
+              description="Included in session reminders and the weekly digest. Reminders wait until a link is set."
+            />
+            <TextArea
+              label="Agenda"
+              htmlName="agenda"
+              isOptional
+              value={agenda}
+              onChange={setAgenda}
+              rows={5}
+              description="Posted by the bot in Slack when the session starts."
+            />
+            <TextInput
+              label="Agenda channel"
+              htmlName="slack_channel_id"
+              isOptional
+              value={slackChannel}
+              onChange={setSlackChannel}
+              placeholder="announcements"
+              description="A Slack channel name or ID. Blank uses the bot's configured announcements channel."
+            />
+          </Stack>
+
+          <Divider />
+
           <Stack gap={2}>
             <TextInput
               label="Passphrase"
@@ -187,8 +226,6 @@ export function SessionForm({
               <Text type="supporting" aria-live="polite">{suggestStatus}</Text>
             </Stack>
           </Stack>
-
-          <Divider />
 
           <Stack gap={3}>
             <Heading level={2}>End-of-session form (Part B)</Heading>

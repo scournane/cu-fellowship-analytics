@@ -20,10 +20,12 @@ export function SignIn({
   nextPath = '/',
   googleReady = false,
   devSignin = false,
+  passwordSignin = false,
   fakeGoogle = false,
   allowlist = [],
 }) {
   const [email, setEmail] = useState(allowlist[0] ?? '')
+  const [password, setPassword] = useState('')
 
   return (
     <Center minHeight="100vh" padding={4}>
@@ -42,7 +44,6 @@ export function SignIn({
             <Heading level={2}>Sign in</Heading>
             <Text type="supporting">
               The console checks your address against the allowlist in CUFA_CONSOLE_ALLOWLIST.
-              There is no password to set or reset.
             </Text>
 
             {googleReady ? (
@@ -92,6 +93,34 @@ export function SignIn({
                   }
                 />
                 <Button label="Sign in without Google" type="submit" width="100%" />
+              </PostForm>
+            </Stack>
+          </Card>
+        ) : null}
+
+        {passwordSignin ? (
+          <Card padding={5}>
+            <Stack gap={3}>
+              <Heading level={2}>Site password</Heading>
+              <Text type="supporting">
+                One password, shared by everyone who has it. It opens the dashboard and
+                the session screens. It does not open help requests — those stay with the
+                named people in CUFA_HELP_ALLOWLIST, because a shared password cannot say
+                who read them.
+              </Text>
+              <Divider />
+              <PostForm action="/signin/password" direction="vertical" gap={3}>
+                <input type="hidden" name="next" value={nextPath} />
+                <TextInput
+                  label="Site password"
+                  htmlName="password"
+                  type="password"
+                  value={password}
+                  onChange={setPassword}
+                  isRequired
+                  autoComplete="current-password"
+                />
+                <Button label="Enter" variant="primary" type="submit" width="100%" />
               </PostForm>
             </Stack>
           </Card>

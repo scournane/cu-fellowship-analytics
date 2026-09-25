@@ -2,10 +2,18 @@
 
 Two rules, and everything here follows from them.
 
-**No password system.** CU staff already have Google accounts, and a password
-store is a liability that has to be operated: reset flows, hashing choices,
-breach response. Sign-in is Google, and the allowlist decides who is let
-through afterwards.
+**Google first.** CU staff already have Google accounts, and a per-person
+sign-in is the only kind that leaves a record of *who* read a fellow's data.
+Sign-in is Google, and the allowlist decides who is let through afterwards.
+
+**One shared password, only if someone sets one.** A hosted deployment may have
+no Google client configured, and staff still need the dashboard. So when
+``CUFA_CONSOLE_PASSWORD`` is set, a third door opens: one secret, shared by
+everyone who has it, with no per-person identity behind it. It is deliberately
+weaker than Google — everyone signs in as the same nobody — so the screens that
+hold safeguarding records stay gated on the *email* allowlist and remain shut to
+it. Unset the variable and the door closes on the next request, including for
+sessions already issued.
 
 **A dev sign-in that touches no network.** ``make demo-console`` has to let
 someone click through every screen with zero Google calls, and the test suite
@@ -21,6 +29,7 @@ issued it. Tampering fails the signature; age is checked on every read.
 
 from __future__ import annotations
 
+import hmac
 from dataclasses import dataclass
 from typing import Any
 
@@ -59,16 +68,43 @@ class ConsoleUser:
     """The signed-in operator, as carried in the cookie."""
 
     email: str
-    via: str  # 'google' or 'dev'
+    via: str  # 'google', 'dev' or 'password'
 
     @property
     def is_dev_bypass(self) -> bool:
         return self.via == "dev"
 
     @property
+    def is_shared_password(self) -> bool:
+        return self.via == "password"
+
+    @property
     def masked_email(self) -> str:
         """Safe to put in a log line at INFO."""
         return mask_email(self.email)
+
+
+PASSWORD_IDENTITY = "shared-password@console.local"
+"""The address a shared-password session carries.
+
+It is not a mailbox and is not meant to look like one: nobody can be reached at
+it, and that is the point — the console should never be able to imply it knows
+who is on the other end of a password everyone shares. It is also, by
+construction, an address no allowlist would contain, which is what keeps the
+help-requests screen shut to this door.
+"""
+
+
+def password_signin_available(settings: Settings) -> bool:
+    """Whether the shared-password door is open. It is shut unless configured."""
+    return bool(settings.console_password)
+
+
+def password_matches(settings: Settings, attempt: str) -> bool:
+    """Compare in constant time, so a wrong guess leaks nothing by timing."""
+    if not settings.console_password:
+        return False
+    return hmac.compare_digest(settings.console_password, (attempt or "").strip())
 
 
 def dev_signin_available(settings: Settings) -> bool:
@@ -132,6 +168,13 @@ def read_session(settings: Settings, token: str | None) -> ConsoleUser | None:
         return None
     email = str(payload.get("email") or "")
     via = str(payload.get("via") or "google")
+    if via == "password":
+        # Re-checked on every read for the same reason the allowlist is: clearing
+        # or rotating CUFA_CONSOLE_PASSWORD has to end the sessions it issued,
+        # not wait for their cookies to age out.
+        if not password_signin_available(settings):
+            return None
+        return ConsoleUser(email=PASSWORD_IDENTITY, via="password")
     if not is_allowed(settings, email):
         return None
     return ConsoleUser(email=email.strip().lower(), via=via)
@@ -185,6 +228,7 @@ def read_code_verifier(settings: Settings, token: str | None) -> str | None:
 
 __all__ = [
     "COOKIE_NAME",
+    "PASSWORD_IDENTITY",
     "PKCE_COOKIE_NAME",
     "SESSION_MAX_AGE",
     "ConsoleUser",
@@ -192,6 +236,8 @@ __all__ = [
     "dev_signin_available",
     "is_allowed",
     "issue_session",
+    "password_matches",
+    "password_signin_available",
     "read_code_verifier",
     "read_session",
     "read_state",

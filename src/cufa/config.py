@@ -34,6 +34,12 @@ class Settings:
     encryption_key: str | None = None
 
     console_allowlist: tuple[str, ...] = ()
+    #: Shared password for the console, for installs with no Google OAuth client.
+    #: Weaker than per-person Google sign-in on purpose and by nature: everyone
+    #: who signs in this way is indistinguishable in the log, so it is a
+    #: self-hosted/testing door, not a substitute for identity on a real cohort.
+    #: Empty (the default) leaves the door closed entirely.
+    console_password: str = ""
     #: Who may open the help-requests screen. A SUBSET of console_allowlist, and
     #: deliberately a separate list: the general console allowlist is "CU staff
     #: who run lessons", and a record that a young person asked to be contacted
@@ -61,6 +67,77 @@ class Settings:
 
     max_edit_distance: int = 1
     log_level: str = "INFO"
+
+    # --- Slack -----------------------------------------------------------
+    #: xoxb- bot token. Required for both HTTP and Socket Mode.
+    slack_bot_token: str | None = None
+    #: xapp- app-level token. Socket Mode only.
+    slack_app_token: str | None = None
+    #: Verifies every inbound HTTP delivery. Required for `cufa slack serve`.
+    slack_signing_secret: str | None = None
+    #: Override the Web API base. The demo points this at the fake server;
+    #: blank means slack.com. Must end in "/api/".
+    slack_api_base_url: str | None = None
+    #: Which cohort this workspace's members belong to.
+    slack_cohort: str = "demo"
+    #: Whether message TEXT is stored. Default off — the participation
+    #: definition counts acts; it does not read them. See the migration.
+    slack_store_text: bool = False
+    slack_port: int = 3000
+    #: How long a users.info answer is trusted before it is refreshed.
+    slack_user_cache_hours: int = 24
+    #: HTTP mode: run the listener before answering Slack (deterministic for
+    #: the demo and tests) rather than acking first and writing in a thread.
+    slack_process_before_response: bool = True
+    #: Outbound reminders/digests/agendas run in the same long-lived bot
+    #: process. Set false when a deployment runs a separate one-shot worker.
+    slack_automations_enabled: bool = True
+    #: Bearer token that POST /cron/tick requires. Serverless has no long-lived
+    #: process to run the automation loop in, so an outside scheduler calls that
+    #: route each minute instead — and a route that sends DMs to a cohort of
+    #: young people must not be firable by anyone who guesses the URL. Empty
+    #: (the default) keeps the route refusing every request.
+    cron_secret: str = ""
+    slack_automation_interval_seconds: int = 60
+    #: Name or channel id used for agendas unless a session overrides it.
+    slack_announcement_channel: str = "announcements"
+    #: Explicit fallback for roster rows that predate per-fellow timezones.
+    slack_default_fellow_timezone: str = "America/New_York"
+    slack_quiet_start: str = "21:00"
+    slack_quiet_end: str = "08:00"
+    #: Monday=0 through Sunday=6, matching datetime.weekday().
+    slack_digest_weekday: int = 0
+    slack_digest_hour: int = 9
+    #: Keep Part B current before deciding that somebody has not submitted.
+    slack_sync_part_b: bool = True
+    slack_part_b_poll_minutes: int = 10
+    #: When a fellow has set no quiet hours of their own, infer them from when
+    #: they are actually active on Slack (in their zone), so reminders land
+    #: when they are around. Never overrides a preference the fellow set.
+    slack_rhythm_enabled: bool = True
+    slack_rhythm_days: int = 28
+    #: Fewer acts than this and the deployment default quiet hours stand.
+    slack_rhythm_min_acts: int = 20
+    #: A channel with no message for this many days is reported as quiet.
+    slack_quiet_channel_days: int = 7
+    #: Channels (names or ids) treated as Q&A: their message text IS stored,
+    #: the bot points a repeated question at the earlier answer, and a
+    #: per-session summary can be generated. Empty means none of that runs.
+    #: See ADR-032.
+    slack_qa_channels: tuple[str, ...] = ()
+    #: Where `cufa slack qa summary --post` goes when no --channel is given.
+    #: Blank means the first Q&A channel.
+    slack_qa_summary_channel: str | None = None
+    #: Run the bot's own tools against the in-memory fake client (tests, dry runs).
+    fake_slack: bool = False
+    #: The private staff-only channel: session summaries, roster alerts,
+    #: check-in pings and the Monday digest go here.
+    slack_staff_channel: str | None = None
+    #: Staff addresses allowed to run admin commands, on top of anyone Slack
+    #: itself marks as a workspace admin.
+    slack_admins: tuple[str, ...] = ()
+    #: Where the console is reachable, for the fellow dashboard links the bot hands out.
+    public_base_url: str = "http://127.0.0.1:8000"
 
     fixtures_dir: Path = field(default_factory=lambda: _repo_root() / "fixtures")
 
@@ -106,10 +183,15 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         except ValueError as exc:
             raise ConfigError(f"{name} must be an integer, got {raw!r}") from exc
 
+    def _enabled(name: str, default: bool) -> bool:
+        raw = (env.get(name) or "").strip()
+        return default if not raw else _truthy(raw)
+
     return Settings(
         database_url=env.get("CUFA_DATABASE_URL") or DEFAULT_DSN,
         encryption_key=(env.get("CUFA_ENCRYPTION_KEY") or "").strip() or None,
         console_allowlist=allowlist,
+        console_password=(env.get("CUFA_CONSOLE_PASSWORD") or "").strip(),
         help_allowlist=help_allowlist,
         console_secret=env.get("CUFA_CONSOLE_SECRET") or "dev-insecure-secret",
         console_host=env.get("CUFA_CONSOLE_HOST") or "127.0.0.1",
@@ -126,6 +208,44 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         ai_max_calls_per_run=_int("CUFA_AI_MAX_CALLS_PER_RUN", 250),
         max_edit_distance=_int("CUFA_MAX_EDIT_DISTANCE", 1),
         log_level=(env.get("CUFA_LOG_LEVEL") or "INFO").upper(),
+        slack_bot_token=(env.get("SLACK_BOT_TOKEN") or "").strip() or None,
+        slack_app_token=(env.get("SLACK_APP_TOKEN") or "").strip() or None,
+        slack_signing_secret=(env.get("SLACK_SIGNING_SECRET") or "").strip() or None,
+        slack_api_base_url=(env.get("SLACK_API_BASE_URL") or "").strip() or None,
+        slack_cohort=(env.get("CUFA_SLACK_COHORT") or "demo").strip(),
+        slack_store_text=_truthy(env.get("CUFA_SLACK_STORE_TEXT")),
+        slack_port=_int("CUFA_SLACK_PORT", 3000),
+        slack_user_cache_hours=_int("CUFA_SLACK_USER_CACHE_HOURS", 24),
+        slack_process_before_response=not _truthy(env.get("CUFA_SLACK_ACK_FIRST")),
+        slack_automations_enabled=_enabled("CUFA_SLACK_AUTOMATIONS", True),
+        cron_secret=(env.get("CUFA_CRON_SECRET") or "").strip(),
+        slack_automation_interval_seconds=_int(
+            "CUFA_SLACK_AUTOMATION_INTERVAL_SECONDS", 60
+        ),
+        slack_announcement_channel=(
+            env.get("CUFA_SLACK_ANNOUNCEMENT_CHANNEL") or "announcements"
+        ).strip(),
+        slack_default_fellow_timezone=(
+            env.get("CUFA_DEFAULT_FELLOW_TIMEZONE") or "America/New_York"
+        ).strip(),
+        slack_quiet_start=(env.get("CUFA_SLACK_QUIET_START") or "21:00").strip(),
+        slack_quiet_end=(env.get("CUFA_SLACK_QUIET_END") or "08:00").strip(),
+        slack_digest_weekday=_int("CUFA_SLACK_DIGEST_WEEKDAY", 0),
+        slack_digest_hour=_int("CUFA_SLACK_DIGEST_HOUR", 9),
+        slack_sync_part_b=_enabled("CUFA_SLACK_SYNC_PART_B", True),
+        slack_part_b_poll_minutes=_int("CUFA_SLACK_PART_B_POLL_MINUTES", 10),
+        slack_rhythm_enabled=_enabled("CUFA_SLACK_RHYTHM", True),
+        slack_rhythm_days=_int("CUFA_SLACK_RHYTHM_DAYS", 28),
+        slack_rhythm_min_acts=_int("CUFA_SLACK_RHYTHM_MIN_ACTS", 20),
+        slack_quiet_channel_days=_int("CUFA_SLACK_QUIET_CHANNEL_DAYS", 7),
+        slack_qa_channels=tuple(
+            item.strip() for item in (env.get("CUFA_SLACK_QA_CHANNELS") or "").split(",") if item.strip()
+        ),
+        slack_qa_summary_channel=(env.get("CUFA_SLACK_QA_SUMMARY_CHANNEL") or "").strip().lstrip("#") or None,
+        fake_slack=_truthy(env.get("CUFA_FAKE_SLACK")),
+        slack_staff_channel=(env.get("CUFA_SLACK_STAFF_CHANNEL") or "").strip() or None,
+        slack_admins=_addresses("CUFA_SLACK_ADMINS"),
+        public_base_url=(env.get("CUFA_PUBLIC_BASE_URL") or "http://127.0.0.1:8000").rstrip("/"),
     )
 
 

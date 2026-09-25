@@ -447,6 +447,45 @@ def test_19_no_report_or_participation_query_reads_help_request(db):
     themes_for(recording, session_id)
     adjudicate_cohort(recording, TEST_COHORT, use_ai=False)
 
+    # The HTML report, and each query only it makes.
+    from cufa.report_html import (
+        assignments_block,
+        engagement_block,
+        fellow_grid,
+        funnel_block,
+        provenance,
+        render_report_html,
+        slack_summary,
+    )
+
+    engagement_block(recording, TEST_COHORT)
+    assignments_block(recording, TEST_COHORT)
+    funnel_block(recording, TEST_COHORT)
+    fellow_grid(recording, TEST_COHORT)
+    slack_summary(recording, TEST_COHORT)
+    provenance(recording, TEST_COHORT)
+    render_report_html(recording, TEST_COHORT)
+
+    # The reminder/badge bot's signals and the dashboards run the same gauntlet.
+    from cufa.console.dashboard import staff_context, staff_export_csv
+    from cufa.engagement import cohort_attendance, cohort_engagement, most_active, quiet_fellows
+    from cufa.funnel import cohort_summary
+    from cufa.retention import cohort_retention
+    from cufa.slack.badges import collect_evidence
+    from cufa.slack.digest import session_summary_text, weekly_digest_text
+
+    cohort_engagement(recording, TEST_COHORT)
+    most_active(recording, TEST_COHORT)
+    quiet_fellows(recording, TEST_COHORT)
+    cohort_attendance(recording, TEST_COHORT)
+    cohort_summary(recording, TEST_COHORT)
+    cohort_retention(recording, TEST_COHORT)
+    collect_evidence(recording, TEST_COHORT)
+    weekly_digest_text(recording, TEST_COHORT)
+    session_summary_text(recording, session_id)
+    staff_context(recording, TEST_COHORT)
+    staff_export_csv(recording, TEST_COHORT)
+
     assert recording.statements, "nothing was recorded — the wrapper is not working"
     offenders = [sql for sql in recording.statements if "help_request" in sql.lower()]
     assert offenders == [], (
@@ -786,6 +825,8 @@ FELLOW_DATA_TABLES = (
     "muddiest_theme_member",
     "help_request",
     "google_credential",
+    "fellow_reminder_preference",
+    "bot_delivery",
 )
 
 

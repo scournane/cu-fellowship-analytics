@@ -1,0 +1,12 @@
+fastapi
+jinja2
+psycopg[binary]
+cryptography
+python-dotenv
+itsdangerous
+python-multipart
+slack-bolt
+google-genai
+google-auth
+google-auth-oauthlib
+google-api-python-client
