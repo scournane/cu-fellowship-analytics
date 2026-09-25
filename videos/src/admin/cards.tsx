@@ -2,6 +2,7 @@ import React from "react";
 import { AbsoluteFill, interpolate, spring, useCurrentFrame, useVideoConfig } from "remotion";
 import { tokens } from "../theme";
 import { Ding, K, Pill, clamp, fadeIn, usePop } from "./ui";
+import { Sfx } from "../sound";
 
 const Paper: React.FC<{ children: React.ReactNode; bg?: string }> = ({ children, bg = tokens.paper }) => (
   <AbsoluteFill style={{ background: bg, fontFamily: tokens.body }}>{children}</AbsoluteFill>
@@ -38,6 +39,8 @@ export const TitleScene: React.FC = () => {
           Every screen and Slack command staff use — captured from the real console and bot.
         </div>
       </AbsoluteFill>
+      <Sfx name="pop" at={2} volume={0.8} />
+      <Sfx name="ding" at={10} />
       <div style={{ position: "absolute", right: 90, top: 300 }}>
         <Ding size={460} start={10} />
       </div>
@@ -110,12 +113,15 @@ export const RulesScene: React.FC = () => {
                 }}
               >
                 <Check at={at + 4} />
+                <Sfx name="pop" at={at + 4} volume={0.8} />
                 <span style={{ fontSize: 36, fontWeight: 700, color: tokens.charcoal }}>{t}</span>
               </div>
             );
           })}
         </div>
       </AbsoluteFill>
+      <Sfx name="whoosh" at={0} />
+      <Sfx name="ding" at={10} volume={0.7} />
       <div style={{ position: "absolute", right: 70, bottom: 90 }}>
         <Ding size={300} start={8} />
       </div>
@@ -129,6 +135,8 @@ export const ClosingScene: React.FC = () => {
   const p = usePop(5);
   return (
     <Paper bg={tokens.eagerGreen}>
+      <Sfx name="ding" at={4} />
+      <Sfx name="success" at={20} volume={0.6} />
       <AbsoluteFill style={{ justifyContent: "center", alignItems: "center", textAlign: "center" }}>
         <div style={{ background: tokens.paper, borderRadius: 999, padding: 30, border: `2px solid ${K.greenEdge}`, borderBottomWidth: 8 }}>
           <Ding size={260} start={0} />

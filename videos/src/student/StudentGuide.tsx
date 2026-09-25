@@ -7,6 +7,8 @@ import "@fontsource/nunito-sans/700.css";
 import "@fontsource/nunito-sans/800.css";
 import React, { useEffect, useState } from "react";
 import { AbsoluteFill, continueRender, delayRender, Series } from "remotion";
+import { Music } from "../sound";
+import * as S from "./SceneSounds";
 import { theme } from "../theme";
 import { CLOSING_DUR, ClosingScene, TIMELINE_DUR, TimelineScene, TITLE_DUR, TitleScene } from "./Scenes";
 import {
@@ -19,31 +21,31 @@ import {
   PollScene, QA_DUR, QAScene, REMIND_DUR, RemindScene, SPRIV_DUR, SlackPrivacyScene, WELCOME_DUR, WelcomeScene,
 } from "./SlackScenes";
 
-const SCENES: [React.FC, number][] = [
-  [TitleScene, TITLE_DUR],
-  [TimelineScene, TIMELINE_DUR],
-  [WelcomeScene, WELCOME_DUR],
-  [RemindScene, REMIND_DUR],
-  [LinkScene, LINK_DUR],
-  [PhraseScene, PHRASE_DUR],
-  [FormAScene, FORM_A_DUR],
-  [MatchScene, MATCH_DUR],
-  [WindowScene, WINDOW_DUR],
-  [EmailScene, EMAIL_DUR],
-  [FormBScene, FORM_B_DUR],
-  [RotationScene, ROTATION_DUR],
-  [Help2Scene, HELP2_DUR],
-  [CommandsScene, CMDS_DUR],
-  [DashboardScene, DASH_DUR],
-  [BadgesScene, BADGE_DUR],
-  [CheckinScene, CHECKIN_DUR],
-  [QAScene, QA_DUR],
-  [PollScene, POLL_DUR],
-  [PrivacyScene, PRIVACY_DUR],
-  [SlackPrivacyScene, SPRIV_DUR],
-  [FaqScene, FAQ_DUR],
-  [Recap2Scene, RECAP2_DUR],
-  [ClosingScene, CLOSING_DUR],
+const SCENES: [React.FC, number, React.FC][] = [
+  [TitleScene, TITLE_DUR, S.TitleSfx],
+  [TimelineScene, TIMELINE_DUR, S.TimelineSfx],
+  [WelcomeScene, WELCOME_DUR, S.WelcomeSfx],
+  [RemindScene, REMIND_DUR, S.RemindSfx],
+  [LinkScene, LINK_DUR, S.LinkSfx],
+  [PhraseScene, PHRASE_DUR, S.PhraseSfx],
+  [FormAScene, FORM_A_DUR, S.FormASfx],
+  [MatchScene, MATCH_DUR, S.MatchSfx],
+  [WindowScene, WINDOW_DUR, S.WindowSfx],
+  [EmailScene, EMAIL_DUR, S.EmailSfx],
+  [FormBScene, FORM_B_DUR, S.FormBSfx],
+  [RotationScene, ROTATION_DUR, S.RotationSfx],
+  [Help2Scene, HELP2_DUR, S.HelpSfx],
+  [CommandsScene, CMDS_DUR, S.CommandsSfx],
+  [DashboardScene, DASH_DUR, S.DashboardSfx],
+  [BadgesScene, BADGE_DUR, S.BadgesSfx],
+  [CheckinScene, CHECKIN_DUR, S.CheckinSfx],
+  [QAScene, QA_DUR, S.QASfx],
+  [PollScene, POLL_DUR, S.PollSfx],
+  [PrivacyScene, PRIVACY_DUR, S.PrivacySfx],
+  [SlackPrivacyScene, SPRIV_DUR, S.SlackPrivacySfx],
+  [FaqScene, FAQ_DUR, S.FaqSfx],
+  [Recap2Scene, RECAP2_DUR, S.RecapSfx],
+  [ClosingScene, CLOSING_DUR, S.ClosingSfx],
 ];
 
 export const STUDENT_DURATION = SCENES.reduce((sum, [, d]) => sum + d, 0);
@@ -69,10 +71,12 @@ export const StudentGuide: React.FC = () => {
 
 const Guide: React.FC = () => (
   <AbsoluteFill style={{ backgroundColor: theme.bg }}>
+    <Music />
     <Series>
-      {SCENES.map(([Comp, dur], i) => (
+      {SCENES.map(([Comp, dur, Sounds], i) => (
         <Series.Sequence key={i} durationInFrames={dur}>
           <Comp />
+          <Sounds />
         </Series.Sequence>
       ))}
     </Series>

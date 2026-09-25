@@ -10,6 +10,7 @@ import {
   useVideoConfig,
 } from "remotion";
 import { theme, tokens } from "../theme";
+import { Sfx } from "../sound";
 
 export const clamp = {
   extrapolateLeft: "clamp",
@@ -509,6 +510,7 @@ export const Caption: React.FC<{ step: string; title: string; lines: CaptionLine
         }}
       >
         <StepBadge step={step} />
+        <Sfx name="pop" at={9} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 44, fontWeight: 800, color: tokens.charcoal, marginBottom: 6, lineHeight: 1.15 }}>{title}</div>
           <div

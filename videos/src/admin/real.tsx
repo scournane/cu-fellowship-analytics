@@ -14,6 +14,7 @@ import {
 } from "remotion";
 import { theme, tokens } from "../theme";
 import { Caption, CaptionLine, K, Pill, clamp, fadeIn } from "./ui";
+import { Sfx, SfxName, Typing } from "../sound";
 
 // Viewport the screenshot is shown in (absolute frame coords).
 const VX = 40;
@@ -35,6 +36,8 @@ export type Beat = {
   hl?: Hl[];
   cur?: Pt[];
   clicks?: number[];
+  /** Extra sounds for state changes the screenshot shows (success, error, notify). */
+  sfx?: { at: number; name: SfxName }[];
 };
 
 const ease = Easing.inOut(Easing.cubic);
@@ -50,6 +53,48 @@ function track<T extends { f: number }>(keys: T[], f: number, pick: (k: T) => nu
   }
   return pick(keys[keys.length - 1]);
 }
+
+/* ---------------- sound design ---------------- */
+
+type Ev = { at: number; name: SfxName; volume?: number };
+const PRIORITY: Record<SfxName, number> = { error: 6, success: 6, notify: 5, ding: 5, click: 4, whoosh: 3, pop: 2, key: 1 };
+/** Scene-entrance whoosh at 0 and the STEP badge pop at 9 are always taken. */
+export const BADGE_POP_AT = 9;
+const MIN_GAP = 8;
+
+/**
+ * Every sound a beat implies: its entrance, each camera move, each highlight pop,
+ * each cursor click, and any explicit state-change sounds. Higher-priority sounds
+ * win, and nothing lands within 8 frames of another.
+ */
+const beatSounds = (beat: Beat, first: boolean): Ev[] => {
+  const evs: Ev[] = [{ at: 0, name: "whoosh", volume: first ? 1 : 0.6 }];
+  for (let i = 1; i < beat.cam.length; i++) {
+    const a = beat.cam[i - 1];
+    const b = beat.cam[i];
+    if (Math.hypot(b.x - a.x, b.y - a.y) > 120 || Math.abs(b.z - a.z) > 0.08) evs.push({ at: a.f, name: "whoosh", volume: 0.7 });
+  }
+  (beat.hl || []).forEach((h) => evs.push({ at: h.from, name: "pop", volume: h.label ? 0.9 : 0.6 }));
+  (beat.clicks || []).forEach((c) => evs.push({ at: c, name: "click" }));
+  (beat.sfx || []).forEach((e) => evs.push({ at: e.at, name: e.name }));
+  const taken: Ev[] = first ? [{ at: BADGE_POP_AT, name: "pop" }] : [];
+  const out: Ev[] = [];
+  [...evs]
+    .filter((e) => e.at >= 0 && e.at < beat.dur - 4)
+    .sort((x, y) => PRIORITY[y.name] - PRIORITY[x.name] || x.at - y.at)
+    .forEach((e) => {
+      if ([...taken, ...out].every((t) => Math.abs(t.at - e.at) >= MIN_GAP)) out.push(e);
+    });
+  return out.sort((x, y) => x.at - y.at);
+};
+
+const BeatAudio: React.FC<{ beat: Beat; first: boolean }> = ({ beat, first }) => (
+  <>
+    {beatSounds(beat, first).map((e, i) => (
+      <Sfx key={i} name={e.name} at={e.at} volume={e.volume} />
+    ))}
+  </>
+);
 
 const Shot: React.FC<{ beat: Beat }> = ({ beat }) => {
   const f = useCurrentFrame();
@@ -216,6 +261,7 @@ export const RealScene: React.FC<{ def: SceneDef }> = ({ def }) => (
       {def.beats.map((b, i) => (
         <Series.Sequence key={i} durationInFrames={b.dur}>
           <Shot beat={b} />
+          <BeatAudio beat={b} first={i === 0} />
         </Series.Sequence>
       ))}
     </Series>
@@ -264,6 +310,9 @@ export const Terminal: React.FC<{ blocks: TermBlock[]; scrollAt?: [number, numbe
           transform: `translateY(${-scroll}px)`,
         }}
       >
+        {blocks.map((b, i) => (
+          <Typing key={`t${i}`} from={b.at} count={Math.ceil((b.cmd.length * 1.2) / 3)} every={3} />
+        ))}
         {blocks.map((b, i) => {
           if (f < b.at) return null;
           const typed = b.cmd.slice(0, Math.max(0, Math.floor((f - b.at) / 1.2)));
@@ -289,7 +338,16 @@ export const Terminal: React.FC<{ blocks: TermBlock[]; scrollAt?: [number, numbe
 
 /* ---------------- Slack channel pane (real bot replies, rendered) ---------------- */
 
-export type SlackExchange = { cmd: string; out: string; who?: string; channel?: string; dur: number; note?: string };
+export type SlackExchange = {
+  cmd: string;
+  out: string;
+  who?: string;
+  channel?: string;
+  dur: number;
+  note?: string;
+  /** Sound for the reply: notify by default, error for a refusal. */
+  sound?: SfxName;
+};
 
 const SLACK_CH = ["general", "announcements", "help-desk", "project-teams", "q-and-a", "cohort-private"];
 
@@ -349,7 +407,12 @@ export const SlackPane: React.FC<{ ex: SlackExchange }> = ({ ex }) => {
   const sent = f >= typeEnd + 6;
   const o1 = fadeIn(f, typeEnd + 6, 8);
   const o2 = fadeIn(f, typeEnd + 20, 10);
+  const keys = Math.ceil((ex.cmd.length * 0.9) / 2);
   return (
+    <>
+      <Typing from={8} count={keys} every={2} />
+      <Sfx name="click" at={Math.ceil(typeEnd + 6)} volume={0.7} />
+      <Sfx name={ex.sound ?? "notify"} at={Math.ceil(typeEnd + 20)} />
     <div
       style={{
         position: "absolute",
@@ -402,5 +465,6 @@ export const SlackPane: React.FC<{ ex: SlackExchange }> = ({ ex }) => {
         </div>
       </div>
     </div>
+    </>
   );
 };
