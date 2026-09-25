@@ -366,7 +366,15 @@ def _post(tc, envelope: dict, *, secret: str = "test-signing-secret", retry: int
 
 @pytest.fixture
 def cron_stack(db, ws):
-    """The same HTTP app, but with a cron secret configured."""
+    """The same HTTP app, but with a cron secret and a staff channel.
+
+    The staff channel is pinned rather than inherited. A tick with nowhere to
+    post its summaries reports that as an error, so `ok` comes back False and
+    this test passes only on a machine whose environment happens to name a
+    channel — which is finding F-13 in miniature. Pinning it here is what makes
+    the test say the same thing on a clean checkout as it does on the laptop
+    that wrote it.
+    """
     from fastapi.testclient import TestClient
     from slack_sdk import WebClient
 
@@ -374,7 +382,11 @@ def cron_stack(db, ws):
     from cufa.slack.fake_server import FakeSlackHTTPServer
 
     fake = FakeSlackHTTPServer(ws, signing_secret="test-signing-secret", bot_events_url="http://bot.invalid/slack/events", port=0).start_in_thread()
-    settings = _settings(fake.api_base_url, CUFA_CRON_SECRET="a-real-cron-secret")
+    settings = _settings(
+        fake.api_base_url,
+        CUFA_CRON_SECRET="a-real-cron-secret",
+        CUFA_SLACK_STAFF_CHANNEL="cohort-private",
+    )
     web = WebClient(token="xoxb-test-token", base_url=fake.api_base_url)
     app = build_http_app(settings, client=web, processor=EventProcessor(settings, web))
     with TestClient(app) as tc:
