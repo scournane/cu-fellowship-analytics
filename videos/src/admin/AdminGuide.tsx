@@ -1,4 +1,9 @@
 import React from "react";
+import "@fontsource/nunito/800.css";
+import "@fontsource/nunito/900.css";
+import "@fontsource/nunito-sans/500.css";
+import "@fontsource/nunito-sans/700.css";
+import "@fontsource/nunito-sans/800.css";
 import { AbsoluteFill, Sequence, Series, continueRender, delayRender, interpolate, staticFile, useCurrentFrame, useVideoConfig } from "remotion";
 import { theme } from "../theme";
 import { ClosingScene, RulesScene, TitleScene } from "./cards";
@@ -635,10 +640,7 @@ const useFonts = () => {
         return face.load();
       }),
     )
-      .then(() => {
-        console.log("FONTS loaded", document.fonts.check("900 40px Nunito"), document.fonts.size);
-        continueRender(handle);
-      })
+      .then(() => continueRender(handle))
       .catch((e) => {
         console.error(e);
         continueRender(handle);

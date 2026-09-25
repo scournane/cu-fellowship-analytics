@@ -89,7 +89,7 @@ export const RulesScene: React.FC = () => {
           Design invariants
         </Pill>
         <div style={{ ...display(96), marginTop: 22, opacity: fadeIn(f, 2, 10) }}>What the console will never do</div>
-        <div style={{ marginTop: 56 }}>
+        <div style={{ marginTop: 44 }}>
           {RULES.map((t, i) => {
             const at = 20 + i * 28;
             const sp = spring({ frame: f - at, fps, config: { damping: 12, mass: 0.6 } });
@@ -100,9 +100,9 @@ export const RulesScene: React.FC = () => {
                   display: "flex",
                   alignItems: "center",
                   gap: 28,
-                  marginBottom: 26,
-                  padding: "14px 24px",
-                  width: 1180,
+                  marginBottom: 18,
+                  padding: "12px 22px",
+                  width: 1340,
                   border: `2px solid ${tokens.hairline}`,
                   borderRadius: 12,
                   opacity: Math.min(1, sp * 1.4),
@@ -110,14 +110,14 @@ export const RulesScene: React.FC = () => {
                 }}
               >
                 <Check at={at + 4} />
-                <span style={{ fontSize: 40, fontWeight: 700, color: tokens.charcoal }}>{t}</span>
+                <span style={{ fontSize: 36, fontWeight: 700, color: tokens.charcoal }}>{t}</span>
               </div>
             );
           })}
         </div>
       </AbsoluteFill>
-      <div style={{ position: "absolute", right: 110, bottom: 110 }}>
-        <Ding size={380} start={8} />
+      <div style={{ position: "absolute", right: 70, bottom: 90 }}>
+        <Ding size={300} start={8} />
       </div>
     </Paper>
   );
