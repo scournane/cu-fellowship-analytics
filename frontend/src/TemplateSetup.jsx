@@ -67,11 +67,31 @@ function PartCard({entry, manualStep, connectedAccount}) {
             </PostForm>
           </Banner>
         ) : blocked ? (
-          <Banner
-            status="warning"
-            title="Provisioning is blocked for this part"
-            description={BLOCKED_BY_PART[part]}
-          />
+          <Stack gap={3}>
+            <Banner
+              status="warning"
+              title="Provisioning is blocked for this part"
+              description={BLOCKED_BY_PART[part]}
+            />
+            {part === 'a' ? (
+              // A Part A template made before the exit ticket still carries the
+              // passphrase question and its notice. Session copies never show
+              // them — provisioning rewrites every copy's title, description and
+              // questions — but staff open the template to do the manual step,
+              // and a form asking for a passphrase that no longer exists reads
+              // as broken. Offered only while unverified: nothing is lost by
+              // replacing a template whose manual step has not been done yet.
+              <Stack gap={2}>
+                <Text type="supporting">
+                  Template still shows the old passphrase question? Replace it with a clean exit ticket template, then do the manual step on the new one. Session forms never used the old question either way.
+                </Text>
+                <PostForm action="/template/replace" confirm="Retire this Part A template and create a clean exit ticket template in Drive?">
+                  <input type="hidden" name="part" value="a" />
+                  <Button label="Replace with a clean exit ticket template" variant="secondary" type="submit" />
+                </PostForm>
+              </Stack>
+            ) : null}
+          </Stack>
         ) : (
           <Banner
             status="success"
