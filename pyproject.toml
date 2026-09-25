@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "cufa"
 version = "0.1.0"
-description = "Civic Innovators Fellowship — mid-session exit ticket (part A) and end-of-session check-in (part B)"
+description = "Civic Innovators Fellowship — exit ticket (part A: attendance + reflection) and end-of-session check-in (part B)"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi",

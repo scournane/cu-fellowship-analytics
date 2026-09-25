@@ -378,7 +378,8 @@ def _extract_answers(answers: dict[str, Any], titles: dict[str, str]) -> dict[st
     """
     flattened: dict[str, str] = {}
     for question_id, answer in answers.items():
-        text = " ".join(_values(answer)).strip()
+        values = ((answer or {}).get("textAnswers") or {}).get("answers") or []
+        text = " ".join(str(v.get("value", "")) for v in values).strip()
         flattened[titles.get(question_id, question_id)] = text
     return flattened
 

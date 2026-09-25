@@ -1201,13 +1201,18 @@ def test_a_save_from_a_version_someone_replaced_is_refused(
     state = boot_state(refused)
     assert any("changed while you were editing" in e for e in state["errors"])
     assert state["content"] == mine
-    # Still the base it started from: saving over theirs has to be deliberate.
-    assert state["base_id"] == base
 
     with connection() as conn:
         current = question_sets.current_default(conn, cohort)
     assert current.version == 2
     assert current.questions[-1]["title"] == "Their question"
+
+    # The redrawn page is based on their version and says so, so pressing Save
+    # again replaces it knowingly rather than silently.
+    assert state["base_id"] == current.question_set_id
+    assert any("replaces default v2" in e for e in state["errors"])
+    again = _post_default(signed_in, cohort, mine, base_id=state["base_id"])
+    assert again.status_code == 303
 
 
 def test_the_approved_exit_ticket_seeds_a_default(

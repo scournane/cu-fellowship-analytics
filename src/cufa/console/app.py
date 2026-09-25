@@ -1100,6 +1100,7 @@ BLANK_QUESTION_SET: dict[str, Any] = {
     "questions": [],
 }
 
+
 def _pick_cohort(cohorts: list[dict[str, Any]], wanted: str | None) -> str:
     """The cohort a per-cohort screen is about: the one asked for, else the first."""
     known = [str(c["cohort_id"]) for c in cohorts]
@@ -1181,11 +1182,7 @@ def _cohort_exists(conn: Any, cohort_id: str) -> bool:
 
 def _default_editor_state(conn: Any, cohort_id: str) -> dict[str, Any]:
     current = question_sets.current_default(conn, cohort_id) if cohort_id else None
-    history = (
-        [q for q in question_sets.history(conn, cohort_id=cohort_id) if not q.session_id]
-        if cohort_id
-        else []
-    )
+    history = question_sets.history(conn, cohort_id=cohort_id) if cohort_id else []
     return {
         "scope": "default",
         "cohort_id": cohort_id,
@@ -1303,12 +1300,25 @@ def template_questions_save(
     if content is not None:
         state["content"] = content
     if status_code == 409:
-        # Kept at the base the editor started from, so saving again after
-        # reading the newer version is a choice rather than an accident.
-        state["base_id"] = base_id
+        errors = errors + _overwrite_note(state.get("current"))
     return _render_question_set(
         request, state, status_code=status_code, errors=errors, warnings=warnings
     )
+
+
+def _overwrite_note(current: dict[str, Any] | None) -> list[str]:
+    """What pressing Save again does after a stale refusal.
+
+    The redrawn page carries the newer version as its base, so a second save
+    goes through — but only after this has been read, which is the difference
+    between replacing somebody's edit and silently discarding it.
+    """
+    if not current:
+        return []
+    return [
+        f"What you posted is shown below, unsaved. Saving it again replaces "
+        f"{current['label']} — open the version history to see what that changed first."
+    ]
 
 
 def _saved_message(saved: Any, before: Any, warnings: list[str]) -> str:
@@ -1530,8 +1540,8 @@ def session_questions_save(
         state = _session_editor_state(conn, row)
     if content is not None:
         state["content"] = content
-    if status_code == 409:
-        state["base_id"] = base_id
+    if status_code == 409 and not state["locked"]:
+        errors = errors + _overwrite_note(state.get("override") or state.get("base_default"))
     return _render_question_set(
         request, state, status_code=status_code, errors=errors, warnings=warnings
     )

@@ -1555,8 +1555,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cufa",
         description=(
-            "Civic Innovators Fellowship — mid-session exit ticket "
-            "(part a) and end-of-session check-in (part b)."
+            "Civic Innovators Fellowship — exit ticket (part a: attendance "
+            "+ reflection) and end-of-session check-in (part b)."
         ),
     )
     parser.add_argument("--version", action="version", version=f"cufa {__version__}")
@@ -1583,7 +1583,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "template_action", choices=["create", "verify", "status", "replace"]
     )
-    p.add_argument("--part", default="a", choices=["a", "b"], help="a = mid-session exit ticket (attendance), b = end-of-session check-in. Each part has its own template and its own form per session.")
+    p.add_argument("--part", default="a", choices=["a", "b"], help="a = exit ticket (attendance + reflection), b = end-of-session check-in. Each part has its own template and its own form per session.")
     p.set_defaults(func=cmd_template)
 
     p = sub.add_parser("load-roster", help="load fellows from CSV")
@@ -1690,14 +1690,14 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("provision", help="create the Google Form for a session")
     p.add_argument("--session", default=None)
     p.add_argument("--cohort", default=None, help="provision every session in a cohort")
-    p.add_argument("--part", default="a", choices=["a", "b"], help="a = mid-session exit ticket (attendance), b = end-of-session check-in. Each part has its own template and its own form per session.")
+    p.add_argument("--part", default="a", choices=["a", "b"], help="a = exit ticket (attendance + reflection), b = end-of-session check-in. Each part has its own template and its own form per session.")
     p.add_argument("--dry-run", action="store_true", help="log the calls without making them")
     p.set_defaults(func=cmd_provision)
 
     p = sub.add_parser("pull", help="pull responses via the Forms API")
     p.add_argument("--session", default=None)
     p.add_argument("--cohort", default=None)
-    p.add_argument("--part", default="a", choices=["a", "b"], help="a = mid-session exit ticket (attendance), b = end-of-session check-in. Each part has its own template and its own form per session.")
+    p.add_argument("--part", default="a", choices=["a", "b"], help="a = exit ticket (attendance + reflection), b = end-of-session check-in. Each part has its own template and its own form per session.")
     p.set_defaults(func=cmd_pull)
 
     p = sub.add_parser("ingest", help="fallback CSV ingest")

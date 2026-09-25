@@ -219,7 +219,8 @@ export function QuestionSetEditor({
   const [title, setTitle] = useState(start.title || '')
   const [description, setDescription] = useState(start.description || '')
   const [rows, setRows] = useState(() => toRows(start.questions))
-  const [dirty, setDirty] = useState(false)
+  // A page redrawn after a refusal is holding an edit that was not saved.
+  const [dirty, setDirty] = useState(errors.length > 0)
   const submitting = useRef(false)
 
   // Leaving with unsaved edits asks first. The questions live only in this

@@ -1,4 +1,4 @@
-"""Civic Innovators Fellowship attendance — the mid-session exit ticket.
+"""Civic Innovators Fellowship attendance — the Part A exit ticket.
 
 Attendance is two facts end to end: a Google-verified email, and a submission
 time inside the session window. The exit ticket's questions are editable per

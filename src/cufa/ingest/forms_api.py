@@ -195,10 +195,17 @@ def pull_session(
                         "scheduled_at, duration_minutes and grace_minutes"
                     )
                 elif assignment.match == "none":
+                    # Expected, not an error: a fellow who opens the exit ticket
+                    # the next morning is exactly the case the window exists to
+                    # tell apart. The row is kept with the form's session and
+                    # attendance decides it (outside_session_window). Only when
+                    # *every* response is outside is the schedule worth a look.
                     result.warn(
-                        f"config error: responses on form {form_id} land outside "
-                        f"session {implied_session_id}'s own window — check "
-                        "scheduled_at, duration_minutes and grace_minutes",
+                        f"note: some responses on form {form_id} arrived outside "
+                        f"session {implied_session_id}'s window; they are kept and "
+                        "will be decided as outside the window (review them under "
+                        "“Outside the window”). If all of them are, check the "
+                        "session's scheduled time, duration and grace",
                         detail=f"(first seen at {iso})",
                     )
                 elif assignment.match == "ambiguous":
