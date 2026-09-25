@@ -92,6 +92,12 @@ deploy/vercel/build.sh        # vendors src/cufa next to the entrypoint
 cd deploy/vercel && vercel deploy --prod
 ```
 
+From a browser instead: **Actions → deploy → Run workflow** runs the same three
+steps on a runner (`.github/workflows/deploy.yml`). It needs the repository
+secrets `VERCEL_TOKEN`, `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID`, and it never
+touches the database — apply any new migration in the Supabase SQL editor
+first.
+
 `api/cufa/` is generated and gitignored. Vercel's Python builder installs
 `requirements.txt` and uploads the folder; it does not `pip install` the
 repository around it, which is why the package is copied in.
