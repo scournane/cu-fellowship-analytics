@@ -115,6 +115,7 @@ from ..template import (
 )
 from ..timeutil import TimezoneError, get_zone
 from ..urls import optional_http_url
+from ..zoom import ingest_transcript, silent_fellows, speaking_share
 from .auth import (
     COOKIE_NAME,
     PASSWORD_IDENTITY,
@@ -1652,6 +1653,26 @@ def _detail_context(conn: Any, session_id: str) -> dict[str, Any] | None:
         "qr": qr_markup,
         "qr_error": qr_error,
         "accessibility_reminder": ACCESSIBILITY_REMINDER,
+        # Only present once a transcript has been ingested; the screen decides
+        # what to say when it is empty, because "nobody spoke" and "no
+        # transcript yet" are different facts and must not look the same.
+        "speaking": [
+            {
+                "fellow_id": share.fellow_id,
+                # The roster name when it matched, and otherwise the name Zoom
+                # had, which is the only name there is for a guest.
+                "name": share.full_name or share.speaker_name,
+                "speaker_name": share.speaker_name,
+                "turns": share.turns,
+                "words": share.words,
+                "seconds": share.seconds,
+                "share": share.share_of_seconds,
+                "matched": share.fellow_id is not None,
+                "matched_by": share.matched_by,
+            }
+            for share in speaking_share(conn, session_id)
+        ],
+        "silent": silent_fellows(conn, session_id),
         **_part_b_context(conn, row),
         "provisioning_log": fetch_all(
             conn,
@@ -1684,6 +1705,64 @@ def session_detail(
     return render_spa(
         request, "sessionDetail", title=context["session"]["title"], notice=notice, **context
     )
+
+
+# A Zoom transcript is a .vtt the host downloads from the cloud recording. It
+# was `cufa zoom ingest --session <uuid> --vtt <path>`, which asks somebody to
+# find a session's UUID — a thing this console knows and a person does not.
+#
+# Worth being exact about what this stores, because "we uploaded the
+# transcript" sounds like the opposite: `ingest_transcript` writes a speaker
+# name, two timestamps and a word count per cue. The words themselves are
+# parsed, counted and dropped. That is the same rule the Slack collector
+# follows, and the screen says so where somebody is deciding whether to upload.
+
+
+@app.post("/sessions/{session_id}/transcript")
+async def session_transcript(
+    request: Request,
+    session_id: str,
+    user: ConsoleUser = Depends(require_user),
+    file: UploadFile = File(...),
+) -> Response:
+    parsed = _parse_uuid(session_id)
+    if parsed is None:
+        return _not_found(request)
+
+    def done(key: str, message: str) -> Response:
+        return RedirectResponse(
+            f"/sessions/{parsed}?{key}=" + quote(message), status_code=303
+        )
+
+    payload = await file.read(MAX_UPLOAD_BYTES + 1)
+    if not payload:
+        return done("error", "That file is empty.")
+    if len(payload) > MAX_UPLOAD_BYTES:
+        return done(
+            "error",
+            f"That file is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)}MB. "
+            "A transcript is usually well under that — check it is the .vtt and "
+            "not the recording itself.",
+        )
+
+    with tempfile.TemporaryDirectory() as scratch:
+        staged = Path(scratch) / "transcript.vtt"
+        staged.write_bytes(payload)
+        try:
+            with connection() as conn:
+                result = ingest_transcript(conn, parsed, staged)
+        except CufaError as exc:
+            # `ingest_transcript` already refuses a file with no named speakers
+            # in words a person can act on. Passing it through beats replacing
+            # it with something vaguer.
+            return done("error", str(exc))
+
+    said = f"Read {result['turns']} turns."
+    if result["written"]:
+        said += f" {result['written']} are new."
+    else:
+        said += " All of them were already recorded, so nothing changed."
+    return done("notice", said)
 
 
 @app.post("/sessions/{session_id}/provision")

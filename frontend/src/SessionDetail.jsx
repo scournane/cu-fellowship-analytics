@@ -331,6 +331,115 @@ function PartB({
   )
 }
 
+/** Who spoke, from the Zoom transcript for this session.
+ *
+ *  Two things this screen is careful about.
+ *
+ *  It never guesses a name. `speaking_share` matches a transcript's display
+ *  names against the roster and leaves the rest unmatched, and an unmatched
+ *  speaker is shown as one rather than folded into a total or dropped — a
+ *  guest, a co-teacher and a fellow who renamed themselves in Zoom all look
+ *  alike, and this is not the place to decide which.
+ *
+ *  And it separates "nobody spoke" from "no transcript". An empty table under
+ *  a heading reads as the first when it means the second, and on a screen
+ *  where staff are judging participation that is the more damaging of the two
+ *  misreadings.
+ */
+function Speaking({sessionId, speaking = [], silent = []}) {
+  const [name, setName] = useState('')
+  const matched = speaking.filter((row) => row.matched)
+  const unmatched = speaking.filter((row) => !row.matched)
+
+  return (
+    <Card padding={5}>
+      <Stack gap={3}>
+        <Stack gap={1}>
+          <Heading level={2}>Speaking share</Heading>
+          <Text type="supporting">
+            From the .vtt Zoom writes beside a cloud recording. What is kept is a speaker
+            name, the start and end of each turn, and a word count — the words themselves
+            are counted and dropped, the same rule the Slack collector follows.
+          </Text>
+        </Stack>
+
+        {!speaking.length ? (
+          <Text type="supporting">
+            No transcript for this session yet. Zoom puts the .vtt beside the cloud
+            recording, usually within an hour of the session ending.
+          </Text>
+        ) : (
+          <Stack gap={3}>
+            <Table density="compact" dividers="rows">
+              <TableRow isHeaderRow>
+                <TableHeaderCell>Speaker</TableHeaderCell>
+                <TableHeaderCell>Turns</TableHeaderCell>
+                <TableHeaderCell>Words</TableHeaderCell>
+                <TableHeaderCell>Share</TableHeaderCell>
+              </TableRow>
+              {matched.map((row) => (
+                <TableRow key={row.fellow_id || row.speaker_name}>
+                  <TableCell><Text>{row.name}</Text></TableCell>
+                  <TableCell><Text hasTabularNumbers>{row.turns}</Text></TableCell>
+                  <TableCell><Text hasTabularNumbers>{row.words}</Text></TableCell>
+                  <TableCell>
+                    <Text hasTabularNumbers>{Math.round((row.share || 0) * 100)}%</Text>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </Table>
+
+            {unmatched.length ? (
+              <Stack gap={1}>
+                <Text type="label">Not matched to anyone on the roster</Text>
+                <Text type="supporting">
+                  {unmatched.map((row) => row.speaker_name || row.name).join(', ')} — a guest, a co-teacher, or
+                  somebody whose Zoom name differs from their roster name. Nothing is
+                  counted for them.
+                </Text>
+              </Stack>
+            ) : null}
+
+            {silent.length ? (
+              <Stack gap={1}>
+                <Text type="label">On the roster, checked in, never spoke</Text>
+                <Text type="supporting">
+                  {silent.map((row) => row.full_name || row.fellow_id).join(', ')}. Quiet is
+                  not absence and it is not disengagement — plenty of people learn without
+                  talking. It is here because it is the kind of thing worth noticing, not
+                  the kind worth scoring.
+                </Text>
+              </Stack>
+            ) : null}
+          </Stack>
+        )}
+
+        <PostForm
+          action={`/sessions/${sessionId}/transcript`}
+          encType="multipart/form-data"
+          direction="vertical"
+          gap={2}
+        >
+          <Stack direction="horizontal" gap={3} align="end" wrap="wrap">
+            <Stack gap={1}>
+              <Text type="label">{speaking.length ? 'Upload another transcript' : 'Upload the transcript'}</Text>
+              <input
+                type="file"
+                name="file"
+                accept=".vtt,text/vtt"
+                required
+                onChange={(e) => setName(e.target.files?.[0]?.name || '')}
+              />
+            </Stack>
+            <Button label="Upload" type="submit" variant={speaking.length ? undefined : 'primary'} />
+          </Stack>
+          {name ? <Text type="supporting">Ready to upload {name}.</Text> : null}
+        </PostForm>
+      </Stack>
+    </Card>
+  )
+}
+
 export function SessionDetail({
   session = {},
   template,
@@ -353,6 +462,8 @@ export function SessionDetail({
   survey_rationale,
   accessibility_reminder,
   provisioning_log = [],
+  speaking = [],
+  silent = [],
   ingest_warnings = [],
   notice,
   error,
@@ -571,6 +682,8 @@ export function SessionDetail({
         initialCount={session.response_count}
         ready={ready}
       />
+
+      <Speaking sessionId={session.session_id} speaking={speaking} silent={silent} />
 
       {provisioning_log.length ? (
         <Card padding={5}>

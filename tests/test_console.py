@@ -1564,3 +1564,134 @@ def test_the_session_template_is_a_file_this_loader_accepts(
     response = _upload_sessions(signed_in, template.text)
     assert response.status_code == 303
     assert "error=" not in response.headers["location"], response.headers["location"]
+
+
+# --------------------------------------------------------------------------
+# Zoom transcripts from the console
+# --------------------------------------------------------------------------
+#
+# `cufa zoom ingest --session <uuid> --vtt <path>` asked somebody to find a
+# session's UUID, which this console knows and a person does not.
+
+
+VTT = """WEBVTT
+
+1
+00:00:01.000 --> 00:00:09.000
+<v Ada Nwosu>I think the budget line is the place to start.</v>
+
+2
+00:00:10.000 --> 00:00:14.000
+<v Bo Salas>Agreed, and the committee minutes back it up.</v>
+"""
+
+
+def _upload_vtt(client: TestClient, session_id: str, body: str, name: str = "t.vtt"):
+    return client.post(
+        f"/sessions/{session_id}/transcript",
+        files={"file": (name, body.encode(), "text/vtt")},
+    )
+
+
+def test_a_transcript_uploads_and_reports_what_it_read(
+    signed_in: TestClient, db, cohort
+) -> None:
+    session_id = make_session(signed_in, cohort, title="Transcript session")
+    response = _upload_vtt(signed_in, session_id, VTT)
+    assert response.status_code == 303
+    assert "notice=" in response.headers["location"]
+    assert "2 turns" in unquote(response.headers["location"])
+
+
+def test_uploading_the_same_transcript_twice_writes_nothing_new(
+    signed_in: TestClient, db, cohort
+) -> None:
+    session_id = make_session(signed_in, cohort, title="Twice session")
+    _upload_vtt(signed_in, session_id, VTT)
+    again = unquote(_upload_vtt(signed_in, session_id, VTT).headers["location"])
+    assert "nothing changed" in again
+
+
+def test_a_file_with_no_speakers_is_refused_in_words_a_person_can_act_on(
+    signed_in: TestClient, db, cohort
+) -> None:
+    session_id = make_session(signed_in, cohort, title="No speakers session")
+    response = _upload_vtt(signed_in, session_id, "WEBVTT\n\n1\n00:00:01.000 --> 00:00:02.000\nmumbling\n")
+    location = unquote(response.headers["location"])
+    assert "error=" in response.headers["location"]
+    assert ".vtt" in location
+
+
+def test_an_empty_transcript_says_so(signed_in: TestClient, db, cohort) -> None:
+    session_id = make_session(signed_in, cohort, title="Empty transcript session")
+    response = _upload_vtt(signed_in, session_id, "")
+    assert "error=" in response.headers["location"]
+    assert "empty" in unquote(response.headers["location"]).lower()
+
+
+def test_the_transcript_stores_no_spoken_words(signed_in: TestClient, db, cohort) -> None:
+    """The claim the screen makes to the person deciding whether to upload."""
+    session_id = make_session(signed_in, cohort, title="No words session")
+    _upload_vtt(signed_in, session_id, VTT)
+
+    from cufa.db import connection as db_connection
+
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("select * from zoom_transcript_turn limit 1")
+            columns = [c.name for c in cur.description]
+            row = cur.fetchone()
+    assert row is not None
+    stored = " ".join(str(v) for v in row)
+    assert "budget line" not in stored
+    assert not any("text" in c or "body" in c or "words" == c for c in columns if c != "word_count")
+
+
+def _roster_for(client: TestClient, cohort: str) -> None:
+    """Two fellows whose names match the speakers in VTT, so the matching side
+    of `speaking_share` is exercised rather than assumed."""
+    body = (
+        "fellow_id,full_name,email\n"
+        "CU-8001,Ada Nwosu,ada.t@example.invalid\n"
+        "CU-8002,Bo Salas,bo.t@example.invalid\n"
+    )
+    assert _upload(client, cohort, body).status_code == 303
+
+
+def test_the_session_page_renders_after_a_transcript_is_uploaded(
+    signed_in: TestClient, db, cohort
+) -> None:
+    """The upload route and the screen read the same objects from opposite
+    ends, and nothing above loads the page afterwards — which is how a wrong
+    attribute name on SpeakingShare got as far as a browser."""
+    _roster_for(signed_in, cohort)
+    session_id = make_session(signed_in, cohort, title="Renders session")
+    _upload_vtt(signed_in, session_id, VTT)
+
+    page = signed_in.get(f"/sessions/{session_id}")
+    assert page.status_code == 200
+    speaking = boot_state(page)["speaking"]
+    assert len(speaking) == 2
+    for row in speaking:
+        assert row["name"], "every speaker needs something to show"
+        assert row["turns"] >= 1
+        assert 0.0 <= row["share"] <= 1.0
+
+
+def test_an_unmatched_speaker_is_shown_as_one_rather_than_dropped(
+    signed_in: TestClient, db, cohort
+) -> None:
+    """A guest, a co-teacher and a fellow who renamed themselves in Zoom all
+    look alike. None of them is counted for, and none of them vanishes."""
+    _roster_for(signed_in, cohort)
+    session_id = make_session(signed_in, cohort, title="Guest session")
+    with_guest = VTT + (
+        "\n3\n00:00:15.000 --> 00:00:19.000\n"
+        "<v Guest Facilitator>Say more about the minutes.</v>\n"
+    )
+    _upload_vtt(signed_in, session_id, with_guest)
+
+    speaking = boot_state(signed_in.get(f"/sessions/{session_id}"))["speaking"]
+    guests = [r for r in speaking if not r["matched"]]
+    assert [g["speaker_name"] for g in guests] == ["Guest Facilitator"]
+    assert all(g["fellow_id"] is None for g in guests)
