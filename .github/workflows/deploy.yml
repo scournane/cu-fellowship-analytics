@@ -1,0 +1,82 @@
+# Deploy the console + bot to Vercel from a browser.
+#
+# The deploy used to need a terminal: build the console bundle, vendor
+# src/cufa next to the entrypoint (deploy/vercel/build.sh), then `vercel deploy
+# --prod`. Both the bundle and the vendored package are gitignored, so a
+# Git-triggered Vercel build cannot produce them. This runs the same three
+# steps on a runner, started by hand from the Actions tab.
+#
+# It does NOT touch the database. Migrations are applied first, by a person,
+# in the Supabase SQL editor (deploy/vercel/README.md) — a deploy that also
+# migrated would make "roll the code back" silently mean "and not the schema".
+#
+# Needs three repository secrets (Settings → Secrets and variables → Actions):
+#   VERCEL_TOKEN       vercel.com/account/tokens, scoped to the team
+#   VERCEL_ORG_ID      the team id (Team Settings → General → Team ID)
+#   VERCEL_PROJECT_ID  the project id (Project Settings → General → Project ID)
+name: deploy
+
+on:
+  workflow_dispatch:
+
+# Two deploys racing each other leave production on whichever finished last.
+concurrency:
+  group: vercel-production
+  cancel-in-progress: false
+
+jobs:
+  vercel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Secrets are present
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          missing=""
+          for name in VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository secrets:$missing (Settings → Secrets and variables → Actions)"
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install front-end dependencies
+        working-directory: frontend
+        run: npm ci
+
+      # Same check `python tasks.py frontend` runs: a stale committed theme
+      # would ship the previous look with no error anywhere.
+      - name: The committed theme matches its source
+        working-directory: frontend
+        run: npm run theme -- --check
+
+      - name: Build the console bundle
+        working-directory: frontend
+        run: npm run build
+
+      - name: Vendor the package next to the entrypoint
+        run: bash deploy/vercel/build.sh
+
+      - name: Deploy to production
+        working-directory: deploy/vercel
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          url="$(npx --yes vercel@latest deploy --prod --yes --token "$VERCEL_TOKEN")"
+          echo "Deployed: $url"
+          echo "### Deployed to production" >> "$GITHUB_STEP_SUMMARY"
+          echo "$url" >> "$GITHUB_STEP_SUMMARY"
