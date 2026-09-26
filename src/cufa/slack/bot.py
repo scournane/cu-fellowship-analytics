@@ -775,12 +775,17 @@ def build_http_app(
             "alerts": result.alerts_posted,
             "badges_awarded": result.badges_awarded,
             "badges_notified": result.badges_notified,
+            "ops_alerts_posted": result.ops_alerts_posted,
+            "liveness": result.ops_liveness or "ok",
+            "backfilled": result.backfilled,
             "errors": result.errors,
             "seconds": round(time.monotonic() - started, 2),
         }
         log.info("cron tick %s in %ss", result, payload["seconds"])
         # 200 even with step errors: the scheduler should keep calling. The
-        # errors are in the body and the log, where somebody can act on them.
+        # errors are in the body and the log — and, since cufa.slack.alerting,
+        # in the staff channel too, rate limited, because a body nobody reads
+        # was how a broken step stayed broken.
         return JSONResponse(payload)
 
     @api.get("/stats")

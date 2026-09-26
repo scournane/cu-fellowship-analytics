@@ -9,6 +9,10 @@ drives everything scheduled.
   week, open check-in requests and roster alerts, the most active fellows.
 * **Roster alerts** and **check-in pings** — posted the moment they arise.
 
+* **Operational alerts** — the bot reporting on itself: the dead-man switch, a
+  gap in the scheduler that drives this tick, and the tick's own step errors.
+  Those live in :mod:`cufa.slack.alerting` and are run from ``tick`` last.
+
 Every post is recorded in ``digest_log`` under a key that makes it unique, so
 a tick that runs twice posts once. ``tick`` is the one function a scheduler
 calls; run it every few minutes from cron, a systemd timer, or the ``serve``
@@ -36,6 +40,7 @@ from ..assignments import list_assignments
 from ..engagement import most_active, quiet_fellows
 from ..interventions import open_requests
 from ..zoom import silent_fellows, speaking_share
+from .alerting import run_alerting
 from .badges import award_badges, notify_new_awards
 from .client import SlackApiError, SlackClient
 from .identity import open_alerts
@@ -311,11 +316,19 @@ class TickResult:
     badges_awarded: int = 0
     badges_notified: int = 0
     errors: list[str] = field(default_factory=list)
+    #: What the watchdog did this tick. See cufa.slack.alerting: the dead-man
+    #: switch, the scheduler-gap notice, the errors above put where somebody
+    #: reads them, and the automatic backfill.
+    ops_alerts_posted: int = 0
+    ops_liveness: str = ""
+    backfilled: str | None = None
 
     def __str__(self) -> str:  # pragma: no cover - display only
         return (
             f"synced={self.synced} welcomed={self.welcomed} reminders={self.reminders_sent} summaries={self.summaries_posted} "
             f"weekly={self.weekly_posted} alerts={self.alerts_posted} badges={self.badges_awarded}/{self.badges_notified}"
+            + (f" ops_alerts={self.ops_alerts_posted}" if self.ops_alerts_posted else "")
+            + (" backfilled" if self.backfilled else "")
             + (f" errors={len(self.errors)}" if self.errors else "")
         )
 
@@ -383,6 +396,24 @@ def tick(
         )
     elif not configured_channel:
         result.errors.append("no staff channel configured (CUFA_SLACK_STAFF_CHANNEL); summaries, alerts and digests not posted")
+
+    # Last, because it reports on everything above it: the dead-man switch, a
+    # gap in the scheduler that drives this function, the errors collected here
+    # put somewhere a human reads, and the backfill that heals what was missed.
+    # Its own failures join `errors`, so the next tick reports them the same way
+    # it reports every other step's.
+    watchdog = run_alerting(
+        conn,
+        client,
+        settings=settings,
+        staff_channel=staff_channel,
+        errors=list(result.errors),
+        now=now,
+    )
+    result.ops_alerts_posted = watchdog.posted
+    result.ops_liveness = watchdog.liveness
+    result.backfilled = watchdog.backfilled
+    result.errors.extend(watchdog.failures)
     log.info("tick %s", result)
     return result
 

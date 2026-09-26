@@ -139,6 +139,38 @@ class Settings:
     #: Where the console is reachable, for the fellow dashboard links the bot hands out.
     public_base_url: str = "http://127.0.0.1:8000"
 
+    # --- Operational alerting (cufa.slack.alerting) -----------------------
+    #: The master switch for everything the bot says ABOUT ITSELF in the staff
+    #: channel. On by default: this install moved off a laptop because silent
+    #: failure was the problem, so silence is not the safe default.
+    alerts_enabled: bool = True
+    #: The dead-man switch. Nothing received for this many hours and the staff
+    #: channel is told, once, with a recovery notice when data resumes. A day is
+    #: the default because a whole day with no message, reaction or join anywhere
+    #: in a cohort's workspace is genuinely abnormal, while a quiet night or a
+    #: slow Sunday is not — and a switch that cries wolf gets muted, which is
+    #: worse than no switch. Raise it between cohorts; lower it during one.
+    alert_silence_hours: int = 24
+    #: How long the external scheduler may go without completing a tick before
+    #: the tick that resumes says so. Its minute hand is meant to be per-minute,
+    #: so half an hour is already many missed reminders.
+    alert_tick_gap_minutes: int = 30
+    #: How long the same tick error is held before it is reported again — as a
+    #: count, not as itself. The tick runs every minute, so without this one
+    #: broken step is 1,440 identical messages a day.
+    alert_error_cooldown_minutes: int = 60
+    #: Most error lines in one post. Beyond this the rest are counted, so a
+    #: cascade is one readable message rather than a wall.
+    alert_max_errors_per_post: int = 5
+    #: How often the tick walks Slack's own history so a gap heals itself.
+    #: 0 turns it off. There is no "restart" to hang this off on serverless —
+    #: see cufa.slack.alerting.maybe_backfill for why it is here and not there.
+    auto_backfill_minutes: int = 60
+    #: How far back each automatic walk reads. Bounded on purpose: the scheduler
+    #: gives the tick about 25 seconds, and `cufa slack backfill --days 90` is
+    #: still the way to reach for everything Slack will give.
+    auto_backfill_lookback_hours: int = 24
+
     fixtures_dir: Path = field(default_factory=lambda: _repo_root() / "fixtures")
 
     def require_encryption_key(self) -> str:
@@ -246,6 +278,13 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         slack_staff_channel=(env.get("CUFA_SLACK_STAFF_CHANNEL") or "").strip() or None,
         slack_admins=_addresses("CUFA_SLACK_ADMINS"),
         public_base_url=(env.get("CUFA_PUBLIC_BASE_URL") or "http://127.0.0.1:8000").rstrip("/"),
+        alerts_enabled=_enabled("CUFA_ALERTS_ENABLED", True),
+        alert_silence_hours=_int("CUFA_ALERT_SILENCE_HOURS", 24),
+        alert_tick_gap_minutes=_int("CUFA_ALERT_TICK_GAP_MINUTES", 30),
+        alert_error_cooldown_minutes=_int("CUFA_ALERT_ERROR_COOLDOWN_MINUTES", 60),
+        alert_max_errors_per_post=_int("CUFA_ALERT_MAX_ERRORS_PER_POST", 5),
+        auto_backfill_minutes=_int("CUFA_AUTO_BACKFILL_MINUTES", 60),
+        auto_backfill_lookback_hours=_int("CUFA_AUTO_BACKFILL_LOOKBACK_HOURS", 24),
     )
 
 

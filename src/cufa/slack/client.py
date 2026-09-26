@@ -294,6 +294,20 @@ class WebClientAdapter:
         self._team: str | None = None
 
     @property
+    def web(self) -> Any:
+        """The ``WebClient`` underneath, for the calls the protocol omits.
+
+        ``cufa.slack.backfill`` needs ``conversations.history`` with its raw
+        ``reactions`` block and ``conversations.replies``, neither of which the
+        protocol exposes — aggregated reactions and thread replies are not
+        things the rest of the bot asks Slack for. Exposed deliberately rather
+        than reached for through ``_web``, so a caller that needs the wider API
+        says so, and ``FakeSlackClient`` (which has no such client) is missing
+        this attribute rather than quietly half-working.
+        """
+        return self._web
+
+    @property
     def team_id(self) -> str:
         if self._team is None:
             self._team = str(self._web.auth_test()["team_id"])

@@ -47,6 +47,11 @@ TEST_TZ = "America/New_York"
 
 # Order matters: children before parents, so a cascade is not relied on.
 _TABLES = (
+    # Alerting state. No foreign keys, but it has to be cleared like everything
+    # else: a dead-man switch left `firing` by one test would suppress the alert
+    # the next test is asserting.
+    "ops_alert",
+    "ops_heartbeat",
     # The bots' own tables first: several reference slack_user, session or
     # assignment.
     "bot_delivery",

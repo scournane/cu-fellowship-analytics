@@ -121,6 +121,7 @@ def backfill_channel(
     load_id: str | None = None,
     result: BackfillResult | None = None,
     qa: Any = None,
+    override_watermark: bool = False,
 ) -> BackfillResult:
     """Read one channel's history forward from the watermark (or ``since``).
 
@@ -131,6 +132,13 @@ def backfill_channel(
 
     ``qa`` is the ``QaService``; when this is one of its channels, every message
     also feeds the Q&A tables and each thread is walked for its replies.
+
+    ``override_watermark`` reads from ``since`` even when the watermark is later,
+    which is what the automatic walk in :mod:`cufa.slack.alerting` needs. A
+    watermark is a high-water mark, not a record of what was read: ``sync_all``
+    advances this same column every minute, so a walk that respected it could
+    never recover the things only history carries (aggregated reactions, Q&A
+    thread replies). The mark itself still only ever moves forward.
     """
     result = result or BackfillResult()
     cohort_id = cohort_for_team(conn, team_id)
@@ -151,7 +159,7 @@ def backfill_channel(
     if since is not None:
         oldest = f"{since.timestamp():.6f}"
     mark = _watermark(conn, team_id, channel_id)
-    if mark and (oldest is None or float(mark) > float(oldest)):
+    if mark and not override_watermark and (oldest is None or float(mark) > float(oldest)):
         oldest = mark
 
     cursor: str | None = None
@@ -226,12 +234,19 @@ def backfill_workspace(
     *,
     channels: list[str] | None = None,
     days: int | None = None,
+    since: datetime | None = None,
     store_text: bool = False,
     include_private: bool = True,
     qa: Any = None,
+    override_watermark: bool = False,
 ) -> BackfillResult:
-    """Backfill every channel the bot can read, or the ones named."""
-    since = datetime.now(timezone.utc) - timedelta(days=days) if days else None
+    """Backfill every channel the bot can read, or the ones named.
+
+    ``days`` is the CLI's way of saying how far back to read; ``since`` is the
+    same thing as an instant, for a caller that already has one (the automatic
+    walk works in hours, not days). ``days`` wins if both are given.
+    """
+    since = (datetime.now(timezone.utc) - timedelta(days=days)) if days else since
     known = sync_channels(conn, client, team_id, include_private=include_private)
     targets = [ch["id"] for ch in known if channels is None or ch["id"] in channels or ch.get("name") in channels]
 
@@ -243,6 +258,7 @@ def backfill_workspace(
             backfill_channel(
                 conn, client, team_id, channel_id,
                 since=since, store_text=store_text, load_id=load_id, result=result, qa=qa,
+                override_watermark=override_watermark,
             )
     except Exception as exc:  # pragma: no cover - defensive
         error = f"{type(exc).__name__}: {exc}"
