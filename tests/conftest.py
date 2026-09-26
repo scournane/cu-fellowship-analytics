@@ -67,6 +67,12 @@ _TABLES = (
     "roster_alert",
     "slack_event_log",
     "fellow_alias",
+    # Data rights. `erased_slack_user` is a suppression list with no foreign
+    # key, and a row left in it blanks the next test's Slack member by trigger,
+    # so it has to be cleared like everything else.
+    "fellow_access_log",
+    "data_erasure",
+    "erased_slack_user",
     # Slack: events reference workspace, so they go first.
     "slack_qa_pointer",
     "slack_qa_answer",

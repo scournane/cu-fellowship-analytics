@@ -7,8 +7,14 @@
   allowlist like every other staff screen.
 * ``/me/<token>`` — **one fellow**. Their own attendance, exit tickets, Slack
   activity, badges, assignments, what is connected, their reminder
-  preferences, and an export button. The token is signed and expiring and is
+  preferences, a plain-language account of what is collected about them, and
+  two exports: the sessions CSV and the full archive
+  (``/me/<token>/export.txt``). The token is signed and expiring and is
   handed out by the bot's ``/dashboard`` command; there is no fellow login.
+
+Opening ``/dashboard/fellow/<id>`` — or exporting that fellow's archive from
+it — is recorded in ``fellow_access_log``. A fellow reading their own page is
+not: see ``fellow_archive``.
 
 Both are React screens drawn from the same Astryx components as the rest of
 the console (https://astryx.atmeta.com), rendered through ``render_spa`` like
@@ -40,8 +46,18 @@ from urllib.parse import urlencode
 from fastapi import Depends, FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
+from ..access_log import (
+    SHARED_PASSWORD_NOTE,
+    actor_from_console_user,
+    actor_label,
+    reads_for_fellow,
+    record_read,
+    unattributable,
+)
 from ..assignments import list_assignments, record_score, submissions_for_assignment, submissions_for_fellow
 from ..config import get_settings
+from ..data_rights import COLLECTION_NOTICE, HOW_TO_ASK, NOT_COLLECTED, export_fellow
+from ..data_rights import render_text as render_archive
 from ..db import connection, fetch_all, fetch_one
 from ..engagement import cohort_attendance, cohort_engagement, fellow_engagement, most_active
 from ..errors import CufaError
@@ -157,11 +173,32 @@ def fellow_detail_context(conn: Any, fellow_id: str, *, now: datetime | None = N
         for share in speaking_share(conn, str(s["session_id"])):
             if share.fellow_id == fellow_id:
                 airtime.append({"session": s["title"], "share": share.share_of_seconds, "turns": share.turns, "words": share.words})
+    # Who has opened this record, shown on the record itself. It is here rather
+    # than on a screen of its own because that is where it gets read: a staffer
+    # wondering who else has been looking at one fellow is already on that
+    # fellow's page. It is staff-only — `fellow_context` is what a fellow's own
+    # page is built from, and this is deliberately not in it.
+    reads = reads_for_fellow(conn, fellow_id, limit=50)
     base.update(
         {
             "aliases": list_aliases(conn, fellow_id),
             "interventions": interventions_for(conn, fellow_id),
             "airtime": airtime,
+            "access_log": [
+                {
+                    "access_id": str(r["access_id"]),
+                    "at": r["at"],
+                    "route": r["route"],
+                    "actor_kind": r["actor_kind"],
+                    "by": actor_label(r),
+                    "named": r["actor_kind"] != "shared_password",
+                }
+                for r in reads
+            ],
+            # The cost of RUNBOOK §8's door 2, as a number on the screen rather
+            # than a paragraph in a document.
+            "unattributable_reads": unattributable(reads),
+            "shared_password_note": SHARED_PASSWORD_NOTE,
         }
     )
     return base
@@ -349,6 +386,15 @@ def register(app: FastAPI, render: Callable[..., Response], require_user: Callab
     @app.get("/dashboard/fellow/{fellow_id}", response_class=HTMLResponse)
     def staff_fellow_detail(fellow_id: str, request: Request, user: Any = Depends(require_user)) -> Response:
         with connection() as conn:
+            # Recorded before the context is built, so the row exists even if
+            # rendering then falls over. A read that happened is a read that
+            # happened, and the log is not a success log.
+            record_read(
+                conn,
+                fellow_id,
+                actor=actor_from_console_user(user),
+                route="GET /dashboard/fellow/{id}",
+            )
             context = fellow_detail_context(conn, fellow_id)
         if context is None:
             return render(
@@ -368,6 +414,33 @@ def register(app: FastAPI, render: Callable[..., Response], require_user: Callab
             staff_view=True,
             token=None,
             **context,
+        )
+
+    @app.get("/dashboard/fellow/{fellow_id}/export.txt")
+    def staff_fellow_archive(fellow_id: str, user: Any = Depends(require_user)) -> Response:
+        """The full archive, for staff honouring a request made by phone or email.
+
+        A parent asking for their child's record does not have the fellow's
+        signed link, and telling them to get one from Slack is not an answer. So
+        the same archive the fellow can fetch for themselves is available here —
+        and because it is the largest single read of one person's record there
+        is, it goes in the access log like any other.
+        """
+        with connection() as conn:
+            record_read(
+                conn,
+                fellow_id,
+                actor=actor_from_console_user(user),
+                route="GET /dashboard/fellow/{id}/export.txt",
+            )
+            try:
+                body = render_archive(export_fellow(conn, fellow_id))
+            except CufaError as exc:
+                return Response(str(exc), status_code=404, media_type="text/plain; charset=utf-8")
+        return Response(
+            body,
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="record-{fellow_id}.txt"'},
         )
 
     @app.post("/me/{token}/prefs")
@@ -456,6 +529,13 @@ def register(app: FastAPI, render: Callable[..., Response], require_user: Callab
             staff_view=False,
             token=token,
             offsets=list(DEFAULT_OFFSETS),
+            # §12's "privacy notice inside the app, not only on a form", handed
+            # to the screen as data rather than written into the bundle: the
+            # words belong next to the code that does the collecting, so a new
+            # table and the sentence describing it are changed together.
+            collected=[{"label": label, "detail": detail} for label, detail in COLLECTION_NOTICE],
+            not_collected=list(NOT_COLLECTED),
+            how_to_ask=HOW_TO_ASK,
             **fellow_facing(context),
         )
 
@@ -467,6 +547,31 @@ def register(app: FastAPI, render: Callable[..., Response], require_user: Callab
         with connection() as conn:
             body = fellow_export_csv(conn, fellow_id)
         return Response(body, media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="my-fellowship-{fellow_id}.csv"'})
+
+    @app.get("/me/{token}/export.txt")
+    def fellow_archive(token: str) -> Response:
+        """The whole record, not just the sessions table the CSV holds.
+
+        Deliberately not written to the access log. That log exists so a young
+        person can see who *else* has been looking at their record; filling it
+        with their own visits would bury the answer in noise, and the signed
+        link is already scoped to one fellow and expires in seven days.
+        """
+        fellow_id = read_token(get_settings(), token)
+        if fellow_id is None:
+            return Response(EXPIRED_LINK, status_code=403, media_type="text/plain; charset=utf-8")
+        with connection() as conn:
+            try:
+                body = render_archive(export_fellow(conn, fellow_id))
+            except CufaError as exc:
+                return Response(str(exc), status_code=404, media_type="text/plain; charset=utf-8")
+        return Response(
+            body,
+            media_type="text/plain; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="everything-about-me-{fellow_id}.txt"'
+            },
+        )
 
 
 __all__ = [

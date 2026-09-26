@@ -278,6 +278,12 @@ export function Fellow({
   aliases = [],
   interventions = [],
   airtime = [],
+  collected = [],
+  not_collected = [],
+  how_to_ask,
+  access_log = [],
+  unattributable_reads = 0,
+  shared_password_note,
 }) {
   // A server with nothing to say about a list may say so with a null rather
   // than an empty array, so each is read through a local default as well as
@@ -288,6 +294,9 @@ export function Fellow({
   const steps = journey || []
   const logged = interventions || []
   const recordings = airtime || []
+  const gathered = collected || []
+  const never = not_collected || []
+  const reads = access_log || []
   const accounts = slack || []
   const links = connected || {}
   const reached = steps.filter((step) => step.at).length
@@ -599,6 +608,45 @@ export function Fellow({
         </Region>
       ) : null}
 
+      {/* Staff only, and on the record itself rather than on a screen of its
+          own: somebody wondering who has been looking at one fellow is already
+          on that fellow's page. The supporting line carries the count that
+          names nobody, because a shared password everybody has is the reason
+          this log is thinner than it looks, and that should be visible here
+          rather than only in the runbook. */}
+      {staff_view ? (
+        <Region
+          title="Who has opened this record"
+          description={
+            unattributable_reads
+              ? `${reads.length} read${reads.length === 1 ? '' : 's'} recorded · ${unattributable_reads} name nobody`
+              : `${reads.length} read${reads.length === 1 ? '' : 's'} recorded`
+          }
+        >
+          {reads.length ? (
+            <Stack gap={4}>
+              <List hasDividers>
+                {reads.map((row) => (
+                  <ListItem
+                    key={row.access_id}
+                    label={row.by}
+                    description={<Text type="supporting">{row.route}</Text>}
+                    endContent={
+                      <Text type="supporting" hasTabularNumbers>{fmtDateTime(row.at)}</Text>
+                    }
+                  />
+                ))}
+              </List>
+              {unattributable_reads ? (
+                <Text type="supporting">{shared_password_note}</Text>
+              ) : null}
+            </Stack>
+          ) : (
+            <Text type="supporting">Nothing recorded yet.</Text>
+          )}
+        </Region>
+      ) : null}
+
       <Region title="Preferences">
         {!preferences ? (
           <Text type="supporting">
@@ -664,19 +712,60 @@ export function Fellow({
       </Region>
 
       {!staff_view ? (
-        // The export moved down here from under the title. Nothing about it
-        // changed except the company it keeps: it is the same control, and it
-        // belongs beside the sentence about whose data this is rather than
-        // being the first thing a fellow meets under their own name.
-        <Stack gap={3}>
-          <Text type="supporting">
-            This page shows your own data and nobody else&apos;s. The link expires after
-            7 days; ask the bot for a new one with /dashboard.
-          </Text>
-          <Stack direction="horizontal" gap={3} wrap="wrap">
-            <Button label="Export my data (CSV)" href={`/me/${token}/export.csv`} />
+        // The privacy notice, on the page rather than on a form nobody keeps.
+        // It ends the page for the same reason the export used to: it is the
+        // sentence about whose data this is, and the two exports are what a
+        // reader does about it. The words come from the server
+        // (cufa.data_rights.COLLECTION_NOTICE) so that adding a table and
+        // describing it are one change, not two.
+        <Region
+          title="What is collected about me"
+          description="Everything this system holds about you, in plain words."
+        >
+          <Stack gap={5}>
+            {gathered.length ? (
+              <List hasDividers>
+                {gathered.map((item) => (
+                  <ListItem
+                    key={item.label}
+                    label={item.label}
+                    // A ReactNode, not a plain string: a string description is
+                    // truncated to one line, and these are two sentences.
+                    description={<Text type="supporting">{item.detail}</Text>}
+                  />
+                ))}
+              </List>
+            ) : null}
+
+            {never.length ? (
+              <Stack gap={2}>
+                <Text weight="bold">What is never collected</Text>
+                {never.map((line) => (
+                  <Text key={line} type="supporting">{line}</Text>
+                ))}
+              </Stack>
+            ) : null}
+
+            {how_to_ask ? <Text type="supporting">{how_to_ask}</Text> : null}
+
+            <Stack gap={3}>
+              <Stack direction="horizontal" gap={3} wrap="wrap">
+                <Button label="Export my data (CSV)" href={`/me/${token}/export.csv`} />
+                <Button
+                  label="Everything held about me"
+                  href={`/me/${token}/export.txt`}
+                  variant="secondary"
+                />
+              </Stack>
+              <Text type="supporting">
+                The CSV is the sessions table for a spreadsheet. The second one is the
+                whole record, every table, as readable text. This page shows your own
+                data and nobody else&apos;s; the link expires after 7 days, and the bot
+                gives you a new one with /dashboard.
+              </Text>
+            </Stack>
           </Stack>
-        </Stack>
+        </Region>
       ) : (
         <Text type="supporting">
           <Link href={`/dashboard?cohort=${fellow.cohort_id}`}>Back to the staff dashboard</Link>

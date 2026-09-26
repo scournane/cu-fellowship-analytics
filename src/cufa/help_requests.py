@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from collections.abc import Sequence
 from typing import Any
 
 import psycopg
@@ -235,12 +236,79 @@ def acknowledge(
     return row
 
 
+# ---------------------------------------------------------------------------
+# Data subject rights.
+#
+# ADR-025 keeps this table's readers down to one module so that a change to who
+# can see a safeguarding disclosure has exactly one place to audit, and
+# `tests/test_safeguarding.py::test_19b_the_help_table_is_read_from_exactly_one_module`
+# enforces it by grepping the tree. Subject access and erasure genuinely need
+# this table — a request a fellow made about themselves is theirs to see, and an
+# erasure that skipped it would not be one — so the SQL lives here, next to the
+# rest of the help-specific rules, and `data_rights` calls these by name.
+#
+# Writing it the other way round, with the queries in `data_rights` and this
+# module added to the test's allowlist, would have passed the test and lost the
+# property the test exists to protect.
+# ---------------------------------------------------------------------------
+
+
+def for_subject_access(
+    conn: psycopg.Connection, fellow_id: str, emails: Sequence[str]
+) -> list[dict[str, Any]]:
+    """What this fellow is shown about their own help requests.
+
+    Deliberately not the whole row. Who picked it up and what they wrote about
+    it are a staff record of a safeguarding response, not the fellow's own
+    data, and showing them back could make the next person hesitate before
+    ticking the box. The fellow gets when they asked, what came of it, and the
+    fact that a note exists.
+    """
+    return [
+        dict(r)
+        for r in fetch_all(
+            conn,
+            """
+            select h.submitted_at_utc, h.status, h.created_at,
+                   s.title as session_title,
+                   (h.note is not null) as a_note_exists
+              from help_request h
+              left join "session" s on s.session_id = h.session_id
+             where h.fellow_id = %s or lower(h.submitted_email) = any(%s)
+             order by h.submitted_at_utc
+            """,
+            (fellow_id, list(emails)),
+        )
+    ]
+
+
+def erasure_predicate() -> tuple[str, str]:
+    """The ``UPDATE`` an erasure runs here, and its ``WHERE``, as SQL text.
+
+    Returned rather than executed because `data_rights` reports every step of a
+    plan before applying any of it, and a dry run has to be able to count the
+    rows this would touch without running it.
+
+    The row survives with its address and note removed. A safeguarding request
+    having been raised and answered is its own record, and the fellowship's
+    account of how it responded to a young person asking for help should not be
+    erasable by that young person's erasure — the part that identifies them is.
+    """
+    where = (
+        "(fellow_id = %s or lower(submitted_email) = any(%s)) "
+        "and (lower(submitted_email) <> %s or note is not null)"
+    )
+    return f"update help_request set submitted_email = %s, note = null where {where}", where
+
+
 __all__ = [
     "STATUS_ACKNOWLEDGED",
     "STATUS_CLOSED",
     "STATUS_OPEN",
     "RoutedRequest",
     "acknowledge",
+    "erasure_predicate",
+    "for_subject_access",
     "list_requests",
     "open_count",
     "record_and_route",

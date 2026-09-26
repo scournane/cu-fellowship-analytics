@@ -1,4 +1,4 @@
-"""``cufa slack …``, ``cufa assignment …``, ``cufa fellow …``, ``cufa zoom …``.
+"""``cufa slack …``, ``cufa assignment …``, ``cufa fellow …``, ``cufa zoom …``, ``cufa access-log``.
 
 Kept in its own module so ``cli.py`` stays about the forms pipeline. Every
 command here is a thin call into the same functions the bot and the console
@@ -232,6 +232,44 @@ def cmd_fellow(args: argparse.Namespace) -> int:
                 now=_now(args) or datetime.now(timezone.utc),
             )
             print(card(conn, FakeSlackClient(), ctx, [args.query]).text)
+        elif action == "export":
+            from .access_log import cli_actor, record_read
+            from .data_rights import export_fellow, render_text
+
+            archive = export_fellow(conn, args.fellow)
+            if not args.no_log:
+                # Logged before it is printed: an export is the largest read of
+                # one person's record there is, and the log is not a success log.
+                record_read(
+                    conn,
+                    args.fellow,
+                    actor=cli_actor(args.by),
+                    route="cufa fellow export",
+                )
+            print(json.dumps(archive.to_dict(), indent=2, default=str) if args.json else render_text(archive))
+        elif action == "erase":
+            from .data_rights import erase_fellow, render_plan
+
+            plan = erase_fellow(conn, args.fellow, requested_by=args.by, apply=args.apply)
+            print(json.dumps(plan.to_dict(), indent=2, default=str) if args.json else render_plan(plan))
+    return 0
+
+
+# --------------------------------------------------------------------------
+# cufa access-log
+# --------------------------------------------------------------------------
+
+
+def cmd_access_log(args: argparse.Namespace) -> int:
+    """Print the access audit log."""
+    from .access_log import recent_reads, render_text
+
+    with connection() as conn:
+        rows = recent_reads(conn, fellow_id=getattr(args, "fellow", None), limit=args.limit)
+    if args.json:
+        _dump(rows)
+    else:
+        print(render_text(rows))
     return 0
 
 
@@ -267,7 +305,8 @@ def add_parsers(
     slack_sub: argparse._SubParsersAction,  # type: ignore[type-arg]
     assignment_sub: argparse._SubParsersAction,  # type: ignore[type-arg]
 ) -> None:
-    """Extend ``cufa slack`` and ``cufa assignment`` (both built in cli.py); add ``fellow``, ``zoom``.
+    """Extend ``cufa slack`` and ``cufa assignment`` (both built in cli.py); add
+    ``fellow``, ``zoom`` and ``access-log``.
 
     Each sub-command below sets its own ``func`` so it dispatches here rather
     than to the handler that owns the parent parser. ``cufa slack reminders``
@@ -366,7 +405,7 @@ def add_parsers(
     q.set_defaults(func=cmd_assignment)
 
     # --- fellow ---
-    p = sub.add_parser("fellow", help="aliases, merges, funnel, retention, profile card")
+    p = sub.add_parser("fellow", help="aliases, merges, funnel, retention, profile card, subject access export, erasure")
     sp = p.add_subparsers(dest="fellow_action", required=True)
     q = sp.add_parser("alias", help="list or add a second address on a roster record")
     q.add_argument("fellow")
@@ -393,7 +432,46 @@ def add_parsers(
     q.add_argument("query")
     q.add_argument("--cohort")
     q.add_argument("--now")
+    q = sp.add_parser(
+        "export",
+        help="everything held about one fellow, for a subject access request",
+        description="Prints the whole record across every table. Reading one "
+                    "person's entire record is itself logged, so --by is required.",
+    )
+    q.add_argument("fellow")
+    q.add_argument("--by", required=True, help="your address; recorded in the access log")
+    q.add_argument("--json", action="store_true")
+    q.add_argument(
+        "--no-log",
+        action="store_true",
+        help="do not record this read. For a dry run of the command itself; "
+             "an export honouring a real request should be in the log.",
+    )
+    q = sp.add_parser(
+        "erase",
+        help="honour a deletion request. Dry run unless --apply is given",
+        description="Prints exactly which rows it would change or remove, and "
+                    "what erasure cannot reach. Nothing is written without --apply. "
+                    "Safe to re-run: every step matches nothing the second time.",
+    )
+    q.add_argument("fellow")
+    q.add_argument("--by", required=True, help="your address; recorded in the erasure ledger")
+    q.add_argument("--apply", action="store_true", help="carry it out")
+    q.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_fellow)
+
+    # --- access-log ---
+    p = sub.add_parser(
+        "access-log",
+        help="who opened whose record, and when",
+        description="The audit log docs/vision.md section 12 asks for. Reads "
+                    "through the shared site password are shown as naming nobody, "
+                    "because that is what they are (RUNBOOK section 8).",
+    )
+    p.add_argument("--fellow", help="narrow to one fellow id")
+    p.add_argument("--limit", type=int, default=100)
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_access_log)
 
     # --- zoom ---
     p = sub.add_parser("zoom", help="speaking share from a Zoom transcript (.vtt)")
@@ -408,4 +486,4 @@ def add_parsers(
     p.set_defaults(func=cmd_zoom)
 
 
-__all__ = ["add_parsers", "cmd_assignment", "cmd_fellow", "cmd_slack", "cmd_zoom"]
+__all__ = ["add_parsers", "cmd_access_log", "cmd_assignment", "cmd_fellow", "cmd_slack", "cmd_zoom"]
