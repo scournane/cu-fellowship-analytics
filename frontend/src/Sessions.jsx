@@ -13,6 +13,20 @@ import {Notices, PageHeader, PostForm} from './AppFrame.jsx'
 import {CohortFilter, sessionsUrl} from './CohortFilter.jsx'
 import {fmtDateTime} from './format.js'
 
+/** "default v3" or "custom v1": which exit ticket questions the session asks.
+ *  Once its form is built, the version it was built from. */
+function PartAQuestions({row}) {
+  const q = row.part_a_questions
+  if (!q || !q.scope) return <Token label="none — set a default" color="orange" size="sm" />
+  return (
+    <Token
+      label={`${q.scope} v${q.version}`}
+      color={q.scope === 'custom' ? 'purple' : 'blue'}
+      size="sm"
+    />
+  )
+}
+
 function FormState({row}) {
   if (row.publish_verified_at) return <Token label="ready" color="green" size="sm" />
   if (row.form_id) return <Token label="not verified" color="orange" size="sm" />
@@ -97,7 +111,7 @@ export function Sessions({sessions = [], cohorts = [], selected_cohort, notice, 
               <TableHeaderCell>Local time</TableHeaderCell>
               <TableHeaderCell>Cohort</TableHeaderCell>
               <TableHeaderCell>Length</TableHeaderCell>
-              <TableHeaderCell>Passphrase</TableHeaderCell>
+              <TableHeaderCell>Part A questions</TableHeaderCell>
               <TableHeaderCell>Form</TableHeaderCell>
               <TableHeaderCell>Check-ins</TableHeaderCell>
             </TableRow>
@@ -120,11 +134,7 @@ export function Sessions({sessions = [], cohorts = [], selected_cohort, notice, 
                     <Text type="supporting">+{row.grace_minutes}m grace</Text>
                   </Stack>
                 </TableCell>
-                <TableCell>
-                  {row.passphrase
-                    ? <Text type="code">{row.passphrase}</Text>
-                    : <Token label="none set" color="default" size="sm" />}
-                </TableCell>
+                <TableCell><PartAQuestions row={row} /></TableCell>
                 <TableCell><FormState row={row} /></TableCell>
                 <TableCell><Text hasTabularNumbers>{row.response_count}</Text></TableCell>
               </TableRow>

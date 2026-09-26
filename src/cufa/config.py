@@ -61,11 +61,12 @@ class Settings:
     # the console see the same state across processes.
     fake_google_state: str = "fixtures/fake_google_state.json"
 
+    #: Used for Part B's muddiest-point themes and the Slack Q&A digest —
+    #: aggregate, about content. Never for attendance, and never to judge an
+    #: individual's answers.
     gemini_api_key: str | None = None
     ai_model: str = "gemini-2.5-flash"
-    ai_max_calls_per_run: int = 250
 
-    max_edit_distance: int = 1
     log_level: str = "INFO"
 
     # --- Slack -----------------------------------------------------------
@@ -237,8 +238,6 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         or "fixtures/fake_google_state.json",
         gemini_api_key=(env.get("GEMINI_API_KEY") or "").strip() or None,
         ai_model=env.get("CUFA_AI_MODEL") or "gemini-2.5-flash",
-        ai_max_calls_per_run=_int("CUFA_AI_MAX_CALLS_PER_RUN", 250),
-        max_edit_distance=_int("CUFA_MAX_EDIT_DISTANCE", 1),
         log_level=(env.get("CUFA_LOG_LEVEL") or "INFO").upper(),
         slack_bot_token=(env.get("SLACK_BOT_TOKEN") or "").strip() or None,
         slack_app_token=(env.get("SLACK_APP_TOKEN") or "").strip() or None,

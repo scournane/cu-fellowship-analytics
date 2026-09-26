@@ -1,7 +1,7 @@
 """Shared test fixtures.
 
-Tests never touch the network. The Google client is always the fake, tier 2 is
-always an injected stub, and the only external thing is the local Postgres the
+Tests never touch the network. The Google client is always the fake, every AI
+call is an injected stub, and the only external thing is the local Postgres the
 Supabase stack provides — which is where the schema constraints being tested
 actually live, so testing against a real database rather than a mock is the
 point, not a compromise.
@@ -89,7 +89,11 @@ _TABLES = (
     "identity_unresolved",
     "provisioning_log",
     "form_question_map",
+    "part_a_form_question",
     "session_form",
+    # After session_form (which points at it), before session and cohort (which
+    # it points at).
+    "part_a_question_set",
     "load_run",
     "form_template",
     "google_credential",
@@ -171,6 +175,39 @@ def verify_template_for(conn, fake, part: str) -> str:
     return record.form_id
 
 
+#: The Part A question set ``make_session`` gives every test cohort: one short
+#: answer, so a triple passed to ``FakeGoogleClient.seed_responses`` still lands
+#: on "the" question. Tests about the exit ticket itself build their own sets.
+TEST_PART_A_QUESTIONS = {
+    "schema_version": 1,
+    "title": "Exit ticket: {session_title}",
+    "description": "",
+    "questions": [
+        {
+            "key": "q_takeaway",
+            "type": "short_answer",
+            "title": "One thing you are taking away",
+            "description": "",
+            "required": True,
+        }
+    ],
+}
+
+
+def seed_default_questions(conn, cohort_id: str = TEST_COHORT, content=None):
+    """Give a cohort a Part A default. Idempotent: identical content is a no-op."""
+    from cufa.question_sets import save_default
+
+    return save_default(
+        conn,
+        cohort_id,
+        content or TEST_PART_A_QUESTIONS,
+        created_by="tests",
+        source="seed_file",
+        source_ref="tests/conftest.py",
+    )
+
+
 def make_session(
     conn,
     *,
@@ -178,16 +215,22 @@ def make_session(
     local: datetime | None = None,
     duration: int = 90,
     grace: int = 15,
-    passphrase: str | None = "justice",
     cohort_id: str = TEST_COHORT,
     week_index: int | None = None,
     teacher_question: str | None = None,
     zoom_url: str | None = None,
     agenda: str | None = None,
     slack_channel_id: str | None = None,
+    part_a_questions: bool = True,
 ) -> str:
-    """Create a session at a fixed local time. Never reads the clock."""
-    return create_session(
+    """Create a session at a fixed local time. Never reads the clock.
+
+    Also makes sure the cohort has a Part A default question set, because
+    provisioning Part A is blocked without one — which is right in production
+    and noise in a test about something else. ``part_a_questions=False`` leaves
+    the cohort without one, for the tests about exactly that.
+    """
+    session_id = create_session(
         conn,
         SessionInput(
             cohort_id=cohort_id,
@@ -196,7 +239,6 @@ def make_session(
             timezone=TEST_TZ,
             duration_minutes=duration,
             grace_minutes=grace,
-            passphrase=passphrase,
             week_index=week_index,
             teacher_question=teacher_question,
             zoom_url=zoom_url,
@@ -204,6 +246,12 @@ def make_session(
             slack_channel_id=slack_channel_id,
         ),
     )
+    if part_a_questions:
+        from cufa.question_sets import current_default
+
+        if current_default(conn, cohort_id) is None:
+            seed_default_questions(conn, cohort_id)
+    return session_id
 
 
 def make_fellow(
@@ -240,35 +288,48 @@ def write_csv(path: Path, rows: list[dict[str, str]], fieldnames: list[str]) -> 
     return path
 
 
-class StubAdjudicator:
-    """A tier 2 stand-in that records every call. Never touches a network."""
+# ---------------------------------------------------------------------------
+# Part A helpers
+# ---------------------------------------------------------------------------
 
-    def __init__(self, verdict: bool = True, confidence: float = 0.88) -> None:
-        self.model_name = "stub-model"
-        self.calls: list[tuple[str, str]] = []
-        self._verdict = verdict
-        self._confidence = confidence
 
-    def judge(self, expected: str, submitted: str):
-        from cufa.adjudicate.ai import AiVerdict
+def seed_part_a(conn, fake, form_id: str, rows: list[dict]) -> None:
+    """Seed exit-ticket responses, keyed by QUESTION KEY rather than question id.
 
-        self.calls.append((expected, submitted))
-        return AiVerdict(
-            heard_the_passphrase=self._verdict,
-            confidence=self._confidence,
-            reasoning="stubbed verdict",
+    The same discipline as ``seed_part_b``: which id a question has depends on
+    the copy, and no test may know. Each row is ``{"email", "submitted_at",
+    "answers": {question_key: "value" | ["value", ...]}}``, resolved through
+    ``part_a_form_question`` — the table read-time resolution uses — and handed
+    to ``FakeGoogleClient.seed_answers``. ``answers_by_id`` passes answers to
+    questions the map does not know straight through.
+    """
+    from cufa.db import fetch_all
+
+    by_key = {
+        row["question_key"]: row["question_id"]
+        for row in fetch_all(
+            conn,
+            "select question_key, question_id from part_a_form_question where form_id = %s",
+            (form_id,),
         )
-
-
-class ExplodingAdjudicator:
-    """Tier 2 that always fails, to prove the pipeline degrades rather than stops."""
-
-    model_name = "exploding-model"
-
-    def judge(self, expected: str, submitted: str):
-        from cufa.errors import AiUnavailable
-
-        raise AiUnavailable("quota exhausted")
+    }
+    seeded = []
+    for row in rows:
+        answers = {}
+        for key, value in (row.get("answers") or {}).items():
+            if key not in by_key:
+                raise KeyError(f"{key!r} is not mapped on form {form_id}: {sorted(by_key)}")
+            answers[by_key[key]] = list(value) if isinstance(value, (list, tuple)) else [value]
+        for question_id, value in (row.get("answers_by_id") or {}).items():
+            answers[question_id] = list(value) if isinstance(value, (list, tuple)) else [value]
+        seeded.append(
+            {
+                "respondent_email": row["email"],
+                "create_time": row["submitted_at"],
+                "answers": answers,
+            }
+        )
+    fake.seed_answers(form_id, seeded)
 
 
 # ---------------------------------------------------------------------------

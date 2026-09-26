@@ -35,6 +35,7 @@ the command line. It never reimplements a rule.
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import tempfile
@@ -59,8 +60,18 @@ from ..confidence import for_session as confidence_for_session
 from ..confidence import straightliners
 from ..db import connection, fetch_all, fetch_one
 from ..decisions import human_override
-from ..errors import ConfigError, CufaError, DatabaseUnreachable
+from ..errors import (
+    ConfigError,
+    CufaError,
+    DatabaseUnreachable,
+    InvalidQuestionSet,
+    QuestionSetMissing,
+    QuestionsLocked,
+    StaleQuestionSet,
+)
+from ..form_content import LINK_REMINDER
 from ..form_content_b import HELP_OPTION, SURVEY_LENGTH_RATIONALE
+from .. import part_a_questions, question_sets
 from ..google.base import SCOPES
 from ..google.factory import get_client
 from ..google.oauth import authorization_url, credential_status, disconnect, store_credential
@@ -71,7 +82,6 @@ from ..help_routing import get_help_routing
 from ..ingest.forms_api import pull_session
 from ..ingest.forms_b import pull_session_b
 from ..logging_setup import configure_logging, get_logger
-from ..passphrase import ACCESSIBILITY_REMINDER, GUIDANCE, check_reuse, suggest
 from ..provenance import is_simulated_form_id
 from ..assignments import (
     AssignmentInput,
@@ -904,7 +914,7 @@ def google_disconnect(request: Request, user: ConsoleUser = Depends(require_user
 # --------------------------------------------------------------------------
 
 
-def _template_context(conn: Any) -> dict[str, Any]:
+def _template_context(conn: Any, cohort: str | None = None) -> dict[str, Any]:
     """Both parts, always — including one that does not exist yet.
 
     Each part has its own template and its own one-time human Verified step,
@@ -935,12 +945,26 @@ def _template_context(conn: Any) -> dict[str, Any]:
                 ),
             }
         )
+    cohorts = _cohorts(conn)
+    cohort_id = _pick_cohort(cohorts, cohort)
     return {
         "parts": parts,
         "manual_step": MANUAL_STEP,
         "blocked": any(entry["blocked"] for entry in parts),
         "survey_rationale": SURVEY_LENGTH_RATIONALE,
         "connected_account": connected_account(conn),
+        # The exit ticket's questions are per cohort, not per template: the
+        # template is a title and a notice, and the questions are written onto
+        # each session's copy when it is provisioned.
+        "cohorts": cohorts,
+        "selected_cohort": cohort_id,
+        "part_a_default": (
+            _question_set_dict(question_sets.current_default(conn, cohort_id))
+            if cohort_id
+            else None
+        ),
+        "part_a_usage": _default_usage(conn, cohort_id) if cohort_id else None,
+        "question_types": part_a_questions.QUESTION_TYPES,
     }
 
 
@@ -949,9 +973,13 @@ def _valid_part(raw: str) -> str:
 
 
 @app.get("/template", response_class=HTMLResponse)
-def template_screen(request: Request, user: ConsoleUser = Depends(require_user)) -> Response:
+def template_screen(
+    request: Request,
+    user: ConsoleUser = Depends(require_user),
+    cohort: str | None = Query(default=None),
+) -> Response:
     with connection() as conn:
-        context = _template_context(conn)
+        context = _template_context(conn, cohort)
     return render_spa(request, "template", title="Template setup", **context)
 
 
@@ -991,9 +1019,11 @@ def template_replace(
 ) -> Response:
     """Retire a template that cannot be opened and create a fresh one.
 
-    Offered only after verification has actually failed to reach the form —
-    making a new template silently would drop the human Verified step on the
-    floor while the screen still looked green.
+    Offered after verification has actually failed to reach the form, and for
+    a Part A template that is not yet verified (one made before the exit
+    ticket still carries the passphrase question). Never offered for a
+    verified template: making a new one silently would drop the human
+    Verified step on the floor while the screen still looked green.
     """
     part = _valid_part(part)
     notice: str | None = None
@@ -1048,6 +1078,504 @@ def template_verify(
     return render_spa(
         request, "template", title="Template setup", notice=notice, error=error, **context
     )
+
+
+# --------------------------------------------------------------------------
+# Part A — the exit ticket's questions
+# --------------------------------------------------------------------------
+#
+# Two scopes, one editor. A cohort has a default question set, and any single
+# session may carry its own copy instead — a full snapshot, not a diff, so what
+# a session asked never depends on how the default changed later. Both are
+# append-only versions; saving writes a new one and nothing is edited in place.
+#
+# A session's questions are editable until its Part A form is published and
+# locked from then on: the form fellows answered has to stay the form the
+# answers are read against. The rules live in `question_sets`; this only
+# carries a staff member's edit to it and shows what it said.
+
+#: What an empty editor starts from.
+BLANK_QUESTION_SET: dict[str, Any] = {
+    "schema_version": 1,
+    "title": "",
+    "description": "",
+    "questions": [],
+}
+
+
+def _pick_cohort(cohorts: list[dict[str, Any]], wanted: str | None) -> str:
+    """The cohort a per-cohort screen is about: the one asked for, else the first."""
+    known = [str(c["cohort_id"]) for c in cohorts]
+    if wanted and wanted in known:
+        return wanted
+    return known[0] if known else ""
+
+
+def _question_set_dict(qs: Any) -> dict[str, Any] | None:
+    """A QuestionSet as the screens want it, with its scope and counts named.
+
+    Built by hand rather than left to the encoder: ``scope``, ``label`` and the
+    count are properties, and the encoder serialises dataclass fields only — a
+    property silently arrives as ``undefined``.
+    """
+    if qs is None:
+        return None
+    content = qs.content or {}
+    return {
+        "question_set_id": str(qs.question_set_id),
+        "cohort_id": qs.cohort_id,
+        "session_id": str(qs.session_id) if qs.session_id else None,
+        "scope": qs.scope,
+        "label": qs.label,
+        "version": qs.version,
+        "content": content,
+        "source": qs.source,
+        "source_ref": qs.source_ref,
+        "based_on_id": str(qs.based_on_id) if qs.based_on_id else None,
+        "created_by": qs.created_by,
+        "created_at": qs.created_at,
+        "superseded_at": qs.superseded_at,
+        "item_count": len(content.get("questions") or []),
+        "answerable_count": qs.question_count,
+    }
+
+
+def _default_usage(conn: Any, cohort_id: str) -> dict[str, Any]:
+    """How many sessions follow a cohort's default, and how many have their own."""
+    row = fetch_one(
+        conn,
+        """
+        select count(*) as sessions,
+               count(o.question_set_id) as customised
+          from "session" s
+          left join part_a_question_set o
+                 on o.session_id = s.session_id and o.superseded_at is null
+         where s.cohort_id = %s
+        """,
+        (cohort_id,),
+    ) or {}
+    sessions = int(row.get("sessions") or 0)
+    customised = int(row.get("customised") or 0)
+    return {"sessions": sessions, "customised": customised, "following": sessions - customised}
+
+
+def _read_questions_json(raw: str) -> tuple[dict[str, Any] | None, list[str]]:
+    """The editor posts the whole set as one hidden JSON field."""
+    try:
+        content = json.loads(raw or "")
+    except ValueError as exc:
+        return None, [
+            f"The questions did not arrive as readable JSON ({exc}). Nothing was saved."
+        ]
+    if not isinstance(content, dict) or not isinstance(content.get("questions", []), list):
+        return None, [
+            "The questions have to arrive as one object with a title, a description "
+            "and a list of questions. Nothing was saved."
+        ]
+    return content, []
+
+
+def _cohort_exists(conn: Any, cohort_id: str) -> bool:
+    return bool(
+        cohort_id
+        and fetch_one(conn, "select 1 as ok from cohort where cohort_id = %s", (cohort_id,))
+    )
+
+
+def _default_editor_state(conn: Any, cohort_id: str) -> dict[str, Any]:
+    current = question_sets.current_default(conn, cohort_id) if cohort_id else None
+    history = question_sets.history(conn, cohort_id=cohort_id) if cohort_id else []
+    return {
+        "scope": "default",
+        "cohort_id": cohort_id,
+        "cohorts": _cohorts(conn),
+        "current": _question_set_dict(current),
+        "content": current.content if current else BLANK_QUESTION_SET,
+        "base_id": str(current.question_set_id) if current else "",
+        "history": [_question_set_dict(q) for q in history],
+        "usage": _default_usage(conn, cohort_id) if cohort_id else None,
+        # Defaults are never locked. A session already published is pinned to
+        # the version it was published with, so editing here cannot reach it.
+        "locked": False,
+        "lock_reason": None,
+        "action": "/template/questions",
+        "seed_action": "/template/questions/seed",
+        "import_action": "/template/questions/import",
+    }
+
+
+def _render_question_set(
+    request: Request,
+    state: dict[str, Any],
+    *,
+    status_code: int = 200,
+    errors: list[str] | None = None,
+    warnings: list[str] | None = None,
+    notice: str | None = None,
+    error: str | None = None,
+) -> Response:
+    if state["scope"] == "session":
+        title = f"Part A questions — {state['session']['title']}"
+    else:
+        title = "Default exit ticket questions"
+    return render_spa(
+        request,
+        "questionSet",
+        status_code=status_code,
+        title=title,
+        question_types=part_a_questions.QUESTION_TYPES,
+        errors=errors or [],
+        warnings=warnings or [],
+        notice=notice,
+        error=error,
+        **state,
+    )
+
+
+def _back_to(path: str, key: str, message: str) -> Response:
+    joiner = "&" if "?" in path else "?"
+    return RedirectResponse(f"{path}{joiner}{key}=" + quote(message), status_code=303)
+
+
+@app.get("/template/questions", response_class=HTMLResponse)
+def template_questions(
+    request: Request,
+    user: ConsoleUser = Depends(require_user),
+    cohort: str | None = Query(default=None),
+    notice: str | None = None,
+    error: str | None = None,
+) -> Response:
+    with connection() as conn:
+        cohort_id = _pick_cohort(_cohorts(conn), cohort)
+        state = _default_editor_state(conn, cohort_id)
+    return _render_question_set(request, state, notice=notice, error=error)
+
+
+@app.post("/template/questions")
+def template_questions_save(
+    request: Request,
+    user: ConsoleUser = Depends(require_user),
+    cohort: str = Form(""),
+    questions_json: str = Form(""),
+    base_id: str = Form(""),
+) -> Response:
+    cohort_id = (cohort or request.query_params.get("cohort") or "").strip()
+    content, errors = _read_questions_json(questions_json)
+    warnings: list[str] = []
+    status_code = 400
+    saved: Any = None
+    before: Any = None
+
+    with connection() as conn:
+        if not _cohort_exists(conn, cohort_id):
+            return _not_found(request)
+        if content is not None:
+            checked = part_a_questions.validate(content)
+            errors, warnings = list(checked.errors), list(checked.warnings)
+            if not errors:
+                before = question_sets.current_default(conn, cohort_id)
+                try:
+                    saved = question_sets.save_default(
+                        conn,
+                        cohort_id,
+                        checked.clean,
+                        created_by=user.email,
+                        source="console",
+                        base_id=_parse_uuid(base_id) if base_id else None,
+                    )
+                except StaleQuestionSet as exc:
+                    errors, status_code = [str(exc)], 409
+                except InvalidQuestionSet as exc:
+                    errors = list(getattr(exc, "errors", None) or [str(exc)])
+
+    if saved is not None:
+        return _back_to(
+            f"/template/questions?cohort={quote(cohort_id)}",
+            "notice",
+            _saved_message(saved, before, warnings),
+        )
+
+    # A fresh connection: whatever the attempt above did is finished with, and
+    # the page is drawn from what is actually stored, plus what was posted.
+    with connection() as conn:
+        state = _default_editor_state(conn, cohort_id)
+    if content is not None:
+        state["content"] = content
+    if status_code == 409:
+        errors = errors + _overwrite_note(state.get("current"))
+    return _render_question_set(
+        request, state, status_code=status_code, errors=errors, warnings=warnings
+    )
+
+
+def _overwrite_note(current: dict[str, Any] | None) -> list[str]:
+    """What pressing Save again does after a stale refusal.
+
+    The redrawn page carries the newer version as its base, so a second save
+    goes through — but only after this has been read, which is the difference
+    between replacing somebody's edit and silently discarding it.
+    """
+    if not current:
+        return []
+    return [
+        f"What you posted is shown below, unsaved. Saving it again replaces "
+        f"{current['label']} — open the version history to see what that changed first."
+    ]
+
+
+def _saved_message(saved: Any, before: Any, warnings: list[str]) -> str:
+    if before is not None and str(before.question_set_id) == str(saved.question_set_id):
+        message = f"Nothing changed — version {saved.version} is still current."
+    else:
+        message = f"Saved as version {saved.version}."
+    if warnings:
+        message += " " + " ".join(warnings)
+    return message
+
+
+@app.post("/template/questions/seed")
+def template_questions_seed(
+    request: Request,
+    user: ConsoleUser = Depends(require_user),
+    cohort: str = Form(""),
+) -> Response:
+    """Load the approved week-1 exit ticket as the cohort's default."""
+    cohort_id = (cohort or "").strip()
+    destination = f"/template/questions?cohort={quote(cohort_id)}"
+    before: Any = None
+    try:
+        with connection() as conn:
+            if not _cohort_exists(conn, cohort_id):
+                return _not_found(request)
+            before = question_sets.current_default(conn, cohort_id)
+            saved = question_sets.seed_default_from_file(
+                conn, cohort_id, created_by=user.email
+            )
+    except CufaError as exc:
+        return _back_to(destination, "error", str(exc))
+    if before is not None and str(before.question_set_id) == str(saved.question_set_id):
+        message = f"The default is already the approved set (version {saved.version})."
+    else:
+        message = f"Loaded the approved exit ticket as version {saved.version}."
+    return _back_to(destination, "notice", message)
+
+
+@app.post("/template/questions/import")
+def template_questions_import(
+    request: Request,
+    user: ConsoleUser = Depends(require_user),
+    cohort: str = Form(""),
+    form: str = Form(""),
+) -> Response:
+    """Read the questions off an existing Google Form into a new default version.
+
+    The form itself is never used as a template or copied — only its questions
+    are read, through the same API the console already holds a grant for.
+    """
+    cohort_id = (cohort or "").strip()
+    destination = f"/template/questions?cohort={quote(cohort_id)}"
+    if not (form or "").strip():
+        return _back_to(destination, "error", "Paste the form’s edit link, or its id.")
+    try:
+        # The edit link or the bare id; a responder link is refused with the
+        # reason, since its id is one the API cannot open.
+        form_id = part_a_questions.form_id_from_url(form)
+    except ValueError as exc:
+        return _back_to(destination, "error", str(exc))
+    try:
+        with connection() as conn:
+            if not _cohort_exists(conn, cohort_id):
+                return _not_found(request)
+            _content, warnings = question_sets.import_from_form(
+                get_client(conn), conn, cohort_id, form_id, created_by=user.email
+            )
+            current = question_sets.current_default(conn, cohort_id)
+    except CufaError as exc:
+        return _back_to(destination, "error", str(exc))
+    except Exception as exc:  # a Google failure is still the user's to read
+        log.warning("question import failed error=%s", type(exc).__name__)
+        return _back_to(destination, "error", f"Reading that form failed: {exc}")
+    message = (
+        f"Imported the questions from {form_id} as version "
+        f"{current.version if current else '?'}. Check them below before any "
+        "session is provisioned."
+    )
+    if warnings:
+        message += " " + " ".join(str(w) for w in warnings)
+    return _back_to(destination, "notice", message)
+
+
+def _session_editor_state(conn: Any, row: dict[str, Any]) -> dict[str, Any]:
+    session_id = str(row["session_id"])
+    override = question_sets.current_override(conn, session_id)
+    base_default = question_sets.current_default(conn, row["cohort_id"])
+    locked, lock_reason = question_sets.is_locked(conn, session_id)
+    if override is not None:
+        content = override.content
+    elif base_default is not None:
+        content = base_default.content
+    else:
+        content = BLANK_QUESTION_SET
+    return {
+        "scope": "session",
+        "session": row,
+        "cohort_id": row["cohort_id"],
+        "override": _question_set_dict(override),
+        "base_default": _question_set_dict(base_default),
+        "content": content,
+        # The version the edit starts from, so a save made after someone else's
+        # is refused rather than silently replacing it: the override when there
+        # is one, else the default being customised.
+        "base_id": (
+            str(override.question_set_id)
+            if override
+            else str(base_default.question_set_id) if base_default else ""
+        ),
+        "history": [
+            _question_set_dict(q) for q in question_sets.history(conn, session_id=session_id)
+        ],
+        "locked": locked,
+        "lock_reason": lock_reason,
+        "provisioned": _question_set_dict(
+            question_sets.provisioned_for_session(conn, session_id)
+        ),
+        # What the placeholders will be filled with on this session's form.
+        "placeholders": {
+            "lesson": "" if row.get("week_index") is None else str(row["week_index"]),
+            "session_title": row["title"],
+        },
+        "action": f"/sessions/{session_id}/questions",
+        "revert_action": f"/sessions/{session_id}/questions/revert",
+        "defaults_url": f"/template/questions?cohort={quote(str(row['cohort_id']))}",
+    }
+
+
+@app.get("/sessions/{session_id}/questions", response_class=HTMLResponse)
+def session_questions(
+    request: Request,
+    session_id: str,
+    user: ConsoleUser = Depends(require_user),
+    notice: str | None = None,
+    error: str | None = None,
+) -> Response:
+    parsed = _parse_uuid(session_id)
+    if parsed is None:
+        return _not_found(request)
+    with connection() as conn:
+        row = get_session(conn, parsed)
+        if row is None:
+            return _not_found(request)
+        state = _session_editor_state(conn, row)
+    return _render_question_set(request, state, notice=notice, error=error)
+
+
+@app.post("/sessions/{session_id}/questions")
+def session_questions_save(
+    request: Request,
+    session_id: str,
+    user: ConsoleUser = Depends(require_user),
+    questions_json: str = Form(""),
+    base_id: str = Form(""),
+) -> Response:
+    parsed = _parse_uuid(session_id)
+    if parsed is None:
+        return _not_found(request)
+    content, errors = _read_questions_json(questions_json)
+    warnings: list[str] = []
+    status_code = 400
+    message: str | None = None
+
+    with connection() as conn:
+        row = get_session(conn, parsed)
+        if row is None:
+            return _not_found(request)
+        if content is not None:
+            checked = part_a_questions.validate(content)
+            errors, warnings = list(checked.errors), list(checked.warnings)
+            if not errors:
+                before = question_sets.current_override(conn, parsed)
+                default = question_sets.current_default(conn, row["cohort_id"])
+                try:
+                    if (
+                        before is None
+                        and default is not None
+                        and part_a_questions.content_sha256(checked.clean)
+                        == default.content_sha256
+                    ):
+                        # Saving the default unchanged would pin this session to
+                        # a copy of it, and later edits to the default would
+                        # silently stop reaching it.
+                        message = (
+                            "Nothing changed — this session still follows the "
+                            f"cohort default (version {default.version})."
+                        )
+                    else:
+                        saved = question_sets.save_override(
+                            conn,
+                            parsed,
+                            checked.clean,
+                            created_by=user.email,
+                            source="console",
+                            base_id=_parse_uuid(base_id) if base_id else None,
+                        )
+                        message = _saved_message(saved, before, warnings)
+                        if before is None:
+                            message = (
+                                f"This session now has its own questions (version "
+                                f"{saved.version}). Edits to the cohort default no "
+                                "longer reach it until you revert."
+                            ) + ("" if not warnings else " " + " ".join(warnings))
+                except QuestionsLocked as exc:
+                    errors, status_code = [str(exc)], 409
+                except StaleQuestionSet as exc:
+                    errors, status_code = [str(exc)], 409
+                except InvalidQuestionSet as exc:
+                    errors = list(getattr(exc, "errors", None) or [str(exc)])
+
+    if message is not None:
+        return _back_to(f"/sessions/{parsed}/questions", "notice", message)
+
+    with connection() as conn:
+        row = get_session(conn, parsed)
+        if row is None:
+            return _not_found(request)
+        state = _session_editor_state(conn, row)
+    if content is not None:
+        state["content"] = content
+    if status_code == 409 and not state["locked"]:
+        errors = errors + _overwrite_note(state.get("override") or state.get("base_default"))
+    return _render_question_set(
+        request, state, status_code=status_code, errors=errors, warnings=warnings
+    )
+
+
+@app.post("/sessions/{session_id}/questions/revert")
+def session_questions_revert(
+    request: Request,
+    session_id: str,
+    user: ConsoleUser = Depends(require_user),
+    return_to: str = Form("editor"),
+) -> Response:
+    """Drop this session's own questions; it follows the cohort default again."""
+    parsed = _parse_uuid(session_id)
+    if parsed is None:
+        return _not_found(request)
+    destination = (
+        f"/sessions/{parsed}" if return_to == "detail" else f"/sessions/{parsed}/questions"
+    )
+    try:
+        with connection() as conn:
+            row = get_session(conn, parsed)
+            if row is None:
+                return _not_found(request)
+            question_sets.revert_override(conn, parsed, by=user.email)
+            default = question_sets.current_default(conn, row["cohort_id"])
+    except CufaError as exc:
+        # QuestionsLocked among them: a published form keeps its questions.
+        return _back_to(destination, "error", str(exc))
+    message = "Reverted: this session follows the cohort default again"
+    message += f" (version {default.version})." if default else ", but the cohort has none yet."
+    return _back_to(destination, "notice", message)
 
 
 # --------------------------------------------------------------------------
@@ -1133,9 +1661,9 @@ def rotation_screen(
 #: the zone. Offered for download so the first attempt is not a guess.
 SESSION_TEMPLATE_CSV = (
     "cohort_id,title,scheduled_at_local,timezone,duration_minutes,"
-    "grace_minutes,passphrase,week_index,teacher_question,zoom_url,agenda\n"
+    "grace_minutes,week_index,teacher_question,zoom_url,agenda\n"
     "2026-spring,Week 1 — What is civic innovation?,2026-09-15 19:00,"
-    "America/New_York,60,15,,1,,,\n"
+    "America/New_York,60,15,1,,,\n"
 )
 
 
@@ -1199,6 +1727,9 @@ def sessions_screen(
     with connection() as conn:
         cohorts = _cohorts(conn)
         rows = list_sessions(conn, cohort or None)
+        questions = _part_a_scopes(conn, cohort or None)
+    for row in rows:
+        row["part_a_questions"] = questions.get(str(row["session_id"]))
     return render_spa(
         request,
         "sessions",
@@ -1211,6 +1742,55 @@ def sessions_screen(
     )
 
 
+def _part_a_scopes(conn: Any, cohort_id: str | None) -> dict[str, dict[str, Any]]:
+    """Which questions each session's Part A asks: "default v3" or "custom v1".
+
+    A session whose form is already built reports the set it was built from,
+    since that is what fellows are answering; any other reports what
+    provisioning would use now. One query for the list rather than a lookup per
+    row.
+    """
+    rows = fetch_all(
+        conn,
+        """
+        select s.session_id,
+               o.version as override_version,
+               d.version as default_version,
+               p.version as provisioned_version,
+               (p.session_id is not null) as provisioned_custom,
+               (sf.question_set_id is not null) as provisioned
+          from "session" s
+          left join part_a_question_set o
+                 on o.session_id = s.session_id and o.superseded_at is null
+          left join part_a_question_set d
+                 on d.cohort_id = s.cohort_id and d.session_id is null
+                and d.superseded_at is null
+          left join session_form sf
+                 on sf.session_id = s.session_id and sf.part = 'a'
+          left join part_a_question_set p on p.question_set_id = sf.question_set_id
+         where (%s::text is null or s.cohort_id = %s::text)
+        """,
+        (cohort_id, cohort_id),
+    )
+    scopes: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if row["provisioned"]:
+            scope = "custom" if row["provisioned_custom"] else "default"
+            version = row["provisioned_version"]
+        elif row["override_version"] is not None:
+            scope, version = "custom", row["override_version"]
+        elif row["default_version"] is not None:
+            scope, version = "default", row["default_version"]
+        else:
+            scope, version = None, None
+        scopes[str(row["session_id"])] = {
+            "scope": scope,
+            "version": version,
+            "provisioned": bool(row["provisioned"]),
+        }
+    return scopes
+
+
 def _blank_form(cohorts: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "title": "",
@@ -1218,7 +1798,6 @@ def _blank_form(cohorts: list[dict[str, Any]]) -> dict[str, Any]:
         "timezone": "",
         "duration_minutes": "60",
         "grace_minutes": "15",
-        "passphrase": "",
         "cohort_id": cohorts[0]["cohort_id"] if cohorts else "",
         "week_index": "",
         "teacher_question": "",
@@ -1276,9 +1855,7 @@ def session_new_form(request: Request, user: ConsoleUser = Depends(require_user)
         action="/sessions/new",
         values=values,
         cohorts=cohorts,
-        guidance=GUIDANCE,
         errors=[],
-        reuse_warnings=[],
         rotation=_rotation_hint(values["week_index"], values["teacher_question"]),
     )
 
@@ -1290,7 +1867,6 @@ def _read_session_form(
     timezone: str,
     duration_minutes: str,
     grace_minutes: str,
-    passphrase: str,
     cohort_id: str,
     week_index: str = "",
     teacher_question: str = "",
@@ -1305,7 +1881,6 @@ def _read_session_form(
         "timezone": timezone,
         "duration_minutes": duration_minutes,
         "grace_minutes": grace_minutes,
-        "passphrase": passphrase,
         "cohort_id": cohort_id,
         "week_index": week_index,
         "teacher_question": teacher_question,
@@ -1379,7 +1954,6 @@ def _read_session_form(
             timezone=zone_name,
             duration_minutes=duration,
             grace_minutes=grace,
-            passphrase=passphrase.strip() or None,
             week_index=week,
             # Saved even on a week that does not currently need it. Rotation
             # schedules get edited, and a question typed once should not be lost
@@ -1403,14 +1977,12 @@ def session_create(
     timezone: str = Form(""),
     duration_minutes: str = Form("60"),
     grace_minutes: str = Form("15"),
-    passphrase: str = Form(""),
     cohort_id: str = Form(""),
     week_index: str = Form(""),
     teacher_question: str = Form(""),
     zoom_url: str = Form(""),
     agenda: str = Form(""),
     slack_channel_id: str = Form(""),
-    confirm_reuse: str = Form(""),
 ) -> Response:
     data, errors, values = _read_session_form(
         title=title,
@@ -1418,7 +1990,6 @@ def session_create(
         timezone=timezone,
         duration_minutes=duration_minutes,
         grace_minutes=grace_minutes,
-        passphrase=passphrase,
         cohort_id=cohort_id,
         week_index=week_index,
         teacher_question=teacher_question,
@@ -1429,16 +2000,12 @@ def session_create(
 
     with connection() as conn:
         cohorts = _cohorts(conn)
-        warnings: list[str] = []
         if data is not None:
-            if not confirm_reuse:
-                warnings = [w.message() for w in check_reuse(conn, data.cohort_id, data.passphrase)]
-            if not warnings:
-                session_id = create_session(conn, data)
-                return RedirectResponse(
-                    f"/sessions/{session_id}?notice=" + quote("Session created."),
-                    status_code=303,
-                )
+            session_id = create_session(conn, data)
+            return RedirectResponse(
+                f"/sessions/{session_id}?notice=" + quote("Session created."),
+                status_code=303,
+            )
 
     return render_spa(
         request,
@@ -1449,9 +2016,7 @@ def session_create(
         action="/sessions/new",
         values=values,
         cohorts=cohorts,
-        guidance=GUIDANCE,
         errors=errors,
-        reuse_warnings=warnings,
         rotation=_rotation_hint(week_index, teacher_question),
     )
 
@@ -1482,7 +2047,6 @@ def session_edit_form(
             "timezone": row["timezone"],
             "duration_minutes": str(row["duration_minutes"]),
             "grace_minutes": str(row["grace_minutes"]),
-            "passphrase": row["passphrase"] or "",
             "cohort_id": row["cohort_id"],
             "week_index": "" if row["week_index"] is None else str(row["week_index"]),
             "teacher_question": row["teacher_question"] or "",
@@ -1491,9 +2055,7 @@ def session_edit_form(
             "slack_channel_id": row["slack_channel_id"] or "",
         },
         cohorts=cohorts,
-        guidance=GUIDANCE,
         errors=[],
-        reuse_warnings=[],
         session_id=parsed,
         rotation=_rotation_hint(
             "" if row["week_index"] is None else str(row["week_index"]),
@@ -1512,14 +2074,12 @@ def session_edit(
     timezone: str = Form(""),
     duration_minutes: str = Form("60"),
     grace_minutes: str = Form("15"),
-    passphrase: str = Form(""),
     cohort_id: str = Form(""),
     week_index: str = Form(""),
     teacher_question: str = Form(""),
     zoom_url: str = Form(""),
     agenda: str = Form(""),
     slack_channel_id: str = Form(""),
-    confirm_reuse: str = Form(""),
 ) -> Response:
     parsed = _parse_uuid(session_id)
     if parsed is None:
@@ -1531,7 +2091,6 @@ def session_edit(
         timezone=timezone,
         duration_minutes=duration_minutes,
         grace_minutes=grace_minutes,
-        passphrase=passphrase,
         cohort_id=cohort_id,
         week_index=week_index,
         teacher_question=teacher_question,
@@ -1542,20 +2101,11 @@ def session_edit(
 
     with connection() as conn:
         cohorts = _cohorts(conn)
-        warnings: list[str] = []
         if data is not None:
-            if not confirm_reuse:
-                warnings = [
-                    w.message()
-                    for w in check_reuse(
-                        conn, data.cohort_id, data.passphrase, exclude_session_id=parsed
-                    )
-                ]
-            if not warnings:
-                update_session(conn, parsed, data)
-                return RedirectResponse(
-                    f"/sessions/{parsed}?notice=" + quote("Session updated."), status_code=303
-                )
+            update_session(conn, parsed, data)
+            return RedirectResponse(
+                f"/sessions/{parsed}?notice=" + quote("Session updated."), status_code=303
+            )
 
     return render_spa(
         request,
@@ -1566,16 +2116,14 @@ def session_edit(
         action=f"/sessions/{parsed}/edit",
         values=values,
         cohorts=cohorts,
-        guidance=GUIDANCE,
         errors=errors,
-        reuse_warnings=warnings,
         session_id=parsed,
         rotation=_rotation_hint(week_index, teacher_question),
     )
 
 
 # --------------------------------------------------------------------------
-# screen 4 — session detail (the mid-lesson view)
+# screen 4 — session detail (the view open while a lesson runs)
 # --------------------------------------------------------------------------
 
 
@@ -1631,6 +2179,59 @@ def _part_b_context(conn: Any, row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _part_a_context(conn: Any, row: dict[str, Any]) -> dict[str, Any]:
+    """The Part A questions card: what this session will ask, and whether it can change.
+
+    The questions are shown filled in for this session — "Lesson 3", not
+    "Lesson {lesson}" — because that is what a fellow will read, and a
+    placeholder that renders oddly is easiest to catch here.
+    """
+    session_id = str(row["session_id"])
+    scope: str | None = None
+    resolved: Any = None
+    missing: str | None = None
+    try:
+        scope, resolved = question_sets.resolve_for_session(conn, session_id)
+    except QuestionSetMissing as exc:
+        missing = str(exc)
+    locked, lock_reason = question_sets.is_locked(conn, session_id)
+    provisioned = _question_set_dict(question_sets.provisioned_for_session(conn, session_id))
+
+    rendered: dict[str, Any] | None = None
+    if resolved is not None:
+        rendered = part_a_questions.render(
+            resolved.content, week_index=row.get("week_index"), session_title=row["title"]
+        )
+
+    form_id = row.get("form_id")
+    return {
+        "a_questions": {
+            "scope": scope,
+            "set": _question_set_dict(resolved),
+            "rendered": rendered,
+            "missing": missing,
+            "locked": locked,
+            "lock_reason": lock_reason,
+            "provisioned": provisioned,
+            # The form was built from one version and the session now resolves
+            # to another. Only possible before publishing; said out loud so a
+            # re-provision is a decision rather than a surprise.
+            "changed_since_provisioning": bool(
+                provisioned
+                and resolved is not None
+                and provisioned["question_set_id"] != str(resolved.question_set_id)
+            ),
+            "edit_url": f"/sessions/{session_id}/questions",
+            "revert_action": f"/sessions/{session_id}/questions/revert",
+            "defaults_url": f"/template/questions?cohort={quote(str(row['cohort_id']))}",
+        },
+        "a_question_map": question_sets.form_map(conn, form_id) if form_id else [],
+        # Provisioning refuses without a question set; the button says so first.
+        "a_blocked": resolved is None,
+        "question_types": part_a_questions.QUESTION_TYPES,
+    }
+
+
 def _detail_context(conn: Any, session_id: str) -> dict[str, Any] | None:
     row = get_session(conn, session_id)
     if row is None:
@@ -1652,7 +2253,8 @@ def _detail_context(conn: Any, session_id: str) -> dict[str, Any] | None:
         "form_url": form_url,
         "qr": qr_markup,
         "qr_error": qr_error,
-        "accessibility_reminder": ACCESSIBILITY_REMINDER,
+        "link_reminder": LINK_REMINDER,
+        **_part_a_context(conn, row),
         # Only present once a transcript has been ingested; the screen decides
         # what to say when it is empty, because "nobody spoke" and "no
         # transcript yet" are different facts and must not look the same.
@@ -1694,6 +2296,7 @@ def session_detail(
     session_id: str,
     user: ConsoleUser = Depends(require_user),
     notice: str | None = None,
+    error: str | None = None,
 ) -> Response:
     parsed = _parse_uuid(session_id)
     if parsed is None:
@@ -1703,7 +2306,12 @@ def session_detail(
     if context is None:
         return _not_found(request)
     return render_spa(
-        request, "sessionDetail", title=context["session"]["title"], notice=notice, **context
+        request,
+        "sessionDetail",
+        title=context["session"]["title"],
+        notice=notice,
+        error=error,
+        **context,
     )
 
 
@@ -1976,19 +2584,89 @@ def session_pull_json(
     )
 
 
-@app.get("/api/passphrase/suggest")
-def passphrase_suggest(
-    request: Request, user: ConsoleUser = Depends(require_user)
-) -> Response:
-    """One word from the curated list — no homophones, no near-homophones."""
-    return JSONResponse({"passphrase": suggest(1)[0], "guidance": GUIDANCE})
-
-
 # --------------------------------------------------------------------------
 # screen 5 — review
 # --------------------------------------------------------------------------
 
-_REVIEW_TABS = ("needs_review", "ai", "identities", "straightlining")
+_REVIEW_TABS = ("needs_review", "outside_window", "ai", "identities", "straightlining")
+
+#: The rules that decide "submitted, but not during the lesson".
+OUTSIDE_WINDOW_RULES = ("outside_session_window", "outside_all_windows")
+
+
+def _outside_window(conn: Any, cohort_id: str | None, limit: int = 200) -> list[dict[str, Any]]:
+    """Check-ins the rules recorded as not attended because of when they arrived.
+
+    Read off the current decision, so a human override takes a row off this
+    list: once a person has looked, it is no longer the rule's call.
+    """
+    return fetch_all(
+        conn,
+        """
+        select * from v_checkin_resolved
+         where rule_name = any(%s)
+           and (%s::text is null or cohort_id = %s::text)
+         order by submitted_at_utc desc
+         limit %s
+        """,
+        (list(OUTSIDE_WINDOW_RULES), cohort_id, cohort_id, limit),
+    )
+
+
+def _has_ai_decisions(conn: Any) -> bool:
+    """Tier 2 is retired; its tab stays only while its old decisions exist."""
+    row = fetch_one(
+        conn, "select exists(select 1 from attendance_decision where decided_by = 'ai') as any"
+    )
+    return bool(row and row["any"])
+
+
+def _with_timing(conn: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Add what a reviewer judges by now: when it arrived, and how much was answered.
+
+    ``timing`` is minutes before the window opened or after it closed, never a
+    verdict. ``answer_total`` is the number of questions on the form the
+    check-in came from, so "answered 3 of 8" can be shown — a count, not a
+    grade, and never a reason on its own.
+    """
+    form_ids = sorted({str(r["form_id"]) for r in rows if r.get("form_id")})
+    totals: dict[str, int] = {}
+    if form_ids:
+        for row in fetch_all(
+            conn,
+            """
+            select form_id, count(*) as total
+              from part_a_form_question
+             where form_id = any(%s)
+             group by form_id
+            """,
+            (form_ids,),
+        ):
+            totals[str(row["form_id"])] = int(row["total"])
+
+    for row in rows:
+        start, end, at = (
+            row.get("window_start_utc"),
+            row.get("window_end_utc"),
+            row.get("submitted_at_utc"),
+        )
+        timing: dict[str, Any] = {"relation": None, "minutes": None}
+        if start is not None and end is not None and at is not None:
+            if at < start:
+                timing = {"relation": "before", "minutes": _minutes(start - at)}
+            elif at > end:
+                timing = {"relation": "after", "minutes": _minutes(at - end)}
+            else:
+                timing = {"relation": "inside", "minutes": 0}
+        row["timing"] = timing
+        row["answer_total"] = totals.get(str(row.get("form_id") or ""))
+    return rows
+
+
+def _minutes(delta: Any) -> int:
+    """Whole minutes, rounded up: 20 seconds late is "1 min", not "0 min"."""
+    seconds = max(0.0, delta.total_seconds())
+    return int(-(-seconds // 60))
 
 
 @app.get("/review", response_class=HTMLResponse)
@@ -2004,9 +2682,14 @@ def review_screen(
 
     with connection() as conn:
         cohorts = _cohorts(conn)
+        has_ai = _has_ai_decisions(conn)
+        if tab == "ai" and not has_ai:
+            tab = "needs_review"
         rows: list[dict[str, Any]]
         if tab == "needs_review":
-            rows = needs_review_queue(conn, cohort or None)
+            rows = _with_timing(conn, needs_review_queue(conn, cohort or None))
+        elif tab == "outside_window":
+            rows = _with_timing(conn, _outside_window(conn, cohort or None))
         elif tab == "ai":
             rows = ai_decisions(conn, cohort or None)
         elif tab == "straightlining":
@@ -2017,20 +2700,13 @@ def review_screen(
         else:
             rows = unresolved_identities(conn, cohort or None)
 
-        # The expected word is what makes a needs_review row judgeable; it lives
-        # on the session, not on the observation.
-        expected = {
-            str(row["session_id"]): row["passphrase"]
-            for row in list_sessions(conn, cohort or None)
-        }
-
     return render_spa(
         request,
         "review",
         title="Review",
         tab=tab,
         rows=rows,
-        expected=expected,
+        has_ai_decisions=has_ai,
         cohorts=cohorts,
         selected_cohort=cohort or "",
         straightline_note=STRAIGHTLINE_NOTE,
@@ -2072,6 +2748,114 @@ def review_decide(
 # --------------------------------------------------------------------------
 
 
+#: Question types whose answers are counted per value rather than listed.
+_COUNTED_TYPES = frozenset({"multiple_choice", "checkboxes", "dropdown", "linear_scale"})
+
+
+def _part_a_answers(conn: Any, row: dict[str, Any]) -> dict[str, Any]:
+    """What this session's exit ticket collected, question by question.
+
+    Counts for choices and scales, the words themselves for text — and nothing
+    attached to a name. The exit ticket is how attendance is recorded; its
+    answers are read to plan the next lesson, never to grade the person who
+    wrote them. Answers are resolved through the question map when this is
+    read, so an answer to a question the map does not know is listed under its
+    own title rather than dropped.
+    """
+    form_id = row.get("form_id")
+    session_id = str(row["session_id"])
+    unanswerable = fetch_one(
+        conn,
+        """
+        select count(*) filter (where form_id is null) as without_answers,
+               count(*) as total
+          from checkin
+         where session_id = %s
+        """,
+        (session_id,),
+    ) or {}
+    result: dict[str, Any] = {
+        "form_id": form_id,
+        "responses": 0,
+        "questions": [],
+        "without_answers": int(unanswerable.get("without_answers") or 0),
+    }
+    if not form_id:
+        return result
+
+    questions: dict[str, dict[str, Any]] = {}
+    for entry in question_sets.form_map(conn, form_id):
+        spec = entry.get("spec") or {}
+        qtype = entry.get("kind") or spec.get("type")
+        question = {
+            "question_id": entry["question_id"],
+            "key": entry["question_key"],
+            "title": entry["question_text"],
+            "type": qtype,
+            "counted": qtype in _COUNTED_TYPES,
+            "answered": 0,
+            "counts": {},
+            "answers": [],
+        }
+        if qtype == "linear_scale":
+            scale = spec.get("scale") or {}
+            low, high = int(scale.get("low", 1)), int(scale.get("high", 5))
+            question["counts"] = {str(v): 0 for v in range(low, high + 1)}
+            question["low_label"] = scale.get("low_label") or ""
+            question["high_label"] = scale.get("high_label") or ""
+        elif qtype in _COUNTED_TYPES:
+            question["counts"] = {str(o): 0 for o in spec.get("options") or []}
+        questions[entry["question_id"]] = question
+
+    answers = fetch_all(
+        conn,
+        """
+        select a.checkin_id, a.question_id, a.question_key, a.question_text,
+               a.answer_values, a.has_content
+          from v_checkin_answer a
+          join checkin c on c.checkin_id = a.checkin_id
+         where a.session_id = %s and a.form_id = %s
+         order by c.submitted_at_utc, a.item_index nulls last
+        """,
+        (session_id, form_id),
+    )
+    responders: set[str] = set()
+    for answer in answers:
+        responders.add(str(answer["checkin_id"]))
+        question = questions.get(answer["question_id"])
+        if question is None:
+            # Not on the map: the form was changed by hand, or the map is gone.
+            question = questions.setdefault(
+                answer["question_id"],
+                {
+                    "question_id": answer["question_id"],
+                    "key": None,
+                    "title": answer["question_text"] or "(a question not on the map)",
+                    "type": None,
+                    "counted": False,
+                    "answered": 0,
+                    "counts": {},
+                    "answers": [],
+                },
+            )
+        if not answer["has_content"]:
+            continue
+        question["answered"] += 1
+        values = [v for v in (answer["answer_values"] or []) if str(v).strip()]
+        if question["counted"]:
+            for value in values:
+                question["counts"][value] = question["counts"].get(value, 0) + 1
+        else:
+            question["answers"].append(" · ".join(values))
+
+    result["responses"] = len(responders)
+    result["questions"] = [
+        {**q, "counts": [{"value": k, "count": v} for k, v in q["counts"].items()]}
+        for q in questions.values()
+    ]
+    return result
+
+
 @app.get("/sessions/{session_id}/responses", response_class=HTMLResponse)
 def session_responses(
     request: Request,
@@ -2079,7 +2863,7 @@ def session_responses(
     user: ConsoleUser = Depends(require_user),
     notice: str | None = None,
 ) -> Response:
-    """What the end-of-session form collected: distribution, takeaways, themes.
+    """What the session's forms collected: the exit ticket, then Part B.
 
     Deliberately three separate blocks rather than one table per fellow. A table
     with a name, a score and a sentence on each row reads as a scorecard, which
@@ -2109,6 +2893,7 @@ def session_responses(
         )
         themes = current_themes(conn, parsed)
         question_map = map_rows(conn, row["b_form_id"]) if row.get("b_form_id") else []
+        part_a = _part_a_answers(conn, row)
 
     return render_spa(
         request,
@@ -2120,6 +2905,7 @@ def session_responses(
         responses=responses,
         themes=themes,
         question_map=question_map,
+        part_a=part_a,
         survey_rationale=SURVEY_LENGTH_RATIONALE,
         notice=notice,
     )

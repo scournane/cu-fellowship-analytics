@@ -24,6 +24,7 @@ from cufa.errors import FormUnreachable
 from cufa.google.base import (
     EMAIL_COLLECTION_VERIFIED,
     FormDefinition,
+    FormItem,
     FormRef,
     FormState,
     GoogleApiError,
@@ -98,17 +99,46 @@ class _RealShapedClient:
         )
 
     def get_form(self, form_id: str) -> FormDefinition:
-        self._require(form_id)
-        return FormDefinition(form_id=form_id, title="", items=())
+        form = self._require(form_id)
+        items = tuple(
+            FormItem(
+                item_id=item["itemId"],
+                question_id=item["questionItem"]["question"]["questionId"],
+                title=item.get("title", ""),
+                index=index,
+                kind="text",
+            )
+            for index, item in enumerate(form["items"])
+            if "questionItem" in item
+        )
+        return FormDefinition(
+            form_id=form_id, title=form["title"], items=items, raw={"items": form["items"]}
+        )
 
     def copy_form(self, source_form_id: str, new_title: str) -> FormRef:
         source = self._require(source_form_id)
         form_id = self._mint()
-        self.forms[form_id] = dict(source, title=new_title, published=False)
+        self.forms[form_id] = dict(
+            source, title=new_title, published=False, items=list(source["items"])
+        )
         return FormRef(form_id, f"https://forms.gle/{form_id}", f"https://x/{form_id}/edit")
 
     def batch_update(self, form_id: str, requests: list) -> dict:
-        self._require(form_id)
+        """Just enough of Part A's rebuild — delete and create — to read back."""
+        form = self._require(form_id)
+        for request in requests:
+            if "deleteItem" in request:
+                form["items"].pop(request["deleteItem"]["location"]["index"])
+            elif "createItem" in request:
+                body = dict(request["createItem"]["item"], itemId=f"i{self._next}")
+                if "questionItem" in body:
+                    body["questionItem"] = {
+                        "question": dict(
+                            body["questionItem"]["question"], questionId=f"q{self._next}"
+                        )
+                    }
+                self._next += 1
+                form["items"].insert(request["createItem"]["location"]["index"], body)
         return {"form": {"formId": form_id}}
 
     def set_publish_settings(self, form_id: str, **kwargs) -> dict:

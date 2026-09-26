@@ -21,12 +21,20 @@ back to responder-input fails loudly instead of quietly producing forms that
 collect nothing.
 
 **There is one template per part, and each needs its own step 3.** Part A is the
-mid-session passphrase check-in; Part B is the end-of-session check-in. Email
-collection is a property of a *form*, and it is carried by a Drive copy, not by
-having been set on some other form in the same account — so verifying Part A's
-template says nothing at all about Part B's. Two templates means the manual step
-happens twice, once, which is the honest cost of the trap rather than a
-shortcut around it.
+exit ticket; Part B is the end-of-session check-in. Email collection is a
+property of a *form*, and it is carried by a Drive copy, not by having been set
+on some other form in the same account — so verifying Part A's template says
+nothing at all about Part B's. Two templates means the manual step happens
+twice, once, which is the honest cost of the trap rather than a shortcut around
+it.
+
+**Part A's template carries no questions.** Its questions are staff-edited data
+(``question_sets``) that can differ per session, so every session's copy is
+rebuilt from its own set at provisioning time — title, description and every
+item — and the template exists only to carry the Verified setting across the
+copy. A template made before this change still has the old passphrase item on
+it; that is harmless, because provisioning deletes every item on a copy before
+writing the session's questions.
 """
 
 from __future__ import annotations
@@ -40,10 +48,9 @@ import psycopg
 from . import form_content_b
 from .db import execute, fetch_all, fetch_one
 from .errors import EmailCollectionRejected, FormUnreachable, TemplateNotVerified
-from .form_content import HEADER_NOTICE, QUESTION_HELP, TEMPLATE_TITLE
+from .form_content import HEADER_NOTICE, TEMPLATE_TITLE
 from .google.base import (
     EMAIL_COLLECTION_VERIFIED,
-    PASSPHRASE_QUESTION_TITLE,
     FormsClient,
     FormState,
     GoogleApiError,
@@ -58,7 +65,7 @@ PART_B = "b"
 PARTS: tuple[str, ...] = (PART_A, PART_B)
 
 PART_LABELS = {
-    PART_A: "Part A — mid-session passphrase check-in",
+    PART_A: "Part A — exit ticket",
     PART_B: "Part B — end-of-session check-in",
 }
 
@@ -82,6 +89,8 @@ def validate_part(part: str) -> str:
 def _template_content(part: str) -> tuple[str, str, list[dict[str, Any]]]:
     """Title, description and the ``createItem`` requests for one part's template.
 
+    Part A's template has none: see the module docstring.
+
     Part B's template carries the four fields that are always present, and
     **not** the help checkbox. The checkbox's presence is decided per form at
     provisioning time from ``config/help_routing.json``, because a recipient can
@@ -94,27 +103,7 @@ def _template_content(part: str) -> tuple[str, str, list[dict[str, Any]]]:
     id.
     """
     if part == PART_A:
-        return (
-            TEMPLATE_TITLE,
-            HEADER_NOTICE,
-            [
-                {
-                    "createItem": {
-                        "item": {
-                            "title": PASSPHRASE_QUESTION_TITLE,
-                            "description": QUESTION_HELP,
-                            "questionItem": {
-                                "question": {
-                                    "required": True,
-                                    "textQuestion": {"paragraph": False},
-                                }
-                            },
-                        },
-                        "location": {"index": 0},
-                    }
-                }
-            ],
-        )
+        return TEMPLATE_TITLE, HEADER_NOTICE, []
 
     return (
         form_content_b.TEMPLATE_TITLE,

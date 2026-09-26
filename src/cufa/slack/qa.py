@@ -28,7 +28,7 @@ Neither is possible without the words. So the text of these channels — and
 only these — lives in ``slack_qa_question`` / ``slack_qa_answer`` (ADR-032).
 ``slack_event.text`` stays NULL for them like everywhere else.
 
-Two tiers, same shape as passphrase adjudication: everything token overlap can
+Two tiers: everything token overlap can
 decide, it decides; the model is asked only about the candidates overlap could
 not settle, and only when a key is configured.
 """
@@ -726,8 +726,8 @@ def _is_rate_limit(exc: Exception) -> bool:
 
 class _GeminiJson:
     """One structured-output call with backoff on 429. Same conventions as
-    ``adjudicate.ai`` and ``themes``: temperature 0, a response schema, and
-    ``AiUnavailable`` for every failure so callers degrade instead of crash."""
+    ``themes``: temperature 0, a response schema, and ``AiUnavailable`` for
+    every failure so callers degrade instead of crash."""
 
     prompt_version = PROMPT_VERSION
 

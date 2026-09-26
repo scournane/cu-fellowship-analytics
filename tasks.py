@@ -35,6 +35,11 @@ FRONTEND = ROOT / "frontend"
 BUNDLE = ROOT / "src" / "cufa" / "console" / "static" / "app" / "console.js"
 
 COHORT = os.environ.get("COHORT", "demo")
+# Session 3's exit ticket is customised by the demo. The two files are written
+# by scripts/generate_fixtures.py, which owns the week number too.
+OVERRIDE_WEEK = 3
+OVERRIDE_FILE = "part_a_session3_override.json"
+LATE_EDIT_FILE = "part_a_session3_late_edit.json"
 #: The demo's staff address. Defined in cufa.slack.fake, which tasks.py cannot
 #: import before `setup` has run, so it is repeated here and asserted equal by
 #: the acceptance checks.
@@ -539,9 +544,20 @@ def task_demo() -> int:
     state = Path(DEMO_ENV["CUFA_FAKE_GOOGLE_STATE"])
     state.unlink(missing_ok=True)
 
-    banner("1. roster and sessions")
+    banner("1. roster, sessions, and the default exit-ticket questions")
     cufa("load-roster", "--csv", str(FIXTURES / "roster.csv"), "--cohort", COHORT)
     cufa("load-sessions", "--csv", str(FIXTURES / "sessions.csv"))
+    # The cohort default is the week-1 exit ticket, from
+    # config/part_a_default_questions.json.
+    cufa("questions", "seed-default", "--cohort", COHORT)
+    print("\n-- seeding the same file again writes no new version -----------------")
+    cufa("questions", "seed-default", "--cohort", COHORT)
+
+    banner("1b. customise Session 3's exit ticket before it is published")
+    week3 = _session_for_week(OVERRIDE_WEEK)
+    print("one question added (checkboxes, with Other), one removed, one moved:")
+    cufa("questions", "set", "--session", week3, "--file", str(FIXTURES / OVERRIDE_FILE))
+    cufa("questions", "show", "--session", week3)
 
     banner("2. one-time Google setup — once per PART, not once overall")
     for part in ("a", "b"):
@@ -578,6 +594,23 @@ def task_demo() -> int:
     cufa("provision", "--cohort", COHORT, "--part", "a")
     cufa("provision", "--cohort", COHORT, "--part", "b")
 
+    print("\n-- a published session's questions are LOCKED -------------------------")
+    locked = run([venv_python(), "-m", "cufa", "questions", "set", "--session", week3,
+                  "--file", str(FIXTURES / LATE_EDIT_FILE)], check=False, capture=True)
+    said = f"{locked.stdout or ''}{locked.stderr or ''}"
+    if locked.returncode == 0:
+        raise TaskError(
+            "UNEXPECTED: Session 3's questions changed after its form was published. "
+            "One session's answers would then be split across two question sets, "
+            "with nothing to say which fellow saw which."
+        )
+    if "lock" not in said.lower():
+        # Refused, but not for the reason being demonstrated — a crash would
+        # otherwise pass for the lock working.
+        raise TaskError(f"`cufa questions set` failed, but not because of the lock:\n{said}")
+    print("  " + said.strip().splitlines()[-1])
+    print("refused, as designed: the form is live, so its questions stay as published")
+
     banner("5. the lesson happens")
     script("seed_fake_google.py", "--seed-responses", "--fixtures", str(FIXTURES))
     script("seed_fake_google.py", "--announce", "--fixtures", str(FIXTURES))
@@ -611,8 +644,8 @@ def task_demo() -> int:
     banner("9. pull Part B responses")
     cufa("pull", "--cohort", COHORT, "--part", "b")
 
-    banner("10. adjudicate Part A (tier 1 only; tier 2 skipped)")
-    cufa("adjudicate", "--cohort", COHORT, "--no-ai")
+    banner("10. adjudicate Part A (verified address + submit time inside the window)")
+    cufa("adjudicate", "--cohort", COHORT)
 
     banner("11. muddiest-point themes (degrades cleanly with no GEMINI_API_KEY)")
     for week in (2, 5, 8):
@@ -679,34 +712,35 @@ def _session_for_title(title: str) -> str:
 
 def task_demo_again() -> int:
     """Re-run the pipeline over the SAME database, to show idempotency."""
+    cufa("questions", "seed-default", "--cohort", COHORT)
     cufa("pull", "--cohort", COHORT, "--part", "a")
     cufa("pull", "--cohort", COHORT, "--part", "b")
     cufa("ingest", "part-a", "--csv", str(FIXTURES / "manual_form_export.csv"),
          "--cohort", COHORT, "--sheet-timezone", SHEET_TZ)
-    cufa("adjudicate", "--cohort", COHORT, "--no-ai")
+    cufa("adjudicate", "--cohort", COHORT)
     cufa("report", "--cohort", COHORT)
     script("verify_demo.py", "--cohort", COHORT, "--fixtures", str(FIXTURES))
     return 0
 
 
 def task_demo_ai() -> int:
+    """The demo, then the one place a model is used: muddiest-point themes.
+
+    Attendance never reaches a model. It is decided by rules over the verified
+    address and the submit time (ADR-040), so there is nothing for a key to
+    change there.
+    """
     if not os.environ.get("GEMINI_API_KEY"):
         print(
-            "\nSkipping: GEMINI_API_KEY is not set, so tier 2 cannot run.\n"
+            "\nSkipping: GEMINI_API_KEY is not set, so theme clustering cannot run live.\n"
             "\n"
             "Set it in .env (see .env.example) and re-run.\n"
             "Nothing else depends on it — the plain demo is the offline path, and\n"
-            "there mismatch cases land in needs_review with\n"
-            "rule_name='ai_unavailable' rather than being guessed at.\n"
+            "there `cufa themes` reports no themes with a clear message instead.\n"
         )
         return 0
 
     task_demo()
-    banner("tier 2 live (only mismatch-in-window cases reach Gemini)")
-    cufa("adjudicate", "--cohort", COHORT)
-    banner("second pass: every pair is cached, so zero API calls")
-    cufa("adjudicate", "--cohort", COHORT)
-    cufa("review", "--status", "ai", "--cohort", COHORT)
     banner("Part B: muddiest-point clustering, live")
     for week in (2, 5, 8):
         cufa("themes", "--session", _session_for_week(week), "--regenerate")
@@ -1159,7 +1193,7 @@ HELP = """Civic Innovators check-in — Parts A and B
   python tasks.py setup         install dependencies, init Supabase, check Docker
   python tasks.py demo          both parts end to end on synthetic data, no Google, no Gemini
   python tasks.py demo-again    re-run over the same database, to show idempotency
-  python tasks.py demo-ai       same as demo, with tier 2 live (needs GEMINI_API_KEY)
+  python tasks.py demo-ai       same as demo, then muddiest-point themes live (needs GEMINI_API_KEY)
   python tasks.py demo-console  demo data plus the web console
   python tasks.py report        regenerate out/report.html — the self-contained HTML report
   python tasks.py demo-slack    the Slack bot + a fake Slack workspace you drive from a browser

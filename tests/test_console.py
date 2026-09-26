@@ -47,6 +47,7 @@ from cufa.errors import DatabaseUnreachable  # noqa: E402
 from cufa.google.factory import set_fake_client  # noqa: E402
 from cufa.google.fake import FakeGoogleClient  # noqa: E402
 from cufa.provisioning import get_session_form  # noqa: E402
+from cufa import question_sets  # noqa: E402
 
 os.environ.setdefault("CUFA_ENCRYPTION_KEY", crypto.generate_key())
 reset_settings_cache()
@@ -86,6 +87,8 @@ def _reset_google_state() -> None:
     """
     fake_ids = "fake-form-%"
     with connection() as conn:
+        # The Part A question map is keyed by form id, and the fake reuses them.
+        execute(conn, "delete from part_a_form_question where form_id like %s", (fake_ids,))
         execute(
             conn,
             """
@@ -121,21 +124,51 @@ def verified_template(fake: FakeGoogleClient) -> FakeGoogleClient:
     return fake
 
 
-@pytest.fixture
-def cohort() -> str:
-    """A cohort of this test's own.
+#: The smallest exit ticket there is: one question. Enough to provision.
+ONE_QUESTION = {
+    "schema_version": 1,
+    "title": "Exit ticket — lesson {lesson}",
+    "description": "",
+    "questions": [
+        {
+            "key": "q_takeaway",
+            "type": "short_answer",
+            "title": "One thing you learned in {session_title}",
+            "description": "",
+            "required": True,
+        }
+    ],
+}
 
-    Check-in rows cannot be deleted — the immutability trigger blocks it — so
-    isolation is by fresh key rather than by cleanup.
-    """
+
+def _new_cohort(label: str = "console test cohort") -> str:
     cohort_id = f"test-{uuid.uuid4().hex[:8]}"
     with connection() as conn:
         execute(
             conn,
             "insert into cohort (cohort_id, label) values (%s, %s)",
-            (cohort_id, "console test cohort"),
+            (cohort_id, label),
         )
     return cohort_id
+
+
+@pytest.fixture
+def cohort() -> str:
+    """A cohort of this test's own, with a default exit ticket to provision.
+
+    Check-in rows cannot be deleted — the immutability trigger blocks it — so
+    isolation is by fresh key rather than by cleanup.
+    """
+    cohort_id = _new_cohort()
+    with connection() as conn:
+        question_sets.save_default(conn, cohort_id, ONE_QUESTION, created_by=STAFF)
+    return cohort_id
+
+
+@pytest.fixture
+def bare_cohort() -> str:
+    """A cohort nobody has written exit ticket questions for yet."""
+    return _new_cohort("console test cohort, no questions")
 
 
 @pytest.fixture
@@ -156,8 +189,7 @@ def make_session(
     *,
     title: str = "Week 3 — Deliberation",
     scheduled_at: str = "2026-09-15T13:05",
-    passphrase: str = "justice",
-    confirm_reuse: str = "",
+    week_index: str = "",
     zoom_url: str = "",
     agenda: str = "",
     slack_channel_id: str = "",
@@ -170,9 +202,8 @@ def make_session(
             "timezone": "America/New_York",
             "duration_minutes": "60",
             "grace_minutes": "15",
-            "passphrase": passphrase,
             "cohort_id": cohort_id,
-            "confirm_reuse": confirm_reuse,
+            "week_index": week_index,
             "zoom_url": zoom_url,
             "agenda": agenda,
             "slack_channel_id": slack_channel_id,
@@ -354,10 +385,14 @@ def test_every_screen_returns_200_for_an_allowlisted_user(
         f"/sessions/{session_id}/edit",
         "/review",
         "/review?tab=needs_review",
+        "/review?tab=outside_window",
         "/review?tab=ai",
         "/review?tab=identities",
         f"/sessions/{session_id}/responses.json",
-        "/api/passphrase/suggest",
+        "/template/questions",
+        f"/template/questions?cohort={cohort}",
+        f"/template?cohort={cohort}",
+        f"/sessions/{session_id}/questions",
         "/healthz",
     ]
     for path in paths:
@@ -548,6 +583,34 @@ def test_verify_goes_green_only_after_the_api_confirms_it(
     assert "Downstream work is blocked" not in response.text
 
 
+def test_an_unverified_part_a_template_can_be_replaced_with_a_clean_one(
+    signed_in: TestClient, fake: FakeGoogleClient
+) -> None:
+    """A template made before the exit ticket still asks for a passphrase.
+
+    Replacing it while unverified loses nothing (the manual step was never
+    done) and leaves a form with a title and notice but no questions, which
+    is what every Part A session copy is rebuilt from.
+    """
+    from cufa.template import get_template
+
+    signed_in.post("/template/create", data={"part": "a"})
+    with connection() as conn:
+        old = get_template(conn, "a")
+    assert old is not None
+
+    response = signed_in.post("/template/replace", data={"part": "a"})
+    assert response.status_code == 200
+    assert "the old one retired" in boot_state(response)["notice"]
+
+    with connection() as conn:
+        new = get_template(conn, "a")
+    assert new is not None and new.form_id != old.form_id
+    assert not fake.get_form(new.form_id).items
+    # Still unverified: a new form needs the human step again.
+    assert boot_state(response)["blocked"] is True
+
+
 def test_provisioning_is_refused_while_the_template_is_unverified(
     signed_in: TestClient, fake: FakeGoogleClient, cohort: str
 ) -> None:
@@ -671,11 +734,20 @@ def test_pull_reports_counts_and_the_live_count_follows(
     # and the fake reuses form ids, so a fixed pair would be correctly skipped as
     # a duplicate of the previous run.
     tag = uuid.uuid4().hex[:8]
-    verified_template.seed_responses(
+    question_id = _question_id(form["form_id"], "q_takeaway")
+    verified_template.seed_answers(
         form["form_id"],
         [
-            (f"one-{tag}@example.invalid", "2026-09-15T17:10:00Z", "justice"),
-            (f"two-{tag}@example.invalid", "2026-09-15T17:12:00Z", "the word was justice"),
+            {
+                "respondent_email": f"one-{tag}@example.invalid",
+                "create_time": "2026-09-15T17:10:00Z",
+                "answers": {question_id: ["Deliberation takes longer than voting"]},
+            },
+            {
+                "respondent_email": f"two-{tag}@example.invalid",
+                "create_time": "2026-09-15T17:12:00Z",
+                "answers": {question_id: ["Listen before arguing"]},
+            },
         ],
     )
 
@@ -692,17 +764,84 @@ def test_pull_reports_counts_and_the_live_count_follows(
     assert "0 written" in again.text
 
 
-def test_the_accessibility_reminder_is_in_the_ui(
+def test_the_responses_screen_counts_exit_ticket_answers_and_names_nobody(
     signed_in: TestClient, verified_template: FakeGoogleClient, cohort: str
 ) -> None:
-    from cufa.passphrase import ACCESSIBILITY_REMINDER
+    content = json.loads(json.dumps(ONE_QUESTION))
+    content["questions"] += [
+        {"key": "q_rating", "type": "linear_scale", "title": "How was it?", "description": "",
+         "required": True, "scale": {"low": 1, "high": 5, "low_label": "Rough", "high_label": "Great"}},
+        {"key": "q_parts", "type": "checkboxes", "title": "Which parts helped?", "description": "",
+         "required": False, "options": ["Reading", "Discussion", "Game"]},
+    ]
+    with connection() as conn:
+        question_sets.save_default(conn, cohort, content, created_by=STAFF)
 
-    session_id = make_session(signed_in, cohort, passphrase="lantern")
-    page = signed_in.get(f"/sessions/{session_id}").text
-    assert ACCESSIBILITY_REMINDER.split(".")[0] in page
-    assert "aloud" in page.lower() and "screen" in page.lower()
-    # And the word itself is displayed for the teacher to read out.
-    assert "lantern" in page
+    session_id = make_session(signed_in, cohort)
+    signed_in.post(f"/sessions/{session_id}/provision")
+    with connection() as conn:
+        form = get_session_form(conn, session_id)
+    ids = {key: _question_id(form["form_id"], key) for key in ("q_takeaway", "q_rating", "q_parts")}
+
+    tag = uuid.uuid4().hex[:8]
+    verified_template.seed_answers(
+        form["form_id"],
+        [
+            {
+                "respondent_email": f"ada-{tag}@example.invalid",
+                "create_time": "2026-09-15T17:40:00Z",
+                "answers": {
+                    ids["q_takeaway"]: ["Budgets are moral documents"],
+                    ids["q_rating"]: ["4"],
+                    ids["q_parts"]: ["Reading", "Game"],
+                },
+            },
+            {
+                "respondent_email": f"bo-{tag}@example.invalid",
+                "create_time": "2026-09-15T17:41:00Z",
+                "answers": {ids["q_rating"]: ["4"], ids["q_parts"]: ["Game"]},
+            },
+        ],
+    )
+    assert signed_in.post(f"/sessions/{session_id}/pull").status_code == 200
+
+    part_a = boot_state(signed_in.get(f"/sessions/{session_id}/responses"))["part_a"]
+    assert part_a["responses"] == 2
+    by_key = {q["key"]: q for q in part_a["questions"]}
+    assert by_key["q_takeaway"]["answered"] == 1
+    assert by_key["q_takeaway"]["answers"] == ["Budgets are moral documents"]
+    # Every point on the scale is shown, the unpicked ones as zero.
+    assert by_key["q_rating"]["counts"] == [
+        {"value": v, "count": 2 if v == "4" else 0} for v in ("1", "2", "3", "4", "5")
+    ]
+    assert {c["value"]: c["count"] for c in by_key["q_parts"]["counts"]} == {
+        "Reading": 1, "Discussion": 0, "Game": 2,
+    }
+    # Counted and listed, never attached to the person who wrote it.
+    assert tag not in json.dumps(part_a)
+
+
+def _question_id(form_id: str, key: str) -> str:
+    """Which question id a key landed on in this copy — never known in advance."""
+    with connection() as conn:
+        rows = question_sets.form_map(conn, form_id)
+    by_key = {row["question_key"]: row["question_id"] for row in rows}
+    assert key in by_key, f"{key} is not on form {form_id}: {sorted(by_key)}"
+    return by_key[key]
+
+
+def test_the_link_reminder_is_in_the_ui(
+    signed_in: TestClient, verified_template: FakeGoogleClient, cohort: str
+) -> None:
+    from cufa.console.app import LINK_REMINDER
+
+    session_id = make_session(signed_in, cohort)
+    state = boot_state(signed_in.get(f"/sessions/{session_id}"))
+    assert state["link_reminder"] == LINK_REMINDER
+    assert "screen" in LINK_REMINDER.lower() and "chat" in LINK_REMINDER.lower()
+    # Nothing is left of the word a teacher used to read out.
+    assert "passphrase" not in state["session"] or state["session"]["passphrase"] is None
+    assert "accessibility_reminder" not in state
 
 
 # --------------------------------------------------------------------------
@@ -710,22 +849,38 @@ def test_the_accessibility_reminder_is_in_the_ui(
 # --------------------------------------------------------------------------
 
 
-def test_the_passphrase_guidance_is_inline_on_the_form(signed_in: TestClient) -> None:
-    from cufa.passphrase import GUIDANCE
-
+def test_the_session_form_asks_for_no_passphrase(signed_in: TestClient) -> None:
     state = boot_state(signed_in.get("/sessions/new"))
-    assert GUIDANCE.split(".")[0] in state["guidance"]
+    assert "passphrase" not in state["values"]
+    assert "guidance" not in state and "reuse_warnings" not in state
     # The zone is deliberately left empty here: the screen fills it from the
     # browser. That now happens inside the bundle, so it is proved by the
     # browser walk-through rather than by this request.
     assert state["values"]["timezone"] == ""
 
 
-def test_suggest_returns_a_word_from_the_curated_list(signed_in: TestClient) -> None:
-    from cufa.passphrase import wordlist
+def test_the_passphrase_suggestion_endpoint_is_gone(signed_in: TestClient) -> None:
+    assert signed_in.get("/api/passphrase/suggest").status_code == 404
 
-    payload = signed_in.get("/api/passphrase/suggest").json()
-    assert payload["passphrase"] in wordlist()
+
+def test_a_posted_passphrase_is_ignored_rather_than_refused(
+    signed_in: TestClient, cohort: str
+) -> None:
+    """An old bookmarked form, or a script, may still send one. It saves."""
+    response = signed_in.post(
+        "/sessions/new",
+        data={
+            "title": "Week 2",
+            "scheduled_at": "2026-09-22T13:05",
+            "timezone": "America/New_York",
+            "duration_minutes": "60",
+            "grace_minutes": "15",
+            "passphrase": "justice",
+            "confirm_reuse": "1",
+            "cohort_id": cohort,
+        },
+    )
+    assert response.status_code == 303
 
 
 def test_creating_a_session_stores_the_local_time_and_the_zone(
@@ -786,39 +941,6 @@ def test_console_rejects_an_invalid_zoom_link(
     assert "complete http:// or https:// URL" in response.text
 
 
-def test_a_reused_passphrase_warns_and_refuses_to_save_until_confirmed(
-    signed_in: TestClient, cohort: str
-) -> None:
-    make_session(signed_in, cohort, title="Week 1", passphrase="justice")
-
-    response = signed_in.post(
-        "/sessions/new",
-        data={
-            "title": "Week 2",
-            "scheduled_at": "2026-09-22T13:05",
-            "timezone": "America/New_York",
-            "duration_minutes": "60",
-            "grace_minutes": "15",
-            # Normalized comparison: same word to a fellow typing it.
-            "passphrase": "  Justice. ",
-            "cohort_id": cohort,
-        },
-    )
-    assert response.status_code == 200
-    # The warning and the confirm box are drawn from this list.
-    assert boot_state(response)["reuse_warnings"]
-
-    with connection() as conn:
-        rows = fetch_all(conn, 'select title from "session" where cohort_id = %s', (cohort,))
-    assert [row["title"] for row in rows] == ["Week 1"]
-
-    confirmed = make_session(
-        signed_in, cohort, title="Week 2", scheduled_at="2026-09-22T13:05",
-        passphrase="  Justice. ", confirm_reuse="1",
-    )
-    assert confirmed
-
-
 def test_invalid_session_input_is_rejected_with_reasons(
     signed_in: TestClient, cohort: str
 ) -> None:
@@ -830,7 +952,6 @@ def test_invalid_session_input_is_rejected_with_reasons(
             "timezone": "Mars/Olympus_Mons",
             "duration_minutes": "0",
             "grace_minutes": "-1",
-            "passphrase": "",
             "cohort_id": cohort,
         },
     )
@@ -851,10 +972,7 @@ def test_editing_a_session_updates_it(signed_in: TestClient, cohort: str) -> Non
             "timezone": "UTC",
             "duration_minutes": "45",
             "grace_minutes": "20",
-            "passphrase": "justice",
             "cohort_id": cohort,
-            # Editing must not warn about the session's own passphrase.
-            "confirm_reuse": "",
         },
     )
     assert response.status_code == 303
@@ -868,41 +986,387 @@ def test_editing_a_session_updates_it(signed_in: TestClient, cohort: str) -> Non
 
 
 # --------------------------------------------------------------------------
+# Part A — the exit ticket's questions
+# --------------------------------------------------------------------------
+#
+# A cohort default plus a per-session snapshot, both append-only, both edited by
+# one form post carrying the whole set as JSON. What is being proved: a save
+# makes a version, a session can leave the default and come back, publishing
+# locks a session, and every refusal re-draws what was posted instead of
+# throwing the edit away.
+
+
+def _with_question(content: dict, **question) -> dict:
+    """``content`` plus one more question, as the editor would post it."""
+    edited = json.loads(json.dumps(content))
+    edited["questions"].append(
+        {"type": "paragraph", "title": "", "description": "", "required": False, **question}
+    )
+    return edited
+
+
+def _post_default(client: TestClient, cohort_id: str, content: dict | str, base_id: str = ""):
+    return client.post(
+        "/template/questions",
+        data={
+            "cohort": cohort_id,
+            "questions_json": content if isinstance(content, str) else json.dumps(content),
+            "base_id": base_id,
+        },
+    )
+
+
+def _post_session(client: TestClient, session_id: str, content: dict | str, base_id: str = ""):
+    return client.post(
+        f"/sessions/{session_id}/questions",
+        data={
+            "questions_json": content if isinstance(content, str) else json.dumps(content),
+            "base_id": base_id,
+        },
+    )
+
+
+def _notice(response) -> str:
+    query = parse_qs(urlparse(response.headers["location"]).query)
+    return (query.get("notice") or query.get("error") or [""])[0]
+
+
+def test_staff_save_a_cohort_default(signed_in: TestClient, bare_cohort: str) -> None:
+    empty = boot_state(signed_in.get(f"/template/questions?cohort={bare_cohort}"))
+    assert empty["scope"] == "default"
+    assert empty["current"] is None and empty["base_id"] == ""
+    assert {t["type"] for t in empty["question_types"]} >= {"short_answer", "linear_scale"}
+
+    content = _with_question(
+        ONE_QUESTION,
+        type="linear_scale",
+        title="How was today?",
+        required=True,
+        scale={"low": 1, "high": 5, "low_label": "", "high_label": ""},
+    )
+    response = _post_default(signed_in, bare_cohort, content)
+    assert response.status_code == 303
+    assert "version 1" in _notice(response)
+
+    with connection() as conn:
+        saved = question_sets.current_default(conn, bare_cohort)
+    assert saved is not None and saved.version == 1
+    assert saved.source == "console" and saved.created_by == STAFF
+    assert [q["type"] for q in saved.questions] == ["short_answer", "linear_scale"]
+    assert all(q["key"].startswith("q_") for q in saved.questions), "new keys are minted"
+
+    state = boot_state(signed_in.get(f"/template/questions?cohort={bare_cohort}"))
+    assert state["current"]["label"] == "default v1"
+    assert state["base_id"] == saved.question_set_id
+    assert [h["version"] for h in state["history"]] == [1]
+
+    # The same content again is not a new version.
+    again = _post_default(signed_in, bare_cohort, saved.content, base_id=saved.question_set_id)
+    assert again.status_code == 303
+    assert "Nothing changed" in _notice(again)
+
+    summary = boot_state(signed_in.get(f"/template?cohort={bare_cohort}"))
+    assert summary["selected_cohort"] == bare_cohort
+    assert summary["part_a_default"]["version"] == 1
+    assert summary["part_a_default"]["answerable_count"] == 2
+
+
+def test_a_session_gets_its_own_questions_and_can_go_back(
+    signed_in: TestClient, cohort: str
+) -> None:
+    session_id = make_session(signed_in, cohort, week_index="3")
+    with connection() as conn:
+        default = question_sets.current_default(conn, cohort)
+
+    state = boot_state(signed_in.get(f"/sessions/{session_id}/questions"))
+    assert state["scope"] == "session" and state["locked"] is False
+    assert state["override"] is None
+    assert state["base_default"]["question_set_id"] == default.question_set_id
+    # Customising starts from the default, and is based on it.
+    assert state["content"]["questions"] == default.content["questions"]
+    assert state["base_id"] == default.question_set_id
+
+    custom = _with_question(default.content, title="What should we change?")
+    response = _post_session(signed_in, session_id, custom, base_id=state["base_id"])
+    assert response.status_code == 303
+    assert "own questions" in _notice(response)
+
+    with connection() as conn:
+        override = question_sets.current_override(conn, session_id)
+    assert override is not None and override.version == 1
+    assert override.based_on_id == default.question_set_id
+
+    detail = boot_state(signed_in.get(f"/sessions/{session_id}"))
+    assert detail["a_questions"]["scope"] == "session"
+    assert detail["a_questions"]["set"]["label"] == "custom v1"
+    # Shown filled in, the way a fellow will read it.
+    assert detail["a_questions"]["rendered"]["title"] == "Exit ticket — lesson 3"
+    assert detail["a_blocked"] is False
+
+    listed = boot_state(signed_in.get(f"/sessions?cohort={cohort}"))["sessions"]
+    row = next(r for r in listed if r["session_id"] == session_id)
+    assert row["part_a_questions"] == {"scope": "custom", "version": 1, "provisioned": False}
+
+    reverted = signed_in.post(
+        f"/sessions/{session_id}/questions/revert", data={"return_to": "detail"}
+    )
+    assert reverted.status_code == 303
+    assert reverted.headers["location"].startswith(f"/sessions/{session_id}?notice=")
+    with connection() as conn:
+        assert question_sets.current_override(conn, session_id) is None
+        # Reverting keeps the override in the history rather than deleting it.
+        assert [q.version for q in question_sets.history(conn, session_id=session_id)] == [1]
+    detail = boot_state(signed_in.get(f"/sessions/{session_id}"))
+    assert detail["a_questions"]["scope"] == "default"
+
+
+def test_saving_the_default_unchanged_does_not_pin_a_session_to_a_copy(
+    signed_in: TestClient, cohort: str
+) -> None:
+    session_id = make_session(signed_in, cohort)
+    state = boot_state(signed_in.get(f"/sessions/{session_id}/questions"))
+    response = _post_session(signed_in, session_id, state["content"], base_id=state["base_id"])
+    assert response.status_code == 303
+    assert "still follows" in _notice(response)
+    with connection() as conn:
+        assert question_sets.current_override(conn, session_id) is None
+
+
+def test_a_session_with_no_questions_cannot_be_provisioned_and_says_so(
+    signed_in: TestClient, verified_template: FakeGoogleClient, bare_cohort: str
+) -> None:
+    session_id = make_session(signed_in, bare_cohort)
+    state = boot_state(signed_in.get(f"/sessions/{session_id}"))
+    assert state["a_blocked"] is True
+    assert "seed-default" in state["a_questions"]["missing"]
+
+    listed = boot_state(signed_in.get(f"/sessions?cohort={bare_cohort}"))["sessions"]
+    assert listed[0]["part_a_questions"]["scope"] is None
+
+    response = signed_in.post(f"/sessions/{session_id}/provision")
+    assert response.status_code == 200
+    assert "no Part A" in boot_state(response)["error"]
+    assert not verified_template.calls("copy_form")
+
+
+def test_questions_lock_once_the_form_is_published(
+    signed_in: TestClient, verified_template: FakeGoogleClient, cohort: str
+) -> None:
+    session_id = make_session(signed_in, cohort)
+    provisioned = boot_state(signed_in.post(f"/sessions/{session_id}/provision"))
+    assert provisioned["ready"] is True
+    assert provisioned["a_questions"]["provisioned"]["label"] == "default v1"
+    assert [row["question_key"] for row in provisioned["a_question_map"]] == ["q_takeaway"]
+
+    state = boot_state(signed_in.get(f"/sessions/{session_id}/questions"))
+    assert state["locked"] is True
+    assert "published" in state["lock_reason"]
+
+    custom = _with_question(ONE_QUESTION, title="Too late for this one")
+    refused = _post_session(signed_in, session_id, custom, base_id=state["base_id"])
+    assert refused.status_code == 409
+    refused_state = boot_state(refused)
+    assert refused_state["locked"] is True
+    assert any("locked" in e for e in refused_state["errors"])
+    # What was posted comes back, so the edit is not lost to the refusal.
+    assert refused_state["content"] == custom
+
+    revert = signed_in.post(f"/sessions/{session_id}/questions/revert")
+    assert "error=" in revert.headers["location"]
+    with connection() as conn:
+        assert question_sets.current_override(conn, session_id) is None
+
+    # The default can still change; the published form keeps what it was built from.
+    default_state = boot_state(signed_in.get(f"/template/questions?cohort={cohort}"))
+    moved = _post_default(
+        signed_in, cohort, _with_question(ONE_QUESTION, title="Anything else?"),
+        base_id=default_state["base_id"],
+    )
+    assert moved.status_code == 303
+    listed = boot_state(signed_in.get(f"/sessions?cohort={cohort}"))["sessions"]
+    row = next(r for r in listed if r["session_id"] == session_id)
+    assert row["part_a_questions"] == {"scope": "default", "version": 1, "provisioned": True}
+    detail = boot_state(signed_in.get(f"/sessions/{session_id}"))
+    assert detail["a_questions"]["locked"] is True
+
+
+def test_unreadable_json_is_refused_and_the_page_redrawn(
+    signed_in: TestClient, cohort: str
+) -> None:
+    response = _post_default(signed_in, cohort, "{this is not json")
+    assert response.status_code == 400
+    state = boot_state(response)
+    assert any("JSON" in e for e in state["errors"])
+    # Drawn from what is stored, since nothing readable was posted.
+    assert state["content"]["questions"] == ONE_QUESTION["questions"]
+    with connection() as conn:
+        assert len(question_sets.history(conn, cohort_id=cohort)) == 1
+
+
+def test_an_invalid_set_is_refused_and_what_was_posted_comes_back(
+    signed_in: TestClient, cohort: str
+) -> None:
+    broken = _with_question(ONE_QUESTION, type="multiple_choice", title="Pick one", options=[])
+    response = _post_default(signed_in, cohort, broken)
+    assert response.status_code == 400
+    state = boot_state(response)
+    assert state["errors"], "the reasons are on the screen"
+    assert state["content"] == broken
+    with connection() as conn:
+        assert question_sets.current_default(conn, cohort).version == 1
+
+
+def test_a_save_from_a_version_someone_replaced_is_refused(
+    signed_in: TestClient, cohort: str
+) -> None:
+    base = boot_state(signed_in.get(f"/template/questions?cohort={cohort}"))["base_id"]
+    theirs = _with_question(ONE_QUESTION, title="Their question")
+    mine = _with_question(ONE_QUESTION, title="My question")
+
+    assert _post_default(signed_in, cohort, theirs, base_id=base).status_code == 303
+    refused = _post_default(signed_in, cohort, mine, base_id=base)
+    assert refused.status_code == 409
+    state = boot_state(refused)
+    assert any("changed while you were editing" in e for e in state["errors"])
+    assert state["content"] == mine
+
+    with connection() as conn:
+        current = question_sets.current_default(conn, cohort)
+    assert current.version == 2
+    assert current.questions[-1]["title"] == "Their question"
+
+    # The redrawn page is based on their version and says so, so pressing Save
+    # again replaces it knowingly rather than silently.
+    assert state["base_id"] == current.question_set_id
+    assert any("replaces default v2" in e for e in state["errors"])
+    again = _post_default(signed_in, cohort, mine, base_id=state["base_id"])
+    assert again.status_code == 303
+
+
+def test_the_approved_exit_ticket_seeds_a_default(
+    signed_in: TestClient, bare_cohort: str
+) -> None:
+    response = signed_in.post("/template/questions/seed", data={"cohort": bare_cohort})
+    assert response.status_code == 303
+    assert "version 1" in _notice(response)
+    with connection() as conn:
+        seeded = question_sets.current_default(conn, bare_cohort)
+    assert seeded.source == "seed_file"
+    assert "q_biggest_takeaway" in {q["key"] for q in seeded.questions}
+
+    again = signed_in.post("/template/questions/seed", data={"cohort": bare_cohort})
+    assert "already" in _notice(again)
+
+
+def test_importing_a_form_makes_it_the_default(
+    signed_in: TestClient, fake: FakeGoogleClient, bare_cohort: str
+) -> None:
+    form_id = fake.simulate_form_created_by_hand(
+        [
+            {
+                "title": "What stuck with you?",
+                "questionItem": {"question": {"required": True, "textQuestion": {"paragraph": True}}},
+            },
+            {
+                "title": "How was it?",
+                "questionItem": {
+                    "question": {"scaleQuestion": {"low": 1, "high": 5}}
+                },
+            },
+        ]
+    )
+    response = signed_in.post(
+        "/template/questions/import",
+        data={"cohort": bare_cohort, "form": f"https://docs.google.com/forms/d/{form_id}/edit"},
+    )
+    assert response.status_code == 303
+    assert "Imported" in _notice(response), _notice(response)
+    with connection() as conn:
+        imported = question_sets.current_default(conn, bare_cohort)
+    assert imported.source == "import_form" and imported.source_ref == form_id
+    assert [q["type"] for q in imported.questions] == ["paragraph", "linear_scale"]
+
+
+def test_importing_a_responder_link_is_refused_with_the_reason(
+    signed_in: TestClient, fake: FakeGoogleClient, cohort: str
+) -> None:
+    response = signed_in.post(
+        "/template/questions/import",
+        data={
+            "cohort": cohort,
+            "form": "https://docs.google.com/forms/d/e/1FAIpQLSexampleexampleexample/viewform",
+        },
+    )
+    assert response.status_code == 303
+    assert "error=" in response.headers["location"]
+    assert "/edit" in _notice(response)
+    assert not fake.calls("get_form")
+
+
+def test_an_unknown_cohort_or_session_is_a_404(signed_in: TestClient) -> None:
+    assert _post_default(signed_in, "no-such-cohort", ONE_QUESTION).status_code == 404
+    assert signed_in.get(f"/sessions/{uuid.uuid4()}/questions").status_code == 404
+    assert signed_in.get("/sessions/not-a-uuid/questions").status_code == 404
+
+
+# --------------------------------------------------------------------------
 # screen 5 — review
 # --------------------------------------------------------------------------
 
 
-def _seed_checkin(cohort_id: str, session_id: str, email: str, passphrase: str) -> str:
-    """One observation with a needs_review decision on it."""
+def _seed_checkin(
+    cohort_id: str,
+    session_id: str | None,
+    email: str,
+    *,
+    submitted_at: str = "2026-09-15T17:10:00Z",
+    source: str = "csv",
+    status: str = "needs_review",
+    rule_name: str = "unverified_email_in_window",
+    confidence: float = 0.0,
+) -> str:
+    """One observation with a rule's decision on it.
+
+    The defaults are the commonest needs_review case now: a CSV row whose
+    address was typed, submitted inside the only window it fits.
+    """
     with connection() as conn:
+        # A load run carries the cohort for a row that matched no session.
+        load = fetch_all(
+            conn,
+            "insert into load_run (source, origin, cohort_id) values (%s, 'test', %s) "
+            "returning load_id",
+            (source, cohort_id),
+        )
         row = fetch_all(
             conn,
             """
             insert into checkin (
                 source_event_id, source, submitted_email, submitted_at_utc,
-                submitted_at_raw, session_id, session_match, passphrase_raw,
-                passphrase_match
+                submitted_at_raw, session_id, session_match, load_id
             )
-            values (%s, 'forms_api', %s, %s, %s, %s, 'matched', %s, 'mismatch')
+            values (%s, %s, %s, %s, %s, %s, %s, %s)
             returning checkin_id
             """,
             (
                 uuid.uuid4().hex,
+                source,
                 email,
-                "2026-09-15T17:10:00Z",
-                "2026-09-15T17:10:00Z",
+                submitted_at,
+                submitted_at,
                 session_id,
-                passphrase,
+                "matched" if session_id else "none",
+                load[0]["load_id"],
             ),
         )
         checkin_id = str(row[0]["checkin_id"])
         record_decision(
             conn,
             checkin_id,
-            status="needs_review",
+            status=status,
             decided_by="rule",
-            rule_name="ai_unavailable",
-            confidence=0.0,
+            rule_name=rule_name,
+            confidence=confidence,
         )
     return checkin_id
 
@@ -911,13 +1375,15 @@ def test_the_review_queue_lists_and_one_click_records_a_human_decision(
     signed_in: TestClient, cohort: str
 ) -> None:
     session_id = make_session(signed_in, cohort)
-    checkin_id = _seed_checkin(cohort, session_id, "unknown@example.invalid", "jushtis")
+    checkin_id = _seed_checkin(cohort, session_id, "unknown@example.invalid")
 
     queue = signed_in.get(f"/review?tab=needs_review&cohort={cohort}")
     assert queue.status_code == 200
-    assert "jushtis" in queue.text
-    assert "justice" in queue.text  # the expected word, so a human can judge
-    assert checkin_id in queue.text
+    state = boot_state(queue)
+    assert "expected" not in state, "no passphrase to compare against any more"
+    row = next(r for r in state["rows"] if r["checkin_id"] == checkin_id)
+    # What a human judges by now: when it arrived against the window.
+    assert row["timing"]["relation"] == "inside"
 
     response = signed_in.post(
         f"/review/{checkin_id}/decide",
@@ -936,8 +1402,9 @@ def test_the_review_queue_lists_and_one_click_records_a_human_decision(
 
 
 def test_the_ai_tab_shows_the_models_reasoning(signed_in: TestClient, cohort: str) -> None:
+    """Tier 2 is retired, but decisions it made are still readable and overridable."""
     session_id = make_session(signed_in, cohort)
-    checkin_id = _seed_checkin(cohort, session_id, "fellow@example.invalid", "the word was justice")
+    checkin_id = _seed_checkin(cohort, session_id, "fellow@example.invalid")
     with connection() as conn:
         record_decision(
             conn,
@@ -955,6 +1422,59 @@ def test_the_ai_tab_shows_the_models_reasoning(signed_in: TestClient, cohort: st
     assert "The answer states the passphrase in a sentence." in page.text
     assert "gemini-2.5-flash" in page.text
     assert "v1" in page.text
+    assert boot_state(page)["has_ai_decisions"] is True
+
+
+def test_the_ai_tab_is_hidden_when_there_is_nothing_legacy_to_show(
+    signed_in: TestClient, db
+) -> None:
+    """`db` truncates, so no AI decision exists anywhere: the tab is not offered,
+    and asking for it by URL lands on the queue instead."""
+    state = boot_state(signed_in.get("/review?tab=ai"))
+    assert state["has_ai_decisions"] is False
+    assert state["tab"] == "needs_review"
+
+
+def test_the_outside_the_window_tab_says_how_far_out(
+    signed_in: TestClient, cohort: str
+) -> None:
+    # 13:05 New York on 15 September is 17:05Z; 60 minutes and 15 of grace
+    # either side make the window 16:50Z to 18:20Z.
+    session_id = make_session(signed_in, cohort)
+    late = _seed_checkin(
+        cohort, session_id, "late@example.invalid",
+        submitted_at="2026-09-15T18:32:00Z", source="forms_api",
+        status="not_attended", rule_name="outside_session_window", confidence=0.6,
+    )
+    early = _seed_checkin(
+        cohort, session_id, "early@example.invalid",
+        submitted_at="2026-09-15T16:40:00Z", source="forms_api",
+        status="not_attended", rule_name="outside_session_window", confidence=0.6,
+    )
+    nowhere = _seed_checkin(
+        cohort, None, "nowhere@example.invalid",
+        submitted_at="2026-09-20T09:00:00Z",
+        status="not_attended", rule_name="outside_all_windows", confidence=0.6,
+    )
+    inside = _seed_checkin(cohort, session_id, "inside@example.invalid")
+
+    state = boot_state(signed_in.get(f"/review?tab=outside_window&cohort={cohort}"))
+    assert state["tab"] == "outside_window"
+    rows = {row["checkin_id"]: row for row in state["rows"]}
+    assert set(rows) == {late, early, nowhere}, "only the rules' outside-window calls"
+    assert inside not in rows
+    assert rows[late]["timing"] == {"relation": "after", "minutes": 12}
+    assert rows[early]["timing"] == {"relation": "before", "minutes": 10}
+    assert rows[nowhere]["timing"]["relation"] is None
+
+    # A person's override takes it off the list: it is no longer the rule's call.
+    response = signed_in.post(
+        f"/review/{late}/decide",
+        data={"status": "attended", "tab": "outside_window", "cohort": cohort},
+    )
+    assert response.status_code == 303
+    state = boot_state(signed_in.get(f"/review?tab=outside_window&cohort={cohort}"))
+    assert late not in {row["checkin_id"] for row in state["rows"]}
 
 
 def test_an_unresolved_address_appears_on_the_identities_tab(
@@ -975,7 +1495,7 @@ def test_an_unresolved_address_appears_on_the_identities_tab(
 
 def test_an_invalid_review_status_is_refused(signed_in: TestClient, cohort: str) -> None:
     session_id = make_session(signed_in, cohort)
-    checkin_id = _seed_checkin(cohort, session_id, "fellow@example.invalid", "nope")
+    checkin_id = _seed_checkin(cohort, session_id, "fellow@example.invalid")
     response = signed_in.post(
         f"/review/{checkin_id}/decide", data={"status": "definitely_attended"}
     )
@@ -1491,9 +2011,9 @@ def test_uploading_a_roster_needs_a_session(client: TestClient, db) -> None:
 
 
 SESSIONS_CSV = (
-    "cohort_id,title,scheduled_at_local,timezone,duration_minutes,passphrase\n"
-    "console-sched,Week 1 — Openings,2026-10-06 19:00,America/New_York,60,harbour\n"
-    "console-sched,Week 2 — Evidence,2026-10-13 19:00,America/New_York,60,lantern\n"
+    "cohort_id,title,scheduled_at_local,timezone,duration_minutes\n"
+    "console-sched,Week 1 — Openings,2026-10-06 19:00,America/New_York,60\n"
+    "console-sched,Week 2 — Evidence,2026-10-13 19:00,America/New_York,60\n"
 )
 
 
@@ -1519,7 +2039,7 @@ def test_reloading_a_schedule_adds_what_is_new_and_leaves_the_rest(
 ) -> None:
     _upload_sessions(signed_in, SESSIONS_CSV)
     extended = SESSIONS_CSV + (
-        "console-sched,Week 3 — Coalitions,2026-10-20 19:00,America/New_York,60,compass\n"
+        "console-sched,Week 3 — Coalitions,2026-10-20 19:00,America/New_York,60\n"
     )
     response = _upload_sessions(signed_in, extended)
     assert response.status_code == 303

@@ -1,4 +1,4 @@
-# Civic Innovators Fellowship — mid-session check-in (part A) and
+# Civic Innovators Fellowship — exit ticket (part A) and
 # end-of-session check-in (part B)
 #
 # One command to a working local stack:  make setup && make demo

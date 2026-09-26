@@ -1,8 +1,10 @@
 # The end-of-session form (Part B)
 
-Part A goes out **mid-lesson** and proves someone was there. Part B goes out at
-the **end** and measures what landed. They are two different forms because they
-are released at two different moments, and one form cannot be both.
+Part A is the **exit ticket**: the questions staff set, and the attendance
+record — a verified address submitted inside the session window. Part B goes out
+at the **end** and measures what landed. They are two different forms because
+they do different jobs: Part A's questions are staff's to change, and Part B's
+are fixed, in a research-backed order, so its numbers compare week to week.
 
 This page covers the Part B template, its one-time manual step, the rotating
 question, and what a teacher prepares each week.

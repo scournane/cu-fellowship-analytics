@@ -73,12 +73,59 @@ class FormUnreachable(CufaError):
     """
 
 
+class QuestionSetMissing(CufaError):
+    """No Part A question set resolves for a session.
+
+    Neither a per-session override nor a cohort default exists. Provisioning is
+    blocked — dry run included — rather than falling back to some built-in list:
+    a form nobody chose is exactly the kind of thing that ships unnoticed and
+    then has to be explained to fellows. The message names the command (and the
+    console screen) that seeds the default.
+    """
+
+
+class QuestionsLocked(CufaError):
+    """A session's Part A questions can no longer be edited.
+
+    Once the session's Part A form has been published, fellows may already be
+    answering it. Rewriting the set then would make the stored questions
+    disagree with what was actually asked — and the published form is never
+    written to anyway, so the edit could not take effect. The past is kept
+    exactly as it was asked.
+    """
+
+
+class StaleQuestionSet(CufaError):
+    """An edit was based on a version that is no longer current.
+
+    Two people editing the same set at once: the second save would silently
+    discard the first. Refused instead, so the second person reloads and sees
+    what changed.
+    """
+
+
+class InvalidQuestionSet(CufaError):
+    """A question set failed validation. ``errors`` lists every problem found.
+
+    All problems at once rather than the first one, so a staff member fixing a
+    long form does not play whack-a-mole one save at a time.
+    """
+
+    def __init__(self, errors: list[str] | tuple[str, ...], message: str | None = None) -> None:
+        self.errors = list(errors)
+        super().__init__(
+            message
+            or "The question set is not valid:\n  - " + "\n  - ".join(self.errors or ["(no detail)"])
+        )
+
+
 class AmbiguousSession(CufaError):
     """A timestamp fell inside more than one session window."""
 
 
 class AiUnavailable(CufaError):
-    """Tier 2 could not run: no key, no network, or quota exhausted.
+    """An AI call could not run: no key, no network, or quota exhausted.
 
-    Never fatal. The caller degrades to needs_review.
+    Never fatal. The caller degrades — themes are skipped, a Q&A summary falls
+    back to the plain digest. (Attendance no longer calls an AI at all.)
     """

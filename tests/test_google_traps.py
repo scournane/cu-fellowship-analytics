@@ -177,7 +177,7 @@ def test_15_multi_page_response_list_is_fully_consumed(db, tmp_path):
     fake.seed_responses(
         result.form_id,
         [
-            (f"f{i}@example.invalid", f"2026-09-15T23:2{i}:00Z", "justice")
+            (f"f{i}@example.invalid", f"2026-09-15T23:2{i}:00Z", "budgets")
             for i in range(7)
         ],
     )
@@ -200,7 +200,7 @@ def test_15b_rate_limit_is_retried_then_succeeds(db, monkeypatch):
     session_id = make_session(db, local=datetime(2026, 9, 15, 19, 0))
     result = provision_session(db, fake, session_id)
     fake.seed_responses(
-        result.form_id, [("a@example.invalid", "2026-09-15T23:20:00Z", "justice")]
+        result.form_id, [("a@example.invalid", "2026-09-15T23:20:00Z", "budgets")]
     )
 
     pulled = pull_session(db, fake, session_id)
@@ -221,7 +221,7 @@ def test_16_watermark_only_advances_after_a_complete_pull(db):
     fake.seed_responses(
         result.form_id,
         [
-            (f"f{i}@example.invalid", f"2026-09-15T23:2{i}:00Z", "justice")
+            (f"f{i}@example.invalid", f"2026-09-15T23:2{i}:00Z", "budgets")
             for i in range(6)
         ],
     )
@@ -254,12 +254,12 @@ def test_16b_watermark_makes_the_next_pull_incremental(db, fake, verified_templa
     session_id = make_session(db, local=datetime(2026, 9, 15, 19, 0))
     result = provision_session(db, fake, session_id)
     fake.seed_responses(
-        result.form_id, [("a@example.invalid", "2026-09-15T23:20:00Z", "justice")]
+        result.form_id, [("a@example.invalid", "2026-09-15T23:20:00Z", "budgets")]
     )
     pull_session(db, fake, session_id)
 
     fake.seed_responses(
-        result.form_id, [("b@example.invalid", "2026-09-15T23:30:00Z", "justice")]
+        result.form_id, [("b@example.invalid", "2026-09-15T23:30:00Z", "budgets")]
     )
     second = pull_session(db, fake, session_id)
 

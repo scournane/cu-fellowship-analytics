@@ -2,10 +2,10 @@
 
 Two rules shape everything here:
 
-* **Never drop a submission** (invariant 1). A wrong passphrase, an unknown
-  address, a timestamp in no session's window — all of them produce a row, with
-  the reason recorded. The cases worth looking at are exactly the ones a
-  "reject bad input" parser would delete.
+* **Never drop a submission** (invariant 1). A blank answer, an unknown
+  address, a timestamp in no session's window, an answer to a question nobody
+  mapped — all of them produce a row, with the reason recorded. The cases worth
+  looking at are exactly the ones a "reject bad input" parser would delete.
 
 * **Ingest is idempotent** (invariant 5). Re-running writes zero new rows,
   including across the two paths: a CSV re-import of data already pulled from
@@ -23,7 +23,7 @@ import psycopg
 
 from ..db import execute, fetch_one
 from ..logging_setup import get_logger, summarize
-from ..text import normalize_answer, normalize_email, levenshtein, sha256_hex
+from ..text import normalize_email, sha256_hex
 from ..timeutil import session_window, to_utc
 
 log = get_logger(__name__)
@@ -194,40 +194,6 @@ def assign_session(
     return SessionAssignment("ambiguous", None, tuple(hits))
 
 
-def compare_passphrase(
-    expected: str | None,
-    submitted: str,
-    *,
-    max_edit_distance: int,
-    session_matched: bool,
-) -> tuple[str, int | None]:
-    """Tier 1's string comparison, recorded on the observation.
-
-    Returns ``(passphrase_match, edit_distance)``. This is a comparison, not a
-    judgment: it says how close the typed answer is to the expected word, and
-    says nothing about whether the person attended. That is
-    ``attendance_decision``'s job.
-    """
-    if not session_matched:
-        return "no_session", None
-    if not (expected or "").strip():
-        return "not_set", None
-
-    expected_norm = normalize_answer(expected)
-    submitted_norm = normalize_answer(submitted)
-
-    if expected_norm == submitted_norm:
-        return "exact", 0
-
-    distance = levenshtein(expected_norm, submitted_norm, max_distance=max_edit_distance)
-    if distance <= max_edit_distance:
-        # Deliberately generous. The passphrase is heard aloud and typed on a
-        # phone; rejecting "justise" for "justice" penalises someone who was in
-        # the room and heard it, which is backwards from the intent.
-        return "fuzzy", distance
-    return "mismatch", None
-
-
 def resolve_identity(
     conn: psycopg.Connection, cohort_id: str | None, email: str
 ) -> str | None:
@@ -326,17 +292,23 @@ def write_checkin(
     source_timezone: str | None,
     session_id: str | None,
     session_match: str,
-    passphrase_raw: str,
-    passphrase_match: str,
-    edit_distance: int | None,
     extra_fields: dict[str, Any],
     load_id: str | None,
+    form_id: str | None = None,
+    answers: dict[str, dict[str, Any]] | None = None,
 ) -> str | None:
     """Insert one observation. Returns the id, or None when it already existed.
 
     ``on conflict do nothing`` against the UNIQUE on ``source_event_id`` is what
     makes a second run write zero rows — the check is in the database, not in a
     "have I seen this?" set that only holds for one process.
+
+    ``answers`` is ``{questionId: {"values": [...], "title": str | None}}``
+    exactly as the API returned it: never joined, never resolved to question
+    keys here. Resolution happens at read time through ``part_a_form_question``,
+    so an answer whose map is missing today is still findable tomorrow — the
+    observation does not change, only the lookup does. The legacy passphrase
+    columns are left NULL.
     """
     row = fetch_one(
         conn,
@@ -344,9 +316,9 @@ def write_checkin(
         insert into checkin (
             source_event_id, source, submitted_email, submitted_at_utc,
             submitted_at_raw, source_timezone, session_id, session_match,
-            passphrase_raw, passphrase_match, edit_distance, extra_fields, load_id
+            extra_fields, load_id, form_id, answers
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb)
         on conflict (source_event_id) do nothing
         returning checkin_id
         """,
@@ -359,11 +331,10 @@ def write_checkin(
             source_timezone,
             session_id,
             session_match,
-            passphrase_raw,
-            passphrase_match,
-            edit_distance,
             json.dumps(extra_fields or {}),
             load_id,
+            form_id,
+            json.dumps(answers or {}),
         ),
     )
     return str(row["checkin_id"]) if row else None

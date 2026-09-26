@@ -165,8 +165,8 @@ cp .env.example .env
 
 `.env` is gitignored; `.env.example` is committed and contains no real secrets. Nothing
 in `.env` is needed for `make demo` — the Makefile exports what the demo requires. You
-need it when you connect a real Google account (see `docs/setup/google-cloud.md`) or run
-tier 2 against Gemini.
+need it when you connect a real Google account (see `docs/setup/google-cloud.md`) or want
+muddiest-point themes and Q&A summaries from Gemini.
 
 Variables worth knowing:
 
@@ -176,8 +176,7 @@ Variables worth knowing:
 | `CUFA_FAKE_GOOGLE=1` | Use `FakeGoogleClient` everywhere. Zero network calls to Google. |
 | `CUFA_FAKE_GOOGLE_STATE` | Where the fake persists its forms and responses between processes. Default `fixtures/fake_google_state.json`. |
 | `CUFA_ENCRYPTION_KEY` | Fernet key for the stored refresh token. Without it, `cufa google connect` refuses to store anything. |
-| `GEMINI_API_KEY` | Enables tier 2. Absent is fine — mismatch cases become `needs_review` with `rule_name='ai_unavailable'`. |
-| `CUFA_MAX_EDIT_DISTANCE` | Fuzzy passphrase tolerance. Default 1. |
+| `GEMINI_API_KEY` | Enables muddiest-point theme clustering and the Slack Q&A summary. Absent is fine — both degrade with a clear message. Attendance never uses it (ADR-040). |
 | `CUFA_LOG_LEVEL` | `DEBUG` is the only level at which raw email addresses are emitted. |
 
 ---
@@ -191,9 +190,9 @@ Run `make` (or `make help`) for the list. Overridable variables: `COHORT` (defau
 | Target | What it does |
 |---|---|
 | `make setup` | Creates `.venv`, installs `-e '.[dev]'`, checks Python 3.11+, checks Docker is running, checks the Supabase CLI, runs `supabase init` if needed. |
-| `make demo` | **Refuses to run if this database looks like a real install** — a connected Google account, a real template form, or recorded check-ins. `make demo` begins with a database reset, and running it over a working install deletes the roster, the sessions and the credential while leaving the real forms stranded in Drive. Point it at a scratch database (`CUFA_DATABASE_URL=…/cufa_demo make demo`, which resets *that* database rather than the linked project's) or override with `CUFA_DEMO_FORCE=1`. Otherwise: **both parts** end to end on synthetic data, **no Google account and no `GEMINI_API_KEY`**: `db-reset` → generate fixtures → load roster and sessions → create *each part's* template and *prove provisioning is blocked until each verifies* → print the rotation and *prove a teacher-question week with no question is refused* → provision both forms for every session → seed responses → pull Part A → import a CSV via the fallback path → seed Part B → *prove a form with an incomplete question map refuses to ingest*, then repair it by re-provisioning → pull Part B → adjudicate `--no-ai` → cluster themes → shoutout queue → help requests → reports → acceptance checks. |
-| `make demo-again` | Re-runs both pulls, ingest, adjudicate, report and the acceptance checks over the **same** database, without a reset. This is the idempotency demonstration: identical numbers, zero new rows. |
-| `make demo-ai` | `make demo`, then adjudicates with tier 2 live, then adjudicates again to show the second pass makes zero API calls, then prints `cufa review --status ai`, then clusters the muddiest-point themes for real. Exits with a clear message (not an error) if `GEMINI_API_KEY` is unset. |
+| `make demo` | **Refuses to run if this database looks like a real install** — a connected Google account, a real template form, or recorded check-ins. `make demo` begins with a database reset, and running it over a working install deletes the roster, the sessions and the credential while leaving the real forms stranded in Drive. Point it at a scratch database (`CUFA_DATABASE_URL=…/cufa_demo make demo`, which resets *that* database rather than the linked project's) or override with `CUFA_DEMO_FORCE=1`. Otherwise: **both parts** end to end on synthetic data, **no Google account and no `GEMINI_API_KEY`**: `db-reset` → generate fixtures → load roster and sessions → seed the default exit ticket from `config/part_a_default_questions.json`, twice, to show the second writes nothing → *customise Session 3's questions* (one added, one removed, one moved) → create *each part's* template and *prove provisioning is blocked until each verifies* → print the rotation and *prove a teacher-question week with no question is refused* → provision both forms for every session → *prove Session 3's questions are now locked* → seed responses → pull Part A → import a CSV via the fallback path → seed Part B → *prove a form with an incomplete question map refuses to ingest*, then repair it by re-provisioning → pull Part B → adjudicate by address and timing → cluster themes → shoutout queue → help requests → reports → acceptance checks. |
+| `make demo-again` | Re-seeds the default exit ticket, re-runs both pulls, ingest, adjudicate, report and the acceptance checks over the **same** database, without a reset. This is the idempotency demonstration: identical numbers, zero new rows, no new question-set version. |
+| `make demo-ai` | `make demo`, then clusters the muddiest-point themes for real. Attendance uses no model, so there is nothing else for a key to change. Exits with a clear message (not an error) if `GEMINI_API_KEY` is unset. |
 | `make demo-console` | `make demo`, then `cufa serve` on `PORT` against the demo data and the fake client — every screen, including provisioning and review, clickable with zero Google calls. |
 | `make test` | `pytest`. No network. |
 | `make clean` | `supabase stop --no-backup`, removes `fixtures/`, `__pycache__/`, `.pytest_cache`. |
@@ -209,9 +208,10 @@ reach Google by forgetting a flag.
 
 Open Studio (http://localhost:64323) or paste these into `psql`. They are written
 against the real schema and its views — `v_current_decision` (the one live decision per
-check-in), `v_checkin_resolved` (every Part A check-in with its roster identity and
-current decision attached), and `v_checkin_b_resolved` plus the confidence views for
-Part B. Replace `'demo'` with your cohort id.
+check-in), `v_checkin_resolved` (every Part A check-in with its roster identity, current
+decision and session window attached), `v_checkin_answer` (Part A's answers, one row per
+check-in and question), and `v_checkin_b_resolved` plus the confidence views for Part B.
+Replace `'demo'` with your cohort id.
 
 Identity resolves at read time in both resolved views, so `fellow_id IS NULL` means "the
 address is not on the roster", not "the row is missing".
@@ -246,10 +246,11 @@ select coalesce(v.full_name, '(not on roster)')            as fellow,
        v.submitted_email,
        coalesce(v.session_title, '(no session matched)')    as session,
        v.submitted_at_utc,
-       v.passphrase_match,
+       v.in_session_window,
+       v.questions_answered,
        v.status,
        v.decided_by,
-       coalesce(v.rule_name, v.ai_model, v.human_email)     as decided_how,
+       coalesce(v.rule_name, v.human_email)                 as decided_how,
        v.confidence,
        v.latency_seconds
   from v_checkin_resolved v
@@ -268,10 +269,10 @@ select v.checkin_id,
        v.submitted_at_utc,
        coalesce(v.full_name, '(not on roster)')          as fellow,
        v.submitted_email,
+       v.source,
        coalesce(v.session_title, '(no session matched)') as session,
-       v.passphrase_match,
-       v.passphrase_raw                                  as typed,
-       coalesce(v.rule_name, v.ai_reasoning, '(no reason recorded)') as why
+       coalesce(v.rule_name, '(no reason recorded)')     as why,
+       v.note
   from v_checkin_resolved v
  where v.status = 'needs_review'
  order by v.submitted_at_utc;
@@ -285,7 +286,7 @@ Check-ins with no decision at all (ingested but never adjudicated):
 
 ```sql
 select v.checkin_id, v.submitted_at_utc, v.submitted_email,
-       v.session_match, v.passphrase_match
+       v.source, v.session_match
   from v_checkin_resolved v
  where v.decision_id is null
  order by v.submitted_at_utc;
@@ -301,60 +302,143 @@ select iu.cohort_id, iu.email, iu.occurrence_count, iu.first_seen_at, iu.last_se
  order by iu.last_seen_at desc;
 ```
 
-### AI decisions with their reasoning
+### Outside the window
+
+Judged `not_attended` because the submit time was outside the session's window, or
+outside every window. `window_start_utc` and `window_end_utc` are the window as the
+session is scheduled **now**, the same one adjudication uses:
 
 ```sql
-select v.checkin_id,
-       coalesce(v.session_title, '(no session matched)') as session,
-       v.passphrase_raw   as typed,
-       v.status,
-       v.confidence,
-       v.ai_model,
-       v.ai_prompt_version,
-       v.ai_reasoning,
-       v.decided_at
+select coalesce(v.full_name, '(not on roster)')            as fellow,
+       coalesce(v.session_title, '(no session matched)')    as session,
+       v.submitted_at_utc,
+       v.window_start_utc,
+       v.window_end_utc,
+       case when v.submitted_at_utc < v.window_start_utc
+            then v.window_start_utc - v.submitted_at_utc
+            else v.submitted_at_utc - v.window_end_utc
+       end                                                  as how_far_outside,
+       v.rule_name,
+       v.note
   from v_checkin_resolved v
- where v.decided_by = 'ai'
- order by v.decided_at desc;
+ where v.cohort_id = 'demo'
+   and v.rule_name in ('outside_session_window', 'outside_all_windows')
+ order by v.submitted_at_utc;
 ```
 
-Sample these rather than trusting them — that is what the tier is for. Same thing from
-the CLI: `cufa review --status ai --cohort demo`.
+A whole session on this list usually means its scheduled time is wrong. Fix it with
+`cufa session edit` and re-run `cufa adjudicate`; each decision's note names the window
+it was judged against, so the history shows why it moved.
 
-### AI cache
+### Part A answers, raw
 
-What has been sent to the model, by model and prompt version:
+`checkin.answers` is what the Forms API returned, keyed by `questionId`, on the immutable
+row. Multi-select answers stay separate values:
 
 ```sql
-select model, prompt_version, count(*) as cached_pairs,
-       count(*) filter (where verdict) as verdict_true,
-       min(created_at) as first_cached, max(created_at) as last_cached
-  from ai_adjudication_cache
- group by model, prompt_version
- order by model, prompt_version;
+select c.submitted_email, c.form_id, a.key as question_id,
+       a.value -> 'values' as answer_values,
+       a.value ->> 'title' as title_when_pulled
+  from checkin c
+  cross join lateral jsonb_each(c.answers) a
+ where c.source = 'forms_api'
+ order by c.submitted_at_utc
+ limit 20;
 ```
 
-An approximate hit rate. The cache holds one row per **distinct** string pair actually
-sent, so anything beyond that count was served from cache:
+### Part A answers, resolved to their questions
+
+`v_checkin_answer` resolves each `questionId` through the form's own
+`part_a_form_question` rows at read time, and adds an empty row for each question a
+response left blank. An answer to a question the map does not know still appears, with a
+NULL `question_key`:
 
 ```sql
-with sent   as (select count(*)::numeric as pairs
-                  from ai_adjudication_cache),
-     judged as (select count(*)::numeric as decisions
-                  from attendance_decision
-                 where decided_by = 'ai')
-select judged.decisions as ai_decision_rows,
-       sent.pairs       as distinct_pairs_sent,
-       round(100 * (1 - sent.pairs / nullif(judged.decisions, 0)), 1)
-                        as approx_cache_hit_pct
-  from sent, judged;
+select s.week_index,
+       a.item_index,
+       a.question_key,
+       a.question_text,
+       a.answer_values,
+       a.has_content
+  from v_checkin_answer a
+  join "session" s on s.session_id = a.session_id
+ where s.cohort_id = 'demo' and s.week_index = 3
+ order by a.checkin_id, a.item_index;
 ```
 
-It is an approximation on purpose: a re-run that produces an identical verdict writes no
-new decision row (by design — otherwise the decision history would fill with rows saying
-what the previous row said) but still performs a cache lookup. **The exact per-run
-numbers are printed by `cufa adjudicate`**, which reports `ai_calls=` and `cache_hits=`
-on its summary line.
+How many fellows answered each question, per session — a count, never a grade:
+
+```sql
+select s.week_index,
+       a.item_index,
+       a.question_key,
+       count(*) filter (where a.has_content) as answered,
+       count(*)                              as responses
+  from v_checkin_answer a
+  join "session" s on s.session_id = a.session_id
+ where s.cohort_id = 'demo'
+ group by s.week_index, a.item_index, a.question_key
+ order by s.week_index, a.item_index;
+```
+
+The rating's spread for one session, as counts per point on the scale:
+
+```sql
+select a.answer_values[1] as rating, count(*) as fellows
+  from v_checkin_answer a
+  join "session" s on s.session_id = a.session_id
+ where s.cohort_id = 'demo' and s.week_index = 3
+   and a.question_key = 'q_session_rating' and a.has_content
+ group by 1
+ order by 1;
+```
+
+### Which questions each week's exit ticket asked
+
+The set each form was built from, and whether it was the cohort default or a session's
+own:
+
+```sql
+select s.week_index,
+       s.title,
+       case when q.session_id is null then 'default' else 'custom' end as scope,
+       q.version,
+       jsonb_array_length(q.content -> 'questions')                  as questions
+  from session_form sf
+  join "session" s               on s.session_id = sf.session_id
+  join part_a_question_set q     on q.question_set_id = sf.question_set_id
+ where sf.part = 'a' and s.cohort_id = 'demo'
+ order by s.week_index nulls last;
+```
+
+Every version of the cohort's questions, current or not. Nothing is ever edited in place
+or deleted:
+
+```sql
+select coalesce(s.title, '(cohort default)') as scope,
+       q.version, q.source, q.created_by, q.created_at, q.superseded_at
+  from part_a_question_set q
+  left join "session" s on s.session_id = q.session_id
+ where q.cohort_id = 'demo'
+ order by scope, q.version;
+```
+
+### Passphrase-era check-ins
+
+Rows ingested before Part A became the exit ticket keep their passphrase columns and the
+decisions made on them. Everything written since has NULL there:
+
+```sql
+select v.submitted_at_utc, v.session_title, v.passphrase_match, v.status,
+       v.decided_by, coalesce(v.rule_name, v.ai_model, v.human_email) as decided_how
+  from v_checkin_resolved v
+ where v.passphrase_match is not null
+ order by v.submitted_at_utc;
+```
+
+`cufa adjudicate --redecide-legacy` re-judges them by timing. `ai_adjudication_cache`
+holds what the retired model tier said about passphrase-era answers, and nothing writes
+it any more (ADR-040).
 
 ### Part B — both parts side by side, per session
 
@@ -587,7 +671,8 @@ Verified email collection and asserts it is refused — that is the proof trap 2
 rather than assumed. The demo aborts if that check unexpectedly passes.
 
 **Tests hitting the network.** They must not. Inject the fakes:
-`google.factory.set_fake_client()` for Google, the `adjudicator=` argument for Gemini.
+`google.factory.set_fake_client()` for Google, the `clusterer=` and `summarizer=`
+arguments for Gemini.
 
 **Emails appearing in logs.** They should not above DEBUG. `logging_setup.RedactionFilter`
 rewrites the formatted record, so a stray `log.info("... %s", email)` is redacted rather
